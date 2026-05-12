@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+Thumbs.db
+.env
+.env.*
+*.log
+*.tmp
+*.swp
+*.bak
+/data/inbox/
+/data/layers/vetro_geojson_layers/
+/data/dashboard_auth.json
