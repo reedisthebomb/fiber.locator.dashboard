@@ -1,6 +1,12 @@
 # One Call Locator Dashboard Handoff
 
-Updated: 2026-05-12
+Updated: 2026-05-13
+
+Latest detailed continuation file:
+
+```text
+PROJECT_HANDOFF_2026-05-13.md
+```
 
 ## Purpose
 
@@ -40,10 +46,21 @@ The dashboard now:
 - reads the server inbox and builds the ticket list
 - loads GeoCall printable pages and polygons when cached
 - overlays Vitruvi and Vetro layers
-- preserves hidden tickets, filters, and map state per logged-in user
+- preserves hidden tickets, filters, and map state
+- supports a server-side Locator Default View that loads across devices
+- allows Vetro per-layer names, notes, colors, opacity, size, line style, and marker shape
+- includes rectangle and house Vetro marker shapes
 - serves the app locally, on LAN, and through Tailscale
 
 The refresh button on the page triggers the server-side Outlook export and reload flow.
+
+Dashboard login is currently disabled by request. The default state user is `default`.
+
+Home Assistant `dashboard-home` has a One Call Locator iframe pointed at:
+
+```text
+https://192.168.50.231:8765/
+```
 
 ## Important Files
 
@@ -164,3 +181,40 @@ The dashboard is reachable through:
 ## Known Current State
 
 The project is in a working state on the home server. The current outstanding gap is GitHub publishing access from this session, not the dashboard itself.
+
+## Important User Preferences
+
+- User wants hands-on artifact-building, not generic instructions.
+- Keep moving when intent is clear.
+- The exact locate/work comment is critical.
+- Clickable ticket number/page access is important.
+- The map should combine 811 ticket polygons with utility layers, especially Vitruvi.
+- Union and Columbia counties are the service area to prioritize.
+- Do not preserve or publish old cookies/session tokens.
+
+## Next Session Resume
+
+Last verified state:
+
+- The Windows-side Outlook export helper is present at `tools/export_outlook_onecall.ps1`.
+- It was run successfully from Windows PowerShell with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\export_outlook_onecall.ps1 -DaysBack 4 -IncludeRead
+```
+
+- That run exported 121 ticket `.txt` files into `C:\Users\reedc\Downloads`.
+- The Kali server copy is staged at `/opt/onecall-locator-dashboard`.
+- The server inbox was synced with the exported files at `/opt/onecall-locator-dashboard/data/inbox`.
+- The server inbox contained 156 `Arkansas One Call Ticket *.txt` files after the copy.
+- Known good spot checks in the server inbox:
+  - `Arkansas One Call Ticket 260501-0303.txt`
+  - `Arkansas One Call Ticket 260430-1233.txt`
+
+Resume path:
+
+1. If new Outlook mail needs to be pulled, run the PowerShell export on the Windows machine, not on Kali.
+2. Copy the exported `Arkansas One Call Ticket *.txt` files into `/opt/onecall-locator-dashboard/data/inbox`.
+3. Refresh the dashboard so `/api/tickets` picks up the new files.
+
+Do not store Outlook or GeoCall credentials in files. Use the existing export helper and browser-session-based GeoCall flow only.
