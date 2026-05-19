@@ -201,6 +201,22 @@ function writeBooleanStorage(key, value) {
   localStorage.setItem(key, value ? "true" : "false");
 }
 
+function syncTicketSearchInputs() {
+  if (elements.search) elements.search.value = ticketSearch;
+  if (elements.ticketQuickSearch) elements.ticketQuickSearch.value = ticketSearch;
+  if (elements.mobileSearch) elements.mobileSearch.value = ticketSearch;
+  if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
+}
+
+function updateTicketSearch(value, options = {}) {
+  ticketSearch = String(value || "");
+  historicalDigTicketSearch = ticketSearch;
+  localStorage.setItem("ticketSearch", ticketSearch);
+  syncTicketSearchInputs();
+  if (options.renderSheet) renderSheetView();
+  render();
+}
+
 async function loadMapConfig() {
   try {
     const response = await fetch("/api/map-config");
@@ -488,9 +504,7 @@ function applyDashboardState(state) {
     if (typeof state.ticketSearch === "string") {
       ticketSearch = state.ticketSearch;
       localStorage.setItem("ticketSearch", ticketSearch);
-      elements.search.value = ticketSearch;
-      if (elements.mobileSearch) elements.mobileSearch.value = ticketSearch;
-      if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
+      syncTicketSearchInputs();
       historicalDigTicketSearch = ticketSearch;
     }
     if (state.locatorProfile && typeof state.locatorProfile === "object") {
@@ -835,6 +849,9 @@ const elements = {
   dueCount: document.querySelector("#dueCount"),
   countyCount: document.querySelector("#countyCount"),
   search: document.querySelector("#search"),
+  ticketQuickSearch: document.querySelector("#ticketQuickSearch"),
+  mapSearchForm: document.querySelector("#mapSearchForm"),
+  mapSearch: document.querySelector("#mapSearch"),
   countyFilter: document.querySelector("#countyFilter"),
   countyFilterSummary: document.querySelector("#countyFilterSummary"),
   countyAll: document.querySelector("#countyAll"),
@@ -951,9 +968,7 @@ elements.vetroSlOpacity.value = String(opacityToPercent(vetroSlOpacity));
 elements.vetroSlSize.value = String(vetroSlSize);
 elements.vetroSlLabels.checked = vetroSlLabels;
 elements.vetroSearch.value = vetroSearch;
-elements.search.value = ticketSearch;
-if (elements.mobileSearch) elements.mobileSearch.value = ticketSearch;
-if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
+syncTicketSearchInputs();
 elements.mapStyle.value = mapStyle;
 if (elements.mapDataOverlay) elements.mapDataOverlay.value = mapDataOverlay;
 elements.showHiddenToggle.checked = showHiddenTickets;
@@ -2535,13 +2550,22 @@ function searchable(ticket) {
     ticket.contractor,
     ticket.caller,
     ticket.contact,
+    ticket.done_for,
+    ticket.company_name,
+    ticket.contact_phone,
+    ticket.company_phone,
+    ticket.contact_email,
     ticket.place,
     ticket.county,
     ticket.address,
     ticket.street,
+    ticket.work_begin_date,
+    ticket.work_begin_time,
     ticket.nearest_intersection,
     ticket.location_information,
     ticket.work_type,
+    ticket.message_type,
+    ticket.raw_text,
     ticket.portal_ticket_id,
   ].join(" ").toLowerCase();
 }
@@ -2940,6 +2964,50 @@ function ticketCardHtml(ticket) {
       <p>${escapeHtml(ticket.contractor)} · Begin ${escapeHtml(ticket.work_begin_date)} ${escapeHtml(ticket.work_begin_time)}</p>
     </div>
   `;
+}
+
+function parseCoordinateSearch(value) {
+  const match = String(value || "").trim().match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!match) return null;
+  const first = Number(match[1]);
+  const second = Number(match[2]);
+  if (!Number.isFinite(first) || !Number.isFinite(second)) return null;
+  if (Math.abs(first) <= 90 && Math.abs(second) <= 180) return { latitude: first, longitude: second };
+  if (Math.abs(second) <= 90 && Math.abs(first) <= 180) return { latitude: second, longitude: first };
+  return null;
+}
+
+function showMapSearchResult(latitude, longitude, label) {
+  if (!map) return;
+  const latlng = [latitude, longitude];
+  map.flyTo(latlng, Math.max(map.getZoom(), 17), { duration: 0.45, easeLinearity: 0.3 });
+  L.popup({ closeButton: true, autoClose: true })
+    .setLatLng(latlng)
+    .setContent(`<strong>${escapeHtml(label || "Map search")}</strong><br>${latitude.toFixed(6)}, ${longitude.toFixed(6)}`)
+    .openOn(map);
+}
+
+async function runMapSearch() {
+  const query = elements.mapSearch?.value.trim() || "";
+  if (!query) return;
+  const coordinates = parseCoordinateSearch(query);
+  if (coordinates) {
+    showMapSearchResult(coordinates.latitude, coordinates.longitude, query);
+    return;
+  }
+  const localTicket = tickets.find((ticket) => searchable(ticket).includes(query.toLowerCase()) && (typeof ticket.latitude === "number" || ticket.polygon));
+  if (localTicket) {
+    selectTicket(localTicket.ticket_number, { focus: true });
+    return;
+  }
+  const response = await fetch(`/api/map-search?q=${encodeURIComponent(query)}`);
+  if (!response.ok) throw new Error(`Map search failed: ${response.status}`);
+  const payload = await response.json();
+  if (!payload.ok) {
+    window.alert(payload.message || "No map search result found.");
+    return;
+  }
+  showMapSearchResult(Number(payload.latitude), Number(payload.longitude), payload.name || query);
 }
 
 function groupActionButtonHtml(items = []) {
@@ -3628,22 +3696,16 @@ async function loadVetroControls() {
 }
 
 elements.search.addEventListener("input", () => {
-  ticketSearch = elements.search.value;
-  if (elements.mobileSearch) elements.mobileSearch.value = ticketSearch;
-  if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
-  historicalDigTicketSearch = ticketSearch;
-  localStorage.setItem("ticketSearch", ticketSearch);
-  render();
+  updateTicketSearch(elements.search.value);
 });
+if (elements.ticketQuickSearch) {
+  elements.ticketQuickSearch.addEventListener("input", () => {
+    updateTicketSearch(elements.ticketQuickSearch.value);
+  });
+}
 if (elements.sheetSearch) {
   elements.sheetSearch.addEventListener("input", () => {
-    ticketSearch = elements.sheetSearch.value;
-    historicalDigTicketSearch = ticketSearch;
-    elements.search.value = ticketSearch;
-    if (elements.mobileSearch) elements.mobileSearch.value = ticketSearch;
-    localStorage.setItem("ticketSearch", ticketSearch);
-    renderSheetView();
-    render();
+    updateTicketSearch(elements.sheetSearch.value, { renderSheet: true });
   });
 }
 elements.undoAction.addEventListener("click", undoLastChange);
@@ -3660,12 +3722,16 @@ if (elements.exportSheetCsv) elements.exportSheetCsv.addEventListener("click", e
 if (elements.mobileBackToDashboard) elements.mobileBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.mobileSearch) {
   elements.mobileSearch.addEventListener("input", () => {
-    ticketSearch = elements.mobileSearch.value;
-    elements.search.value = ticketSearch;
-    if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
-    historicalDigTicketSearch = ticketSearch;
-    localStorage.setItem("ticketSearch", ticketSearch);
-    render();
+    updateTicketSearch(elements.mobileSearch.value);
+  });
+}
+if (elements.mapSearchForm) {
+  elements.mapSearchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runMapSearch().catch((error) => {
+      console.error(error);
+      window.alert(error.message || "Map search failed.");
+    });
   });
 }
 if (elements.mobileRefresh) {

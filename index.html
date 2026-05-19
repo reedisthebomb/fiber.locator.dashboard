@@ -250,11 +250,18 @@
             </div>
           </details>
         </div>
+        <div class="ticket-quick-search">
+          <input id="ticketQuickSearch" type="search" placeholder="Search tickets, addresses, contractors">
+        </div>
         <div id="ticketList" class="ticket-list"></div>
       </section>
 
       <section class="map-wrap">
         <div id="map"></div>
+        <form id="mapSearchForm" class="map-search" role="search">
+          <input id="mapSearch" type="search" placeholder="Search map, address, intersection, coordinates">
+          <button type="submit">Go</button>
+        </form>
         <div id="mapLegend" class="priority-legend map-legend" aria-label="Ticket priority legend"></div>
         <button id="mapViewToggle" class="map-view-toggle" type="button" aria-label="Toggle map view" title="Toggle map view">Map</button>
         <button id="legendToggle" class="legend-toggle" type="button" aria-label="Show legend" title="Show legend">Legend</button>

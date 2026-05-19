@@ -22,6 +22,8 @@ from email.parser import BytesParser
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Iterable
+from urllib import request as urllib_request
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 
@@ -1077,6 +1079,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/map-config":
             self.send_map_config()
             return
+        if parsed.path == "/api/map-search":
+            query = parse_qs(parsed.query).get("q", [""])[0]
+            self.send_map_search(query)
+            return
         if parsed.path == "/api/attachments":
             ticket_number = parse_qs(parsed.query).get("ticket", [""])[0]
             self.send_attachments(ticket_number)
@@ -1561,6 +1567,46 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def send_map_config(self) -> None:
         self.send_json({
             "googleMapsTileApiKey": os.environ.get("GOOGLE_MAPS_TILE_API_KEY", ""),
+        })
+
+    def send_map_search(self, query: str) -> None:
+        query = query.strip()
+        if not query:
+            self.send_error(400, "Search text is required")
+            return
+        url = f"https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q={quote(query)}"
+        geocode_request = urllib_request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "fiber-locator-dashboard/1.0",
+            },
+        )
+        try:
+            with urllib_request.urlopen(geocode_request, timeout=12) as response:
+                results = json.loads(response.read().decode("utf-8", errors="replace"))
+        except HTTPError as exc:
+            self.send_error(exc.code, "Map search failed")
+            return
+        except (OSError, URLError, json.JSONDecodeError):
+            self.send_error(502, "Map search failed")
+            return
+        if not results:
+            self.send_json({"ok": False, "message": "No map search result found", "query": query})
+            return
+        result = results[0]
+        try:
+            latitude = float(result.get("lat"))
+            longitude = float(result.get("lon"))
+        except (TypeError, ValueError):
+            self.send_error(502, "Map search returned invalid coordinates")
+            return
+        self.send_json({
+            "ok": True,
+            "query": query,
+            "name": result.get("display_name", ""),
+            "latitude": latitude,
+            "longitude": longitude,
         })
 
     def send_portal_html(self, ticket_number: str) -> None:
