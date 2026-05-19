@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import html
 import json
 import hashlib
@@ -44,6 +45,8 @@ AUTH_SESSIONS: dict[str, dict[str, str]] = {}
 STATE_LOCK = threading.Lock()
 STATE_FILE: Path | None = None
 ATTACHMENT_LOCK = threading.Lock()
+VETRO_CACHE_LOCK = threading.Lock()
+VETRO_RESPONSE_CACHE: dict[str, object] = {"signature": None, "body": b"", "gzip_body": b""}
 
 
 @dataclass
@@ -601,6 +604,44 @@ def vetro_metadata(features: list[dict], sources: list[str]) -> dict:
         "layers": sorted(layers.values(), key=lambda item: (item["id"] == "Unknown", int(item["id"]) if item["id"].isdigit() else item["id"])),
         "facets": {key: dict(sorted(value.items())) for key, value in facets.items()},
     }
+
+
+def vetro_layer_signature(paths: list[Path]) -> tuple[tuple[str, int, int], ...]:
+    signature = []
+    for path in paths:
+        if not path.exists():
+            continue
+        stat = path.stat()
+        signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(signature)
+
+
+def build_vetro_payload(paths: list[Path]) -> dict:
+    features = []
+    sources = []
+    for path in paths:
+        if not path.exists():
+            continue
+        sources.append(str(path))
+        if path.suffix.lower() == ".geojson":
+            geojson = read_geojson(path)
+        else:
+            geojson = kml_to_geojson(path)
+        for feature in geojson["features"]:
+            features.append(normalize_vetro_feature(feature, path.name))
+    return {"type": "FeatureCollection", "features": features, "metadata": vetro_metadata(features, sources)}
+
+
+def get_vetro_response(paths: list[Path]) -> tuple[bytes, bytes]:
+    signature = vetro_layer_signature(paths)
+    with VETRO_CACHE_LOCK:
+        if VETRO_RESPONSE_CACHE["signature"] == signature:
+            return VETRO_RESPONSE_CACHE["body"], VETRO_RESPONSE_CACHE["gzip_body"]
+        payload = build_vetro_payload(paths)
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        gzip_body = gzip.compress(body, compresslevel=6)
+        VETRO_RESPONSE_CACHE.update({"signature": signature, "body": body, "gzip_body": gzip_body})
+        return body, gzip_body
 
 
 def text_from_email(path: Path) -> tuple[dict[str, str], str]:
@@ -1503,18 +1544,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not self.vetro_layers:
             self.send_error(404, "Vetro layers not found")
             return
-        features = []
-        sources = []
-        for path in self.vetro_layers:
-            if path.exists():
-                sources.append(str(path))
-                if path.suffix.lower() == ".geojson":
-                    geojson = read_geojson(path)
-                else:
-                    geojson = kml_to_geojson(path)
-                for feature in geojson["features"]:
-                    features.append(normalize_vetro_feature(feature, path.name))
-        self.send_json({"type": "FeatureCollection", "features": features, "metadata": vetro_metadata(features, sources)})
+        body, gzip_body = get_vetro_response(self.vetro_layers)
+        accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower()
+        response_body = gzip_body if accepts_gzip else body
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(response_body)))
+        if accepts_gzip:
+            self.send_header("Content-Encoding", "gzip")
+        self.end_headers()
+        self.wfile.write(response_body)
 
     def send_portal_html(self, ticket_number: str) -> None:
         details = load_geocall_details(self.downloads_dir, self.data_dir)

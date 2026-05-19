@@ -294,9 +294,15 @@ function applyEmployeeDashboardState() {
   refreshMapDataOverlay();
 }
 
+function updateDashboardMenuLabel() {
+  if (!elements.showDashboardView) return;
+  elements.showDashboardView.textContent = currentProfileMode === "admin" ? "Admin Dashboard" : "Dashboard";
+}
+
 function setProfileMode(mode) {
   const nextMode = mode === "employee" ? "employee" : "admin";
   if (nextMode === currentProfileMode) {
+    updateDashboardMenuLabel();
     setCurrentView("dashboard");
     return;
   }
@@ -319,6 +325,7 @@ function setProfileMode(mode) {
     }
   }
   renderProfile();
+  updateDashboardMenuLabel();
   setCurrentView("dashboard");
 }
 
@@ -918,6 +925,7 @@ elements.mapStyle.value = mapStyle;
 if (elements.mapDataOverlay) elements.mapDataOverlay.value = mapDataOverlay;
 elements.showHiddenToggle.checked = showHiddenTickets;
 elements.vetroToggle.checked = vetroVisible;
+updateDashboardMenuLabel();
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -1879,6 +1887,7 @@ async function setVetroVisible(visible) {
 
 async function ensureVetroLoaded() {
   if (vetroGeojson) return;
+  elements.vetroStatus.textContent = "Loading...";
   const response = await fetch("/api/vetro");
   if (!response.ok) throw new Error(`Vetro layer failed: ${response.status}`);
   vetroGeojson = await response.json();
