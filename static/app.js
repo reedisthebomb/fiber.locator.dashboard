@@ -11,6 +11,8 @@ let vetroLayer = null;
 let vetroLoaded = false;
 let initialTicketBoundsApplied = false;
 let currentView = "dashboard";
+let currentProfileMode = "admin";
+let adminPreviewState = null;
 let sheetExpandedTickets = new Set();
 let historicalDigTickets = null;
 let historicalDigTicketError = "";
@@ -188,8 +190,8 @@ function readObjectStorage(key) {
 function normalizeProfile(value) {
   const profile = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return {
-    name: String(profile.name ?? "").slice(0, 60),
-    role: String(profile.role ?? "Locator profile").slice(0, 80),
+    name: String(profile.name ?? "Reed").slice(0, 60),
+    role: String(profile.role ?? "Admin profile").slice(0, 80),
     photo: String(profile.photo || ""),
   };
 }
@@ -254,6 +256,70 @@ function cancelMoreMenuClose() {
   if (!moreMenuCloseTimer) return;
   window.clearTimeout(moreMenuCloseTimer);
   moreMenuCloseTimer = null;
+}
+
+function employeeDashboardState() {
+  return employeeDashboardConfig.enabled && employeeDashboardConfig.state && typeof employeeDashboardConfig.state === "object"
+    ? employeeDashboardConfig.state
+    : null;
+}
+
+function employeeFallbackState() {
+  return locatorDefaultConfig.enabled && locatorDefaultConfig.state && typeof locatorDefaultConfig.state === "object"
+    ? locatorDefaultConfig.state
+    : dashboardStatePayload();
+}
+
+function employeeWritableStatePayload() {
+  const baseState = employeeDashboardState() || employeeFallbackState() || {};
+  return {
+    ...cloneState(baseState),
+    vetroOpacity,
+    ticketOpacity,
+  };
+}
+
+function applyEmployeeDashboardState() {
+  applyDashboardState(employeeDashboardState() || employeeFallbackState());
+  if (map && pendingMapView) {
+    const center = pendingMapView.center;
+    if (Array.isArray(center) && center.length === 2) {
+      map.setView(center, pendingMapView.zoom || map.getZoom());
+    } else if (center && typeof center.lat === "number" && typeof center.lng === "number") {
+      map.setView([center.lat, center.lng], pendingMapView.zoom || map.getZoom());
+    }
+  }
+  render();
+  renderVetroLayer();
+  refreshMapDataOverlay();
+}
+
+function setProfileMode(mode) {
+  const nextMode = mode === "employee" ? "employee" : "admin";
+  if (nextMode === currentProfileMode) {
+    setCurrentView("dashboard");
+    return;
+  }
+  if (nextMode === "employee") {
+    adminPreviewState = dashboardStatePayload();
+    currentProfileMode = "employee";
+    document.body.classList.add("employee-mode");
+    if (elements.employeeBar) elements.employeeBar.hidden = false;
+    applyEmployeeDashboardState();
+  } else {
+    currentProfileMode = "admin";
+    document.body.classList.remove("employee-mode");
+    if (elements.employeeBar) elements.employeeBar.hidden = true;
+    if (adminPreviewState) {
+      applyDashboardState(adminPreviewState);
+      adminPreviewState = null;
+      render();
+      renderVetroLayer();
+      refreshMapDataOverlay();
+    }
+  }
+  renderProfile();
+  setCurrentView("dashboard");
 }
 
 function setCurrentView(view) {
@@ -573,6 +639,10 @@ function scheduleDashboardStateSave() {
 
 async function saveDashboardState() {
   if (!dashboardStateReady || dashboardStateHydrating) return;
+  if (currentProfileMode === "employee") {
+    await saveEmployeeDashboard({ enabled: true, state: employeeWritableStatePayload(), toast: false });
+    return;
+  }
   const response = await fetch("/api/state", {
     method: "POST",
     headers: {
@@ -584,6 +654,23 @@ async function saveDashboardState() {
   if (!response.ok) {
     throw new Error(`Failed to save dashboard state: ${response.status}`);
   }
+}
+
+async function saveEmployeeDashboard({ enabled = true, state = dashboardStatePayload(), toast = true } = {}) {
+  const response = await fetch("/api/employee-dashboard", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ enabled, state }),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to save employee dashboard: ${response.status}`);
+  }
+  const payload = await response.json();
+  employeeDashboardConfig = payload.employeeDashboard || { enabled, state };
+  if (toast) showSavedToast("Employee dashboard saved");
+  return employeeDashboardConfig;
 }
 
 function updateLocatorDefaultStatus() {
@@ -637,6 +724,7 @@ async function loadDashboardState() {
   if (!response.ok) return;
   const payload = await response.json();
   locatorDefaultConfig = payload.locatorDefault || { enabled: false, state: {}, saved_at: "", saved_by: "" };
+  employeeDashboardConfig = payload.employeeDashboard || { enabled: false, state: {}, saved_at: "", saved_by: "" };
   updateLocatorDefaultStatus();
   const defaultState = locatorDefaultConfig.enabled && locatorDefaultConfig.state ? locatorDefaultConfig.state : null;
   applyDashboardState(defaultState || payload.state || {});
@@ -700,6 +788,7 @@ let dashboardStateHydrating = false;
 let dashboardStateSaveTimer = null;
 let saveToastTimer = null;
 let locatorDefaultConfig = { enabled: false, state: {}, saved_at: "", saved_by: "" };
+let employeeDashboardConfig = { enabled: false, state: {}, saved_at: "", saved_by: "" };
 let locatorProfile = normalizeProfile(readObjectStorage(STORAGE_KEYS.profile));
 
 const elements = {
@@ -714,7 +803,9 @@ const elements = {
   countyClear: document.querySelector("#countyClear"),
   locatorDefaultToggle: document.querySelector("#locatorDefaultToggle"),
   saveLocatorDefault: document.querySelector("#saveLocatorDefault"),
+  saveEmployeeDashboard: document.querySelector("#saveEmployeeDashboard"),
   locatorDefaultStatus: document.querySelector("#locatorDefaultStatus"),
+  employeeBar: document.querySelector("#employeeBar"),
   saveToast: document.querySelector("#saveToast"),
   refresh: document.querySelector("#refresh"),
   vetroToggle: document.querySelector("#vetroToggle"),
@@ -769,6 +860,8 @@ const elements = {
   showSheetView: document.querySelector("#showSheetView"),
   showMobileView: document.querySelector("#showMobileView"),
   showDashboardView: document.querySelector("#showDashboardView"),
+  showEmployeeView: document.querySelector("#showEmployeeView"),
+  showAdminView: document.querySelector("#showAdminView"),
   sheetBackToDashboard: document.querySelector("#sheetBackToDashboard"),
   sheetView: document.querySelector("#sheetView"),
   sheetTableWrap: document.querySelector("#sheetTableWrap"),
@@ -983,7 +1076,7 @@ function labelWithCount(value, counts, labelFor = (item) => item) {
 }
 
 function profileInitials(name) {
-  const letters = String(name || "Fiber Locator")
+  const letters = String(name || "Reed")
     .trim()
     .split(/\s+/)
     .slice(0, 2)
@@ -1002,8 +1095,9 @@ function saveProfile() {
 
 function renderProfile() {
   const profile = normalizeProfile(locatorProfile);
-  const displayName = profile.name.trim() || "Fiber Locator";
-  const displayRole = profile.role.trim() || "Locator profile";
+  const employeeMode = currentProfileMode === "employee";
+  const displayName = employeeMode ? "Employee" : (profile.name.trim() || "Reed");
+  const displayRole = employeeMode ? "Employee dashboard" : (profile.role.trim() || "Admin profile");
   const initials = profileInitials(displayName);
   if (elements.profileName) elements.profileName.value = profile.name;
   if (elements.profileRole) elements.profileRole.value = profile.role;
@@ -3282,6 +3376,8 @@ elements.redoAction.addEventListener("click", redoLastChange);
 elements.showSheetView.addEventListener("click", () => setCurrentView("sheet"));
 if (elements.showMobileView) elements.showMobileView.addEventListener("click", () => setCurrentView("mobile"));
 elements.showDashboardView.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.showEmployeeView) elements.showEmployeeView.addEventListener("click", () => setProfileMode("employee"));
+if (elements.showAdminView) elements.showAdminView.addEventListener("click", () => setProfileMode("admin"));
 elements.sheetBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.mobileBackToDashboard) elements.mobileBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.mobileSearch) {
@@ -3390,6 +3486,16 @@ elements.saveLocatorDefault.addEventListener("click", async () => {
     console.error(error);
   }
 });
+if (elements.saveEmployeeDashboard) {
+  elements.saveEmployeeDashboard.addEventListener("click", async () => {
+    try {
+      await saveEmployeeDashboard({ enabled: true, state: dashboardStatePayload(), toast: true });
+    } catch (error) {
+      showSavedToast("Employee save failed");
+      console.error(error);
+    }
+  });
+}
 elements.refresh.addEventListener("click", refreshServerData);
 elements.showHiddenToggle.addEventListener("change", () => {
   rememberUndoState();

@@ -187,6 +187,11 @@ h1 {
   background: var(--panel-2);
 }
 
+body:not(.employee-mode) #showAdminView,
+body.employee-mode #showEmployeeView {
+  display: none;
+}
+
 .profile-menu {
   display: grid;
   gap: 8px;
@@ -1176,6 +1181,47 @@ select,
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
+}
+
+.employeebar {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border-bottom: 1px solid rgba(116, 166, 255, 0.24);
+  background: rgba(116, 166, 255, 0.14);
+}
+
+.employeebar[hidden] {
+  display: none;
+}
+
+.employeebar strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.employeebar span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+body.employee-mode .defaultbar {
+  display: none;
+}
+
+body.employee-mode .layer-drawers details:first-child .layerbar-controls > label,
+body.employee-mode .layer-drawers details:nth-child(2) .layerbar-controls > label {
+  display: none;
+}
+
+body.employee-mode .layer-drawers details:first-child .layerbar-controls > label.employee-allowed-control,
+body.employee-mode .layer-drawers details:nth-child(2) .layerbar-controls > label.employee-allowed-control {
+  display: grid;
+}
+
+body.employee-mode .layer-drawers details:nth-child(3) {
+  display: none;
 }
 
 .save-toast {

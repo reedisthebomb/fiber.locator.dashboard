@@ -30,6 +30,8 @@
             <button id="showSheetView" type="button">Dig Tickets</button>
             <button id="showMobileView" type="button">Fiber Locator Mobile</button>
             <button id="showDashboardView" type="button">Dashboard</button>
+            <button id="showEmployeeView" type="button">Employee Profile</button>
+            <button id="showAdminView" type="button">Admin Profile</button>
             <div class="profile-menu">
               <button id="openProfileEditor" class="profile-summary" type="button">
                 <img id="profileAvatar" alt="" hidden>
@@ -51,7 +53,12 @@
         <div class="defaultbar">
           <label><input id="locatorDefaultToggle" type="checkbox"> Locator Default View</label>
           <button id="saveLocatorDefault" type="button">Save current</button>
+          <button id="saveEmployeeDashboard" type="button">Save to employee dashboard</button>
           <span id="locatorDefaultStatus">Not saved</span>
+        </div>
+        <div id="employeeBar" class="employeebar" hidden>
+          <strong>Employee dashboard</strong>
+          <span>Vetro filters are controlled by the admin profile.</span>
         </div>
         <div id="saveToast" class="save-toast" role="status" aria-live="polite" hidden>Saved</div>
         <div class="toolbar">
@@ -200,7 +207,7 @@
                 Color
                 <input id="vetroColor" type="color" value="#00a5ff">
               </label>
-              <label>
+              <label class="employee-allowed-control">
                 Opacity %
                 <input id="vetroOpacity" type="number" min="0" max="100" step="1" value="85">
               </label>
@@ -215,7 +222,7 @@
                 Fill %
                 <input id="polygonOpacity" type="number" min="0" max="100" step="1" value="14">
               </label>
-              <label>
+              <label class="employee-allowed-control">
                 Ticket opacity %
                 <input id="ticketOpacity" type="number" min="0" max="100" step="1" value="100">
               </label>

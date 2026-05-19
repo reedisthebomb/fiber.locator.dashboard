@@ -26,6 +26,7 @@ The dashboard supports:
 - hidden tickets, action status, ticket descriptions, selected ticket, map position, profile, and layer settings persisted by the server
 - Dig Tickets sheet view with current-ticket search and historical-ticket search
 - mobile view with synced search and ticket review controls
+- admin-controlled employee dashboard profile with locked Vetro layer/filter controls
 
 The old Vitruvi overlay has been removed from the app UI and server API.
 
@@ -46,8 +47,22 @@ Persisted state includes:
 - map style, map opacity, ticket opacity, and polygon styling
 - profile name, role, and avatar data
 - Locator Default View when enabled
+- Employee Dashboard snapshot when the admin uses `Save to employee dashboard`
 
 When multiple devices use the same server login, server-backed state is the source of truth. Avoid adding new browser-only settings unless they are explicitly temporary.
+
+## Admin And Employee Profiles
+
+The current Reed profile is the admin profile. Admin can tune all Vetro layers, Vetro filters, ticket/map settings, and default views.
+
+The dot menu includes `Employee Profile` for previewing the employee dashboard. In employee mode:
+
+- Vetro layer/filter controls are hidden and controlled by the admin snapshot.
+- The Map controls are hidden.
+- The employee can still use tickets, Dig Tickets, mobile view, ticket actions, notes, and normal locating workflow.
+- The only layer-style controls left visible are whole Vetro opacity and whole ticket opacity.
+
+Use `Save to employee dashboard` from the admin profile after setting the desired Vetro layers, filters, map view, search, and ticket display. The app saves that snapshot to the server under `employee_dashboard` in `data/dashboard_state.json`, then shows a short confirmation message.
 
 ## Ticket And History Data
 

@@ -251,6 +251,23 @@ def get_locator_default_state() -> dict:
         }
 
 
+def get_employee_dashboard_state() -> dict:
+    if not STATE_FILE:
+        return {"enabled": False, "state": {}}
+    with STATE_LOCK:
+        payload = load_dashboard_state(STATE_FILE)
+        employee_state = payload.get("employee_dashboard", {})
+        if not isinstance(employee_state, dict):
+            return {"enabled": False, "state": {}}
+        state = employee_state.get("state", {})
+        return {
+            "enabled": bool(employee_state.get("enabled", False)),
+            "state": state if isinstance(state, dict) else {},
+            "saved_at": str(employee_state.get("saved_at") or ""),
+            "saved_by": str(employee_state.get("saved_by") or ""),
+        }
+
+
 def set_dashboard_user_state(username: str, state: dict) -> dict:
     if not STATE_FILE:
         return {}
@@ -281,6 +298,29 @@ def set_locator_default_state(username: str, payload_update: dict) -> dict:
             "saved_by": username,
         }
         payload["locator_default"] = saved
+        save_dashboard_state(STATE_FILE, payload)
+        return saved
+
+
+def set_employee_dashboard_state(username: str, payload_update: dict) -> dict:
+    if not STATE_FILE:
+        return {"enabled": False, "state": {}}
+    with STATE_LOCK:
+        payload = load_dashboard_state(STATE_FILE)
+        current = payload.get("employee_dashboard", {})
+        if not isinstance(current, dict):
+            current = {}
+        enabled = bool(payload_update.get("enabled", current.get("enabled", False)))
+        state = payload_update.get("state", current.get("state", {}))
+        if not isinstance(state, dict):
+            state = {}
+        saved = {
+            "enabled": enabled,
+            "state": state,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "saved_by": username,
+        }
+        payload["employee_dashboard"] = saved
         save_dashboard_state(STATE_FILE, payload)
         return saved
 
@@ -990,6 +1030,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/state":
             self.send_state()
             return
+        if parsed.path == "/api/employee-dashboard":
+            self.send_employee_dashboard()
+            return
         if parsed.path == "/api/attachments":
             ticket_number = parse_qs(parsed.query).get("ticket", [""])[0]
             self.send_attachments(ticket_number)
@@ -1031,6 +1074,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/locator-default":
             self.update_locator_default()
+            return
+        if parsed.path == "/api/employee-dashboard":
+            self.update_employee_dashboard()
             return
         if parsed.path == "/api/attachments":
             self.upload_attachment()
@@ -1119,7 +1165,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def send_state(self) -> None:
         username = self.current_username()
         state = get_dashboard_user_state(username) if username else {}
-        self.send_json({"ok": True, "username": username, "state": state, "locatorDefault": get_locator_default_state()})
+        self.send_json({
+            "ok": True,
+            "username": username,
+            "state": state,
+            "locatorDefault": get_locator_default_state(),
+            "employeeDashboard": get_employee_dashboard_state(),
+        })
+
+    def send_employee_dashboard(self) -> None:
+        self.send_json({"ok": True, "employeeDashboard": get_employee_dashboard_state()})
 
     def update_state(self) -> None:
         username = self.current_username()
@@ -1166,6 +1221,29 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             data = {}
         saved = set_locator_default_state(username, data)
         self.send_json({"ok": True, "username": username, "locatorDefault": saved})
+
+    def update_employee_dashboard(self) -> None:
+        username = self.current_username()
+        if not username:
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Login required"}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(payload) if payload else {}
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Invalid JSON"}).encode("utf-8"))
+            return
+        if not isinstance(data, dict):
+            data = {}
+        saved = set_employee_dashboard_state(username, data)
+        self.send_json({"ok": True, "username": username, "employeeDashboard": saved})
 
     def send_attachments(self, ticket_number: str) -> None:
         ticket_number = str(ticket_number or "").strip()
