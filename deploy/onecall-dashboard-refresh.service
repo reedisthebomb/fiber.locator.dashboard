@@ -1,0 +1,11 @@
+[Unit]
+Description=Pull Outlook One Call tickets into dashboard inbox
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/onecall-locator-dashboard
+EnvironmentFile=-/opt/onecall-locator-dashboard/.env
+ExecStart=/usr/bin/python3 /opt/onecall-locator-dashboard/tools/pull_outlook_graph_tickets.py --output-dir /opt/onecall-locator-dashboard/data/inbox
+ExecStart=/usr/bin/python3 /opt/onecall-locator-dashboard/tools/refresh_onecall_server.py --downloads-dir /opt/onecall-locator-dashboard/data/inbox --data-dir /opt/onecall-locator-dashboard/data --inbox-dir /opt/onecall-locator-dashboard/data/inbox

@@ -1,13 +1,15 @@
 [Unit]
 Description=One Call Locator Dashboard
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/onecall-locator-dashboard
+EnvironmentFile=-/opt/onecall-locator-dashboard/.env
 ExecStart=/usr/bin/python3 /opt/onecall-locator-dashboard/server.py --host 0.0.0.0 --port 8765
-Restart=always
-RestartSec=3
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

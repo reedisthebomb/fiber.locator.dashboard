@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-This project is the operator dashboard for Arkansas One Call work. It turns exported ticket emails, GeoCall printable pages, GeoCall polygons, Vitruvi layers, and Vetro fiber layers into one working map and ticket review surface.
+This project is the operator dashboard for Arkansas One Call work. It turns exported ticket emails, GeoCall printable pages, GeoCall polygons, and Vetro fiber layers into one working map and ticket review surface.
 
 The goal is practical, not decorative:
 
@@ -59,7 +59,7 @@ Default port:
 2. `tools/export_outlook_onecall.ps1` exports those messages into ticket text files.
 3. The dashboard server reads those exports from the configured inbox directory.
 4. GeoCall printable pages and polygons are fetched or cached separately.
-5. The dashboard combines tickets, polygons, and layer data into one interface.
+5. The dashboard combines tickets, polygons, Vetro fiber data, and public map overlays into one interface.
 6. The refresh button on the page triggers the Outlook export plus server sync.
 
 ## Ticket Sources
@@ -82,12 +82,15 @@ The parser extracts:
 - message type
 - prepared date and time
 - contractor, caller, contact
-- address and intersection fields
-- county and place
+- phone and email
+- work begin date and time
+- county, place, street, intersection
 - latitude and longitude
 - `LOCATION INFORMATION`
-- work type and work description
-- extent, white paint, directional boring
+- work type
+- extent
+- directional boring
+- white paint
 - notified utilities
 - raw email text
 
@@ -112,10 +115,6 @@ The current UI exposes:
 ### One Call Tickets
 
 Tickets appear as map points and polygons. The point and polygon styles can be adjusted separately, and the page can hide tickets individually or by group.
-
-### Vitruvi
-
-Vitruvi is a separate overlay with category and status filtering. The layer can be colored by category, status, or one color, and its opacity is adjustable.
 
 ### Vetro
 
@@ -153,7 +152,6 @@ Persisted state includes:
 - county filter
 - selected ticket
 - map position and zoom
-- Vitruvi visibility and filters
 - Vetro visibility and filters
 - Vetro layer styling overrides
 - Vetro layer aliases and notes
@@ -224,7 +222,8 @@ When making future changes, keep these invariants intact:
 - the refresh button must keep the Outlook export flow
 - no cookies or session tokens should be saved in the repo
 - the dashboard should stay useful on the actual server, not only in one browser
+- the Vitruvi overlay should stay removed unless the user explicitly asks to rebuild it
 
 ## Publishing Status
 
-This private repository is a documentation-first mirror of the working dashboard project. Sensitive live ticket payloads are intentionally kept out of GitHub.
+This private repository is the main project brain. Update it when app code, deployment process, ticket ingestion, or operational rules change.

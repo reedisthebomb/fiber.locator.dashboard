@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fiber Locator</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260515191000">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="/static/assets/tcw-logo.png" alt="TCW">
+        <div>
+          <h1>TCW Fiber Locating</h1>
+        </div>
+        <p id="sourcePath"></p>
+      </div>
+      <div class="metrics">
+        <div><span id="totalCount">0</span><small>Tickets</small></div>
+        <div><span id="dueCount">0</span><small>Due Soon</small></div>
+        <div><span id="countyCount">0</span><small>Counties</small></div>
+      </div>
+      <div class="header-actions">
+        <button id="undoAction" class="history-button" type="button" title="Undo" disabled>Undo</button>
+        <button id="redoAction" class="history-button" type="button" title="Redo" disabled>Redo</button>
+        <details class="more-menu">
+          <summary aria-label="More options">...</summary>
+          <div class="more-menu-panel">
+            <button id="showSheetView" type="button">Dig Tickets</button>
+            <button id="showMobileView" type="button">Fiber Locator Mobile</button>
+            <button id="showDashboardView" type="button">Dashboard</button>
+            <div class="profile-menu">
+              <button id="openProfileEditor" class="profile-summary" type="button">
+                <img id="profileAvatar" alt="" hidden>
+                <span id="profileInitials">FL</span>
+                <div>
+                  <strong id="profileNameDisplay">Fiber Locator</strong>
+                  <small id="profileRoleDisplay">Locator profile</small>
+                </div>
+              </button>
+            </div>
+          </div>
+        </details>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel list-panel">
+        <button id="sidebarCollapse" class="sidebar-collapse" type="button" title="Collapse ticket panel" aria-label="Collapse ticket panel">‹</button>
+        <div class="defaultbar">
+          <label><input id="locatorDefaultToggle" type="checkbox"> Locator Default View</label>
+          <button id="saveLocatorDefault" type="button">Save current</button>
+          <span id="locatorDefaultStatus">Not saved</span>
+        </div>
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Search ticket, contractor, road, county">
+          <details class="county-filter-menu">
+            <summary id="countyFilterSummary">All counties</summary>
+            <div class="county-filter-panel">
+              <div id="countyFilter" class="check-list county-check-list"></div>
+              <div class="filter-buttons">
+                <button id="countyAll" type="button">All</button>
+                <button id="countyClear" type="button">Clear</button>
+              </div>
+            </div>
+          </details>
+          <button id="refresh">Refresh</button>
+        </div>
+        <div class="layer-drawers">
+          <details>
+            <summary><span>Vetro</span><span id="vetroStatus">Off</span></summary>
+            <div class="layerbar layerbar-controls">
+              <label><input id="vetroToggle" type="checkbox"> Show Vetro layer</label>
+              <label>
+                Search
+                <input id="vetroSearch" type="search" placeholder="ID, address, note, Vetro ID">
+              </label>
+              <label>
+                Layer
+                <span class="multi-filter">
+                  <span id="vetroLayerFilter" class="check-list vetro-layer-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroLayerAll" type="button">All</button>
+                    <button id="vetroLayerClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label>
+                Plan
+                <span class="multi-filter">
+                  <span id="vetroPlanFilter" class="check-list check-list-tall facet-check-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroPlanAll" type="button">All</button>
+                    <button id="vetroPlanClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label>
+                Status
+                <span class="multi-filter">
+                  <span id="vetroStatusFilter" class="check-list facet-check-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroStatusAll" type="button">All</button>
+                    <button id="vetroStatusClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label>
+                Fiber
+                <span class="multi-filter">
+                  <span id="vetroFiberFilter" class="check-list facet-check-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroFiberAll" type="button">All</button>
+                    <button id="vetroFiberClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label>
+                Placement
+                <span class="multi-filter">
+                  <span id="vetroPlacementFilter" class="check-list facet-check-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroPlacementAll" type="button">All</button>
+                    <button id="vetroPlacementClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label>
+                Route
+                <span class="multi-filter">
+                  <span id="vetroRouteFilter" class="check-list facet-check-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroRouteAll" type="button">All</button>
+                    <button id="vetroRouteClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label>
+                Point type
+                <span class="multi-filter">
+                  <span id="vetroPointFilter" class="check-list facet-check-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroPointAll" type="button">All</button>
+                    <button id="vetroPointClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label>
+                Geometry
+                <span class="multi-filter">
+                  <span id="vetroGeometryFilter" class="check-list facet-check-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroGeometryAll" type="button">All</button>
+                    <button id="vetroGeometryClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label>
+                Build
+                <span class="multi-filter">
+                  <span id="vetroBuildFilter" class="check-list facet-check-list"></span>
+                  <span class="filter-buttons">
+                    <button id="vetroBuildAll" type="button">All</button>
+                    <button id="vetroBuildClear" type="button">Clear</button>
+                  </span>
+                </span>
+              </label>
+              <label><input id="vetroSlToggle" type="checkbox"> Show SL service locations</label>
+              <label>
+                SL shape
+                <select id="vetroSlShape">
+                  <option value="circle">Circle</option>
+                  <option value="square">Square</option>
+                  <option value="rectangle">Rectangle</option>
+                  <option value="diamond">Diamond</option>
+                  <option value="pin">Pin</option>
+                  <option value="house">House</option>
+                </select>
+              </label>
+              <label>
+                SL color
+                <input id="vetroSlColor" type="color" value="#e7298a">
+              </label>
+              <label>
+                SL outline
+                <input id="vetroSlOutlineColor" type="color" value="#111827">
+              </label>
+              <label>
+                SL opacity %
+                <input id="vetroSlOpacity" type="number" min="0" max="100" step="1" value="100">
+              </label>
+              <label>
+                SL size
+                <input id="vetroSlSize" type="number" min="8" max="22" step="1" value="13">
+              </label>
+              <label><input id="vetroSlLabels" type="checkbox"> Show SL labels</label>
+              <label>
+                Color
+                <input id="vetroColor" type="color" value="#00a5ff">
+              </label>
+              <label>
+                Opacity %
+                <input id="vetroOpacity" type="number" min="0" max="100" step="1" value="85">
+              </label>
+            </div>
+          </details>
+          <details>
+            <summary><span>Tickets</span></summary>
+            <div class="layerbar layerbar-controls">
+              <input id="polygonColor" type="hidden" value="#1f7a4d">
+              <label><input id="showHiddenToggle" type="checkbox"> Show hidden</label>
+              <label>
+                Fill %
+                <input id="polygonOpacity" type="number" min="0" max="100" step="1" value="14">
+              </label>
+              <label>
+                Ticket opacity %
+                <input id="ticketOpacity" type="number" min="0" max="100" step="1" value="100">
+              </label>
+            </div>
+          </details>
+          <details>
+            <summary><span>Map</span></summary>
+            <div class="layerbar layerbar-controls">
+              <label>
+                Base map
+                <select id="mapStyle">
+                  <option value="standard">Standard streets</option>
+                  <option value="contrast">High contrast streets</option>
+                  <option value="detailed">Detailed streets + buildings</option>
+                  <option value="light">Light streets</option>
+                  <option value="dark">Dark streets</option>
+                  <option value="terrain">Terrain</option>
+                  <option value="satellite">Satellite</option>
+                  <option value="hybrid">Hybrid imagery + labels</option>
+                </select>
+              </label>
+              <label>
+                Opacity %
+                <input id="mapOpacity" type="number" min="0" max="100" step="1" value="100">
+              </label>
+            </div>
+          </details>
+        </div>
+        <div id="ticketList" class="ticket-list"></div>
+      </section>
+
+      <section class="map-wrap">
+        <div id="map"></div>
+        <div id="mapLegend" class="priority-legend map-legend" aria-label="Ticket priority legend"></div>
+        <button id="legendToggle" class="legend-toggle" type="button" aria-label="Show legend" title="Show legend">Legend</button>
+        <aside id="detail" class="detail">
+          <div class="empty">Select a ticket</div>
+        </aside>
+      </section>
+    </main>
+    <section id="sheetView" class="sheet-view" hidden>
+      <div class="sheet-toolbar">
+        <div>
+          <h2>Dig Tickets</h2>
+          <p>Editable action and description sheet, sorted by due date with latest dates at the top.</p>
+        </div>
+        <label class="sheet-search">
+          <span>Search dig tickets</span>
+          <input id="sheetSearch" type="search" placeholder="Search current and historical tickets, address, county, excavator">
+        </label>
+        <div id="sheetLegend" class="priority-legend sheet-legend" aria-label="Ticket priority legend"></div>
+        <button id="sheetBackToDashboard" type="button">Dashboard</button>
+      </div>
+      <div id="sheetTableWrap" class="sheet-table-wrap"></div>
+    </section>
+
+    <section id="mobileView" class="mobile-view" hidden>
+      <header class="mobile-header">
+        <img src="/static/assets/tcw-logo.png" alt="TCW">
+        <div>
+          <h2>Fiber Locator</h2>
+          <p id="mobileSummary">0 active tickets</p>
+        </div>
+        <div class="mobile-profile-pill">
+          <img id="mobileProfileAvatar" alt="" hidden>
+          <span id="mobileProfileInitials">FL</span>
+        </div>
+        <button id="mobileBackToDashboard" type="button">Dashboard</button>
+      </header>
+      <div class="mobile-searchbar">
+        <input id="mobileSearch" type="search" placeholder="Search ticket, road, county, contractor">
+        <button id="mobileRefresh" type="button">Refresh</button>
+      </div>
+      <div class="mobile-shell">
+        <div id="mobileTicketList" class="mobile-ticket-list"></div>
+        <article id="mobileTicketDetail" class="mobile-ticket-detail">
+          <div class="mobile-empty">Select a ticket</div>
+        </article>
+      </div>
+    </section>
+
+    <div id="profileModal" class="profile-modal" hidden>
+      <div class="profile-modal-card" role="dialog" aria-modal="true" aria-labelledby="profileModalTitle">
+        <div class="profile-modal-head">
+          <h2 id="profileModalTitle">Profile</h2>
+          <button id="closeProfileEditor" type="button" aria-label="Close profile">×</button>
+        </div>
+        <div class="profile-editor-preview">
+          <img id="profileEditorAvatar" alt="" hidden>
+          <span id="profileEditorInitials">FL</span>
+        </div>
+        <label>
+          Name
+          <input id="profileName" type="text" maxlength="60" placeholder="Name">
+        </label>
+        <label>
+          Role / note
+          <input id="profileRole" type="text" maxlength="80" placeholder="Locator profile">
+        </label>
+        <label>
+          Profile picture
+          <input id="profilePhoto" type="file" accept="image/*">
+        </label>
+        <p>Photos are centered, cropped square, and shown inside the round profile icon.</p>
+        <div class="profile-modal-actions">
+          <button id="clearProfilePhoto" type="button">Clear photo</button>
+          <button id="saveProfileEditor" type="button">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="/static/app.js?v=20260515191000"></script>
+  </body>
+</html>

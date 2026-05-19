@@ -1,0 +1,18 @@
+# Copy to /opt/onecall-locator-dashboard/.env on the cloud server.
+# Do not commit the real .env file with client IDs or token paths.
+
+# Microsoft Entra app registration application/client ID.
+# The app must allow public client flows and include delegated Microsoft Graph permissions:
+# Mail.Read, User.Read, offline_access.
+OUTLOOK_GRAPH_CLIENT_ID=
+
+# Use consumers for a personal Outlook/Hotmail account, organizations for work/school,
+# or common if you need either.
+OUTLOOK_GRAPH_TENANT=consumers
+
+# Pull read and unread ticket emails so tickets are not missed if the mailbox is opened elsewhere.
+OUTLOOK_INCLUDE_READ=1
+OUTLOOK_DAYS_BACK=7
+OUTLOOK_GRAPH_FOLDER=inbox
+OUTLOOK_TICKET_OUTPUT_DIR=/opt/onecall-locator-dashboard/data/inbox
+OUTLOOK_GRAPH_TOKEN_CACHE=/opt/onecall-locator-dashboard/data/private/outlook_graph_token.json

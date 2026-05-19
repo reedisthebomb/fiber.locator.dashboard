@@ -7,15 +7,17 @@ This project combines:
 - Outlook ticket exports
 - GeoCall printable pages and polygons
 - Vetro fiber layers
-- Vitruvi utility layers
 - ticket hiding, filtering, and review state
 - server-side Locator Default View persistence
+- searchable active and historical dig-ticket views
 
 ## Project Overview
 
 The full write-up is in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md).
 
 That file is the best starting point for the architecture, workflow, persistence model, deployment notes, and the current project state.
+
+Daily operating notes are in [OPERATIONS.md](OPERATIONS.md). Treat that file and this private repository as the main brain for the project going forward.
 
 ## Run Locally
 
@@ -31,18 +33,24 @@ http://127.0.0.1:8765
 
 Dashboard login is currently disabled by request.
 
-## Home Server
+## Live Target
 
-Deployment notes:
+Latest known live cloud dashboard:
+
+```text
+http://5.78.214.184:8765/
+```
+
+Older home-server deployment notes are still retained here:
 
 ```text
 deploy/HOME_SERVER.md
 ```
 
-Current home-server target:
+Current Home Assistant endpoint:
 
 ```text
-192.168.50.231
+http://192.168.50.183:8123
 ```
 
 ## Ticket Export Flow
@@ -85,12 +93,13 @@ python3 tools/fetch_geocall_details_from_fetch.py --fetch-file "path-to-fetch-fi
 
 ## Map Layers
 
-- `Vitruvi layer` supports category and status filtering, single-color mode, and opacity control.
 - `Vetro layer` supports layer toggles, search, plan/build/placement/status/geometry/fiber filters, and independent styling.
 - Vetro layer controls include color, opacity, size, point shape, line style, custom layer name, and layer note.
 - Vetro point shapes include circle, square, rectangle, diamond, pin, and house.
 - `SL-` service-location records have dedicated controls and styling.
 - Ticket polygons and map markers are styled separately from the ticket list.
+
+The old Vitruvi overlay has been removed completely from the app surface and server API. Keep future layer work focused on One Call tickets, GeoCall polygons, Vetro fiber data, and optional public map overlays.
 
 ## Refresh
 
@@ -117,4 +126,5 @@ python3 tools/update_vetro_export.py --plan-id 462
 - The app is designed to be usable from multiple devices with the same login.
 - Hidden tickets, layer selections, and map state persist.
 - Locator Default View can save the current server-wide default view for every device.
+- This private GitHub repository should be updated after each meaningful project change.
 - The project is intended to stay private until you decide otherwise.

@@ -1,15 +1,13 @@
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.DS_Store
-Thumbs.db
-.env
-.env.*
-*.log
+*.py[cod]
+*.bak-*
 *.tmp
-*.swp
-*.bak
-/data/inbox/
-/data/layers/vetro_geojson_layers/
-/data/dashboard_auth.json
+.DS_Store
+
+# Runtime/cached data can include tickets, cookies, auth, TLS keys, or customer data.
+data/
+
+# Local editor/system files.
+.vscode/
+.idea/
+Thumbs.db

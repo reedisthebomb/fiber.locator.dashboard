@@ -1,0 +1,12 @@
+[Unit]
+Description=Run One Call ticket Outlook refresh every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=1min
+Persistent=true
+Unit=onecall-dashboard-refresh.service
+
+[Install]
+WantedBy=timers.target

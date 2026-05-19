@@ -1,6 +1,6 @@
 # One Call Locator Dashboard Handoff
 
-Updated: 2026-05-13
+Updated: 2026-05-19
 
 Latest detailed continuation file:
 
@@ -10,7 +10,7 @@ PROJECT_HANDOFF_2026-05-13.md
 
 ## Purpose
 
-This project is the working dashboard for Arkansas One Call locating. It turns Outlook ticket exports, GeoCall pages and polygons, Vitruvi layers, and Vetro fiber layers into one operational map and ticket workflow.
+This project is the working dashboard for Arkansas One Call locating. It turns Outlook ticket exports, GeoCall pages and polygons, Vetro fiber layers, and public map overlays into one operational map and ticket workflow.
 
 ## Project Roots
 
@@ -30,6 +30,12 @@ Home server address:
 192.168.50.231
 ```
 
+Current Home Assistant endpoint:
+
+```text
+http://192.168.50.183:8123
+```
+
 Local run:
 
 ```sh
@@ -45,7 +51,7 @@ The dashboard now:
 - syncs them into the server inbox
 - reads the server inbox and builds the ticket list
 - loads GeoCall printable pages and polygons when cached
-- overlays Vitruvi and Vetro layers
+- overlays Vetro layers and optional public address/parcel map data
 - preserves hidden tickets, filters, and map state
 - supports a server-side Locator Default View that loads across devices
 - allows Vetro per-layer names, notes, colors, opacity, size, line style, and marker shape
@@ -59,7 +65,7 @@ Dashboard login is currently disabled by request. The default state user is `def
 Home Assistant `dashboard-home` has a One Call Locator iframe pointed at:
 
 ```text
-https://192.168.50.231:8765/
+http://192.168.50.231:8765/
 ```
 
 ## Important Files
@@ -69,7 +75,7 @@ https://192.168.50.231:8765/
   - GeoCall detail serving
   - refresh endpoint
   - per-user dashboard state API
-  - auth and HTTPS support
+  - dashboard serving and state persistence
 
 - `static/app.js`
   - ticket list and ticket details
@@ -124,12 +130,6 @@ GeoCall detail data provides:
 - printable page HTML
 - polygon geometry
 
-Vitruvi provides:
-
-- category-based features
-- point and line features
-- color and opacity controls
-
 Vetro provides:
 
 - layer-level filtering
@@ -147,7 +147,6 @@ Persisted items include:
 - county filter
 - selected ticket
 - map center and zoom
-- Vitruvi visibility and filters
 - Vetro visibility and filters
 - Vetro layer styling overrides
 - Vetro layer aliases and notes
@@ -188,7 +187,8 @@ The project is in a working state on the home server. The current outstanding ga
 - Keep moving when intent is clear.
 - The exact locate/work comment is critical.
 - Clickable ticket number/page access is important.
-- The map should combine 811 ticket polygons with utility layers, especially Vitruvi.
+- The map should combine 811 ticket polygons with Vetro fiber layers and optional public map overlays.
+- The old Vitruvi overlay is intentionally removed from the current app and should not be restored without a direct user request.
 - Union and Columbia counties are the service area to prioritize.
 - Do not preserve or publish old cookies/session tokens.
 
