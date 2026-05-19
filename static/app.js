@@ -309,6 +309,8 @@ function employeeWritableStatePayload() {
     ...cloneState(baseState),
     vetroOpacity,
     ticketOpacity,
+    mapStyle,
+    mapDataOverlay,
   };
 }
 

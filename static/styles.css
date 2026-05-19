@@ -1220,10 +1220,6 @@ body.employee-mode .layer-drawers details:nth-child(2) .layerbar-controls > labe
   display: grid;
 }
 
-body.employee-mode .layer-drawers details:nth-child(3) {
-  display: none;
-}
-
 .save-toast {
   position: fixed;
   top: 82px;

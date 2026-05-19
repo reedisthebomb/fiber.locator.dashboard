@@ -58,7 +58,7 @@ The current Reed profile is the admin profile. Admin can tune all Vetro layers, 
 The dot menu includes `Employee Profile` for previewing the employee dashboard. In employee mode:
 
 - Vetro layer/filter controls are hidden and controlled by the admin snapshot.
-- The Map controls are hidden.
+- The Map controls remain available so the employee can choose the base map style.
 - The employee can still use tickets, Dig Tickets, mobile view, ticket actions, notes, and normal locating workflow.
 - The only layer-style controls left visible are whole Vetro opacity and whole ticket opacity.
 
