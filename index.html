@@ -247,10 +247,6 @@
                   <option value="google-hybrid">Google satellite + roads</option>
                 </select>
               </label>
-              <label>
-                Opacity %
-                <input id="mapOpacity" type="number" min="0" max="100" step="1" value="100">
-              </label>
             </div>
           </details>
         </div>
@@ -260,6 +256,7 @@
       <section class="map-wrap">
         <div id="map"></div>
         <div id="mapLegend" class="priority-legend map-legend" aria-label="Ticket priority legend"></div>
+        <button id="mapViewToggle" class="map-view-toggle" type="button" aria-label="Toggle map view" title="Toggle map view">Map</button>
         <button id="legendToggle" class="legend-toggle" type="button" aria-label="Show legend" title="Show legend">Legend</button>
         <aside id="detail" class="detail">
           <div class="empty">Select a ticket</div>
@@ -277,6 +274,11 @@
           <input id="sheetSearch" type="search" placeholder="Search current and historical tickets, address, county, excavator">
         </label>
         <div id="sheetLegend" class="priority-legend sheet-legend" aria-label="Ticket priority legend"></div>
+        <div class="sheet-export-actions" aria-label="Export dig tickets">
+          <button id="exportSheetPdf" type="button">PDF</button>
+          <button id="exportSheetExcel" type="button">Excel</button>
+          <button id="exportSheetCsv" type="button">Google Sheets</button>
+        </div>
         <button id="sheetBackToDashboard" type="button">Dashboard</button>
       </div>
       <div id="sheetTableWrap" class="sheet-table-wrap"></div>

@@ -445,7 +445,6 @@ function dashboardStatePayload() {
     polygonColor,
     polygonOpacity,
     ticketOpacity,
-    mapOpacity,
     mapStyle,
     mapDataOverlay,
     sidebarCollapsed,
@@ -636,11 +635,6 @@ function applyDashboardState(state) {
       localStorage.setItem(STORAGE_KEYS.ticketOpacity, String(ticketOpacity));
       elements.ticketOpacity.value = String(opacityToPercent(ticketOpacity));
     }
-    if (typeof state.mapOpacity === "number") {
-      mapOpacity = state.mapOpacity;
-      localStorage.setItem("mapOpacity", String(mapOpacity));
-      elements.mapOpacity.value = String(opacityToPercent(mapOpacity));
-    }
     if (typeof state.mapStyle === "string" && MAP_TILE_STYLES[state.mapStyle]) {
       mapStyle = state.mapStyle;
       localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
@@ -778,10 +772,12 @@ let polygonColor = localStorage.getItem("polygonColor") || "#1f7a4d";
 let polygonOpacity = Number(localStorage.getItem("polygonOpacity") || "0.14");
 let vetroColor = localStorage.getItem("vetroColor") || "#00a5ff";
 let vetroOpacity = Number(localStorage.getItem("vetroOpacity") || "0.85");
-let mapOpacity = Number(localStorage.getItem("mapOpacity") || "1");
+let mapOpacity = 1;
+localStorage.removeItem("mapOpacity");
 let ticketOpacity = Number(localStorage.getItem(STORAGE_KEYS.ticketOpacity) || "1");
 let mapStyle = localStorage.getItem(STORAGE_KEYS.mapStyle) || "contrast";
 if (!MAP_TILE_STYLES[mapStyle]) mapStyle = "contrast";
+let lastStreetMapStyle = ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(mapStyle) ? "contrast" : mapStyle;
 let mapDataOverlay = localStorage.getItem(STORAGE_KEYS.mapDataOverlay) || "none";
 if (!isValidMapDataOverlay(mapDataOverlay)) mapDataOverlay = "none";
 let vetroLayerColors = JSON.parse(localStorage.getItem("vetroLayerColors") || "{}");
@@ -894,7 +890,6 @@ const elements = {
   mapStyle: document.querySelector("#mapStyle"),
   mapDataOverlay: document.querySelector("#mapDataOverlay"),
   mapDataOverlayStatus: document.querySelector("#mapDataOverlayStatus"),
-  mapOpacity: document.querySelector("#mapOpacity"),
   undoAction: document.querySelector("#undoAction"),
   redoAction: document.querySelector("#redoAction"),
   showSheetView: document.querySelector("#showSheetView"),
@@ -908,6 +903,9 @@ const elements = {
   mobileView: document.querySelector("#mobileView"),
   mobileSummary: document.querySelector("#mobileSummary"),
   sheetSearch: document.querySelector("#sheetSearch"),
+  exportSheetPdf: document.querySelector("#exportSheetPdf"),
+  exportSheetExcel: document.querySelector("#exportSheetExcel"),
+  exportSheetCsv: document.querySelector("#exportSheetCsv"),
   mobileSearch: document.querySelector("#mobileSearch"),
   mobileRefresh: document.querySelector("#mobileRefresh"),
   mobileBackToDashboard: document.querySelector("#mobileBackToDashboard"),
@@ -932,6 +930,7 @@ const elements = {
   mapLegend: document.querySelector("#mapLegend"),
   sheetLegend: document.querySelector("#sheetLegend"),
   legendToggle: document.querySelector("#legendToggle"),
+  mapViewToggle: document.querySelector("#mapViewToggle"),
   ticketList: document.querySelector("#ticketList"),
   detail: document.querySelector("#detail"),
   sidebarCollapse: document.querySelector("#sidebarCollapse"),
@@ -953,7 +952,6 @@ elements.vetroSearch.value = vetroSearch;
 elements.search.value = ticketSearch;
 if (elements.mobileSearch) elements.mobileSearch.value = ticketSearch;
 if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
-elements.mapOpacity.value = String(opacityToPercent(mapOpacity));
 elements.mapStyle.value = mapStyle;
 if (elements.mapDataOverlay) elements.mapDataOverlay.value = mapDataOverlay;
 elements.showHiddenToggle.checked = showHiddenTickets;
@@ -1378,6 +1376,7 @@ async function setMapTileStyle(style, save = true) {
   mapStyle = MAP_TILE_STYLES[style] ? style : "contrast";
   localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
   if (elements.mapStyle) elements.mapStyle.value = mapStyle;
+  if (!isImageryMapStyle(mapStyle)) lastStreetMapStyle = mapStyle;
   if (!map) return;
   if (baseTileLayer) {
     map.removeLayer(baseTileLayer);
@@ -1422,6 +1421,24 @@ async function setMapTileStyle(style, save = true) {
     baseTileLayer.bringToBack();
   }
   if (save) scheduleDashboardStateSave();
+}
+
+function isImageryMapStyle(style) {
+  return ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(style);
+}
+
+function preferredImageryMapStyle() {
+  return mapConfig.googleMapsTileApiKey ? "google-hybrid" : "hybrid";
+}
+
+function preferredStreetMapStyle() {
+  return MAP_TILE_STYLES[lastStreetMapStyle] && !isImageryMapStyle(lastStreetMapStyle) ? lastStreetMapStyle : "contrast";
+}
+
+async function toggleMapView() {
+  rememberUndoState();
+  const nextStyle = isImageryMapStyle(mapStyle) ? preferredStreetMapStyle() : preferredImageryMapStyle();
+  await setMapTileStyle(nextStyle);
 }
 
 function setBaseTileOpacity(opacity) {
@@ -2208,6 +2225,118 @@ const SHEET_COLUMNS = [
   ["Facilities", (ticket) => firstTicketValue(ticket, ["facilities"])],
   ["Modified By", (ticket) => firstTicketValue(ticket, ["modified_by"])],
 ];
+
+function plainTextFromHtml(html) {
+  const element = document.createElement("div");
+  element.innerHTML = String(html || "");
+  return element.textContent || element.innerText || "";
+}
+
+function sheetExportCell(ticket, column) {
+  const [label, getter, mode] = column;
+  if (label === "Action") return ticketActionLabels(ticket.ticket_number).join("; ");
+  if (label === "Description") return ticketDescription(ticket.ticket_number) || workDescription(ticket);
+  const value = getter(ticket, false) || "";
+  return mode === "html" ? plainTextFromHtml(value) : String(value);
+}
+
+function sheetExportRows() {
+  return sheetTickets().map((ticket) => ({
+    ticket,
+    values: SHEET_COLUMNS.map((column) => sheetExportCell(ticket, column)),
+  }));
+}
+
+function exportFileName(extension) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return `dig-tickets-${stamp}.${extension}`;
+}
+
+function downloadTextFile(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 800);
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function exportSheetCsv() {
+  const rows = sheetExportRows();
+  const header = SHEET_COLUMNS.map(([label]) => csvCell(label)).join(",");
+  const body = rows.map((row) => row.values.map(csvCell).join(",")).join("\n");
+  downloadTextFile(exportFileName("csv"), `\ufeff${header}\n${body}\n`, "text/csv;charset=utf-8");
+}
+
+function sheetExportRowStyle(ticket) {
+  if (ticketIsTcwDmiWork(ticket)) return "background:#fff0e6;border-left:5px solid #ff6a00;";
+  if (ticketIsEmergency(ticket)) return "background:#ffe5ea;border-left:4px solid #ff0033;";
+  if (ticketIsRemark(ticket)) return "background:#e8f3ff;border-left:4px solid #008cff;";
+  return "";
+}
+
+function exportTableHtml() {
+  const header = SHEET_COLUMNS.map(([label]) => `<th>${escapeHtml(label)}</th>`).join("");
+  const rows = sheetExportRows().map((row) => {
+    const cells = row.values.map((value) => `<td>${escapeHtml(value)}</td>`).join("");
+    return `<tr style="${sheetExportRowStyle(row.ticket)}">${cells}</tr>`;
+  }).join("");
+  return `
+    <table>
+      <thead><tr>${header}</tr></thead>
+      <tbody>${rows || `<tr><td colspan="${SHEET_COLUMNS.length}">No active tickets found.</td></tr>`}</tbody>
+    </table>
+  `;
+}
+
+function exportSheetExcel() {
+  const html = `<!doctype html>
+    <html>
+      <head><meta charset="utf-8"></head>
+      <body>${exportTableHtml()}</body>
+    </html>`;
+  downloadTextFile(exportFileName("xls"), html, "application/vnd.ms-excel;charset=utf-8");
+}
+
+function exportSheetPdf() {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    window.alert("Allow popups for this dashboard so the PDF export window can open.");
+    return;
+  }
+  printWindow.document.write(`<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Dig Tickets Export</title>
+        <style>
+          body { font-family: Arial, Helvetica, sans-serif; color: #17202b; margin: 18px; }
+          h1 { margin: 0 0 8px; font-size: 20px; }
+          p { margin: 0 0 14px; color: #526173; font-size: 12px; }
+          table { width: 100%; border-collapse: collapse; font-size: 10px; }
+          th, td { border: 1px solid #c7d0db; padding: 5px 6px; text-align: left; vertical-align: top; }
+          th { background: #e8edf3; }
+          @page { size: landscape; margin: 0.35in; }
+        </style>
+      </head>
+      <body>
+        <h1>Dig Tickets</h1>
+        <p>Exported ${escapeHtml(new Date().toLocaleString())}</p>
+        ${exportTableHtml()}
+      </body>
+    </html>`);
+  printWindow.document.close();
+  printWindow.focus();
+  window.setTimeout(() => printWindow.print(), 250);
+}
 
 const HISTORY_DIG_TICKET_URL = "/data/history/to_date_dig_tickets_history.json";
 const HISTORY_DIG_TICKET_XLSX_URL = "/data/history/to.date.dig.tickets.history.xlsx";
@@ -3523,6 +3652,9 @@ elements.showDashboardView.addEventListener("click", () => setCurrentView("dashb
 if (elements.showEmployeeView) elements.showEmployeeView.addEventListener("click", () => setProfileMode("employee"));
 if (elements.showAdminView) elements.showAdminView.addEventListener("click", () => setProfileMode("admin"));
 elements.sheetBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.exportSheetPdf) elements.exportSheetPdf.addEventListener("click", exportSheetPdf);
+if (elements.exportSheetExcel) elements.exportSheetExcel.addEventListener("click", exportSheetExcel);
+if (elements.exportSheetCsv) elements.exportSheetCsv.addEventListener("click", exportSheetCsv);
 if (elements.mobileBackToDashboard) elements.mobileBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.mobileSearch) {
   elements.mobileSearch.addEventListener("input", () => {
@@ -3681,13 +3813,11 @@ if (elements.mapDataOverlay) {
     scheduleDashboardStateSave();
   });
 }
-elements.mapOpacity.addEventListener("input", () => {
-  rememberUndoState();
-  mapOpacity = percentToOpacity(elements.mapOpacity.value, mapOpacity);
-  localStorage.setItem("mapOpacity", String(mapOpacity));
-  setBaseTileOpacity(mapOpacity);
-  scheduleDashboardStateSave();
-});
+if (elements.mapViewToggle) {
+  elements.mapViewToggle.addEventListener("click", () => {
+    void toggleMapView().catch((error) => console.error(error));
+  });
+}
 elements.vetroLayerFilter.addEventListener("input", (event) => {
   if (event.target.matches(".layer-color")) {
     rememberUndoState();

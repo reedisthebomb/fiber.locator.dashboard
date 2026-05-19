@@ -1714,6 +1714,30 @@ button {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
 }
 
+.map-view-toggle {
+  position: absolute;
+  left: 12px;
+  bottom: 48px;
+  z-index: 901;
+  width: 36px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(57, 71, 89, 0.72);
+  border-radius: 8px;
+  background: rgba(238, 242, 246, 0.36);
+  color: #17202b;
+  backdrop-filter: blur(4px);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+}
+
+.map-view-toggle:hover,
+.legend-toggle:hover {
+  background: rgba(238, 242, 246, 0.58);
+}
+
 .sheet-legend {
   grid-template-columns: repeat(2, minmax(180px, 1fr));
   max-width: 620px;
@@ -1826,7 +1850,7 @@ button {
 
 .sheet-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 460px) auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 420px) auto auto auto;
   align-items: center;
   gap: 16px;
   padding: 14px 18px;
@@ -1853,6 +1877,17 @@ button {
   background: var(--panel-2);
   color: var(--ink);
   font-weight: 800;
+}
+
+.sheet-export-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sheet-export-actions button {
+  min-width: 64px;
 }
 
 .sheet-search {
