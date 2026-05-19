@@ -1178,6 +1178,30 @@ select,
   font-weight: 700;
 }
 
+.save-toast {
+  position: fixed;
+  top: 82px;
+  left: 50%;
+  z-index: 1200;
+  transform: translate(-50%, -8px);
+  padding: 10px 16px;
+  border: 1px solid rgba(44, 139, 83, 0.35);
+  border-radius: 8px;
+  background: rgba(28, 115, 67, 0.96);
+  color: #ffffff;
+  box-shadow: 0 16px 36px rgba(18, 29, 42, 0.22);
+  font-size: 14px;
+  font-weight: 900;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.save-toast.visible {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}
+
 input,
 select {
   padding: 0 10px;

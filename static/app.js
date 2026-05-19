@@ -341,7 +341,7 @@ function dashboardStatePayload() {
     ticketOpacity,
     mapOpacity,
     mapStyle,
-    mapDataOverlay: "none",
+    mapDataOverlay,
     sidebarCollapsed,
     locatorProfile,
     selectedTicketNumber: selectedTicket?.ticket_number || pendingSelectedTicketNumber || "",
@@ -541,7 +541,7 @@ function applyDashboardState(state) {
       elements.mapStyle.value = mapStyle;
     }
     if (typeof state.mapDataOverlay === "string" && isValidMapDataOverlay(state.mapDataOverlay)) {
-      mapDataOverlay = "none";
+      mapDataOverlay = state.mapDataOverlay;
       localStorage.setItem(STORAGE_KEYS.mapDataOverlay, mapDataOverlay);
       if (elements.mapDataOverlay) elements.mapDataOverlay.value = mapDataOverlay;
     }
@@ -598,6 +598,20 @@ function updateLocatorDefaultStatus() {
   elements.locatorDefaultStatus.textContent = `Default view on: ${savedText}`;
 }
 
+function showSavedToast(message = "Saved") {
+  if (!elements.saveToast) return;
+  elements.saveToast.textContent = message;
+  elements.saveToast.hidden = false;
+  elements.saveToast.classList.add("visible");
+  if (saveToastTimer) window.clearTimeout(saveToastTimer);
+  saveToastTimer = window.setTimeout(() => {
+    elements.saveToast.classList.remove("visible");
+    saveToastTimer = window.setTimeout(() => {
+      elements.saveToast.hidden = true;
+    }, 180);
+  }, 1800);
+}
+
 async function saveLocatorDefault({ enabled = elements.locatorDefaultToggle.checked, includeState = true } = {}) {
   const body = { enabled };
   if (includeState) body.state = dashboardStatePayload();
@@ -614,6 +628,7 @@ async function saveLocatorDefault({ enabled = elements.locatorDefaultToggle.chec
   const payload = await response.json();
   locatorDefaultConfig = payload.locatorDefault || { enabled, state: body.state || {} };
   updateLocatorDefaultStatus();
+  showSavedToast("Saved");
   return locatorDefaultConfig;
 }
 
@@ -639,8 +654,8 @@ let mapOpacity = Number(localStorage.getItem("mapOpacity") || "1");
 let ticketOpacity = Number(localStorage.getItem(STORAGE_KEYS.ticketOpacity) || "1");
 let mapStyle = localStorage.getItem(STORAGE_KEYS.mapStyle) || "contrast";
 if (!MAP_TILE_STYLES[mapStyle]) mapStyle = "contrast";
-let mapDataOverlay = "none";
-localStorage.setItem(STORAGE_KEYS.mapDataOverlay, mapDataOverlay);
+let mapDataOverlay = localStorage.getItem(STORAGE_KEYS.mapDataOverlay) || "none";
+if (!isValidMapDataOverlay(mapDataOverlay)) mapDataOverlay = "none";
 let vetroLayerColors = JSON.parse(localStorage.getItem("vetroLayerColors") || "{}");
 let showHiddenTickets = readBooleanStorage(STORAGE_KEYS.showHidden, false);
 let vetroVisible = readBooleanStorage(STORAGE_KEYS.vetroVisible, false);
@@ -683,6 +698,7 @@ let pendingTicketListScroll = { top: 0, left: 0 };
 let dashboardStateReady = false;
 let dashboardStateHydrating = false;
 let dashboardStateSaveTimer = null;
+let saveToastTimer = null;
 let locatorDefaultConfig = { enabled: false, state: {}, saved_at: "", saved_by: "" };
 let locatorProfile = normalizeProfile(readObjectStorage(STORAGE_KEYS.profile));
 
@@ -699,6 +715,7 @@ const elements = {
   locatorDefaultToggle: document.querySelector("#locatorDefaultToggle"),
   saveLocatorDefault: document.querySelector("#saveLocatorDefault"),
   locatorDefaultStatus: document.querySelector("#locatorDefaultStatus"),
+  saveToast: document.querySelector("#saveToast"),
   refresh: document.querySelector("#refresh"),
   vetroToggle: document.querySelector("#vetroToggle"),
   vetroStatus: document.querySelector("#vetroStatus"),
