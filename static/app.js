@@ -2163,8 +2163,9 @@ function renderHistoricalDigTickets() {
   const head = HISTORY_COLUMNS.map((column) => `<th>${escapeHtml(column)}</th>`).join("");
   const body = visibleRows
     .map((record) => {
+      const priorityClass = historicalRecordIsTcwDmiWork(record) ? " history-row-tcw-dmi-work ticket-tcw-dmi-work" : "";
       const cells = HISTORY_COLUMNS.map((column) => `<td><div class="sheet-cell-content">${escapeHtml(historyCell(record, column))}</div></td>`).join("");
-      return `<tr class="history-row">${cells}</tr>`;
+      return `<tr class="history-row${priorityClass}">${cells}</tr>`;
     })
     .join("");
   return `
@@ -2482,18 +2483,48 @@ function ticketIsRemark(ticket) {
   return text.includes("REMARK") || text.includes("RECALL");
 }
 
-function ticketIsTcwDmiWork(ticket) {
-  const text = String(ticket.done_for || "").toUpperCase();
+function normalizedCompanyText(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/&/g, " AND ")
+    .replace(/[^A-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function companyTextMatchesOrangePriority(value) {
+  const text = normalizedCompanyText(value);
+  if (!text) return false;
   return /\bTCW\b/.test(text)
-    || text.includes("TCW FIBER")
     || /\bDMI\b/.test(text)
-    || text.includes("TC WORKS")
-    || text.includes("DIRT MOVES")
-    || text.includes("DIRT MOVES INC")
-    || text.includes("DIRT MOVES INCORPORATED")
-    || text.includes("DIRTBOOZ INCORPORATED")
-    || text.includes("THE COMPUTER WORKS")
-    || text.includes("COMPUTER WORKS");
+    || /\bTC\s+WORKS\b/.test(text)
+    || /\bTHE\s+COMPUTER\s+WORKS\b/.test(text)
+    || /\bCOMPUTER\s+WORKS\b/.test(text)
+    || /\bDIRT\s+MOVES\b/.test(text)
+    || /\bDIRT\s+MOVES\s+INC\b/.test(text)
+    || /\bDIRT\s+MOVES\s+INCORPORATED\b/.test(text);
+}
+
+function ticketCompanyPriorityText(ticket) {
+  return [
+    ticket.done_for,
+    ticket.company_name,
+    ticket.contractor,
+    ticket.caller,
+    ticket.excavator,
+    ticket.excavator_name,
+  ].filter(Boolean).join(" ");
+}
+
+function ticketIsTcwDmiWork(ticket) {
+  return companyTextMatchesOrangePriority(ticketCompanyPriorityText(ticket));
+}
+
+function historicalRecordIsTcwDmiWork(record) {
+  return companyTextMatchesOrangePriority([
+    historyCell(record, "Done For"),
+    historyCell(record, "Excavator Name"),
+  ].join(" "));
 }
 
 function parseTicketDueDate(ticket) {
@@ -2541,7 +2572,7 @@ function priorityLegendItems() {
   return [
     { className: "legend-emergency", label: "Emergency - immediate priority" },
     { className: "legend-remark", label: "Remark/recall - due within 24 hours" },
-    { className: "legend-tcw", label: "TCW/DMI work" },
+    { className: "legend-tcw", label: "TCW/DMI/Computer Works/Dirt Moves work" },
     { className: "legend-due-today", label: `Past due / due ${dateText(today)} at 8:00 AM` },
     { className: "legend-due-next", label: `Due next working day ${dateText(nextDay)} at 8:00 AM` },
     { className: "legend-due-later", label: "Due more than one working day away" },
@@ -2586,9 +2617,9 @@ function ticketPriorityClasses(ticket) {
 }
 
 function ticketVisualColors(ticket) {
+  if (ticketIsTcwDmiWork(ticket)) return { stroke: "#ff6a00", fill: "#ff6a00", fillOpacity: 0.26 };
   if (ticketIsEmergency(ticket)) return { stroke: "#ff0033", fill: "#ff0033", fillOpacity: 0.28 };
   if (ticketIsRemark(ticket)) return { stroke: "#008cff", fill: "#008cff", fillOpacity: 0.22 };
-  if (ticketIsTcwDmiWork(ticket)) return { stroke: "#ff6a00", fill: "#ff6a00", fillOpacity: 0.26 };
   switch (ticketDueStatus(ticket)) {
     case "due-today":
       return { stroke: "#ffb3b3", fill: "#ffb3b3", fillOpacity: 0.34 };
