@@ -1074,6 +1074,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/employee-dashboard":
             self.send_employee_dashboard()
             return
+        if parsed.path == "/api/map-config":
+            self.send_map_config()
+            return
         if parsed.path == "/api/attachments":
             ticket_number = parse_qs(parsed.query).get("ticket", [""])[0]
             self.send_attachments(ticket_number)
@@ -1554,6 +1557,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
         self.end_headers()
         self.wfile.write(response_body)
+
+    def send_map_config(self) -> None:
+        self.send_json({
+            "googleMapsTileApiKey": os.environ.get("GOOGLE_MAPS_TILE_API_KEY", ""),
+        })
 
     def send_portal_html(self, ticket_number: str) -> None:
         details = load_geocall_details(self.downloads_dir, self.data_dir)

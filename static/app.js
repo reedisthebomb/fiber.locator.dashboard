@@ -19,6 +19,8 @@ let historicalDigTicketError = "";
 let historicalDigTicketSearch = "";
 let attachmentCache = {};
 let attachmentLoadingTickets = new Set();
+let mapConfig = { googleMapsTileApiKey: "" };
+const googleTileSessions = {};
 const undoStack = [];
 const redoStack = [];
 const MAX_HISTORY = 40;
@@ -114,6 +116,23 @@ const MAP_TILE_STYLES = {
     ],
     attribution: "Tiles &copy; Esri",
   },
+  "google-roadmap": {
+    provider: "google",
+    mapType: "roadmap",
+    attribution: "Map data &copy; Google",
+  },
+  "google-satellite": {
+    provider: "google",
+    mapType: "satellite",
+    attribution: "Map data &copy; Google",
+  },
+  "google-hybrid": {
+    provider: "google",
+    mapType: "satellite",
+    layerTypes: ["layerRoadmap"],
+    overlay: false,
+    attribution: "Map data &copy; Google",
+  },
 };
 
 const TICKET_ACTIONS = [
@@ -180,6 +199,20 @@ function writeJsonStorage(key, value) {
 
 function writeBooleanStorage(key, value) {
   localStorage.setItem(key, value ? "true" : "false");
+}
+
+async function loadMapConfig() {
+  try {
+    const response = await fetch("/api/map-config");
+    if (!response.ok) throw new Error(`Map config failed: ${response.status}`);
+    const payload = await response.json();
+    mapConfig = {
+      googleMapsTileApiKey: String(payload.googleMapsTileApiKey || ""),
+    };
+  } catch (error) {
+    console.warn("Unable to load map config", error);
+    mapConfig = { googleMapsTileApiKey: "" };
+  }
 }
 
 function readObjectStorage(key) {
@@ -1289,7 +1322,59 @@ function setSidebarCollapsed(collapsed) {
   scheduleDashboardStateSave();
 }
 
-function setMapTileStyle(style, save = true) {
+function googleSessionCacheKey(tile) {
+  return JSON.stringify({
+    mapType: tile.mapType,
+    layerTypes: tile.layerTypes || [],
+    overlay: Boolean(tile.overlay),
+  });
+}
+
+async function createGoogleTileSession(tile) {
+  if (!mapConfig.googleMapsTileApiKey) {
+    throw new Error("Google Maps Tile API key is not configured on this server.");
+  }
+  const cacheKey = googleSessionCacheKey(tile);
+  const cached = googleTileSessions[cacheKey];
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (cached?.session && (!cached.expiry || cached.expiry - nowSeconds > 3600)) {
+    return cached.session;
+  }
+  const body = {
+    mapType: tile.mapType,
+    language: "en-US",
+    region: "US",
+  };
+  if (tile.layerTypes) body.layerTypes = tile.layerTypes;
+  if (typeof tile.overlay === "boolean") body.overlay = tile.overlay;
+  const response = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(mapConfig.googleMapsTileApiKey)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const message = await response.text().catch(() => "");
+    throw new Error(`Google Maps session failed: ${response.status}${message ? ` ${message.slice(0, 160)}` : ""}`);
+  }
+  const payload = await response.json();
+  if (!payload.session) throw new Error("Google Maps session response did not include a session token.");
+  googleTileSessions[cacheKey] = {
+    session: payload.session,
+    expiry: Number(payload.expiry || 0),
+  };
+  return payload.session;
+}
+
+async function googleTileLayer(tile) {
+  const session = await createGoogleTileSession(tile);
+  return L.tileLayer(`https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${encodeURIComponent(session)}&key=${encodeURIComponent(mapConfig.googleMapsTileApiKey)}`, {
+    maxZoom: 20,
+    attribution: tile.attribution,
+    opacity: mapOpacity,
+  });
+}
+
+async function setMapTileStyle(style, save = true) {
   mapStyle = MAP_TILE_STYLES[style] ? style : "contrast";
   localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
   if (elements.mapStyle) elements.mapStyle.value = mapStyle;
@@ -1298,7 +1383,26 @@ function setMapTileStyle(style, save = true) {
     map.removeLayer(baseTileLayer);
   }
   const tile = MAP_TILE_STYLES[mapStyle];
-  if (Array.isArray(tile.layers)) {
+  if (tile.provider === "google") {
+    try {
+      baseTileLayer = await googleTileLayer(tile);
+      baseTileLayer.addTo(map);
+      baseTileLayer.bringToBack();
+    } catch (error) {
+      console.error(error);
+      mapStyle = "contrast";
+      localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
+      if (elements.mapStyle) elements.mapStyle.value = mapStyle;
+      baseTileLayer = L.tileLayer(MAP_TILE_STYLES.contrast.url, {
+        maxZoom: 20,
+        attribution: MAP_TILE_STYLES.contrast.attribution,
+        opacity: mapOpacity,
+        subdomains: MAP_TILE_STYLES.contrast.subdomains,
+      }).addTo(map);
+      baseTileLayer.bringToBack();
+      window.alert(`${error.message} Falling back to High contrast streets.`);
+    }
+  } else if (Array.isArray(tile.layers)) {
     baseTileLayer = L.layerGroup(
       tile.layers.map((item) => L.tileLayer(item.url, {
         maxZoom: 20,
@@ -3566,7 +3670,7 @@ elements.ticketOpacity.addEventListener("input", () => {
 });
 elements.mapStyle.addEventListener("change", () => {
   rememberUndoState();
-  setMapTileStyle(elements.mapStyle.value);
+  void setMapTileStyle(elements.mapStyle.value).catch((error) => console.error(error));
 });
 if (elements.mapDataOverlay) {
   elements.mapDataOverlay.addEventListener("change", () => {
@@ -3778,6 +3882,7 @@ if (moreMenu) {
 }
 
 async function bootstrap() {
+  await loadMapConfig();
   await loadDashboardState().catch((error) => {
     console.warn("Unable to load dashboard state", error);
   });

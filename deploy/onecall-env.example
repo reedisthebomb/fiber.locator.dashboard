@@ -16,3 +16,8 @@ OUTLOOK_DAYS_BACK=7
 OUTLOOK_GRAPH_FOLDER=inbox
 OUTLOOK_TICKET_OUTPUT_DIR=/opt/onecall-locator-dashboard/data/inbox
 OUTLOOK_GRAPH_TOKEN_CACHE=/opt/onecall-locator-dashboard/data/private/outlook_graph_token.json
+
+# Google Maps Platform Map Tiles API key.
+# Enable the Map Tiles API in Google Cloud and restrict this browser key to the
+# dashboard origins that serve the app.
+GOOGLE_MAPS_TILE_API_KEY=

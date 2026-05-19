@@ -133,6 +133,18 @@ Open:
 http://127.0.0.1:8765/
 ```
 
+## Google Map Backgrounds
+
+The Base map menu includes Google roadmap, Google satellite, and Google satellite + roads. These use the official Google Maps Platform Map Tiles API with browser-created 2D tile sessions.
+
+To turn them on, enable the Map Tiles API in the Google Cloud project, create/restrict a browser API key, then set this on the live server:
+
+```text
+GOOGLE_MAPS_TILE_API_KEY=your-key-here
+```
+
+The live app reads that value from `/opt/onecall-locator-dashboard/.env` through `/api/map-config`. Do not commit the real key.
+
 ## GitHub Rule
 
 After every substantial change:
