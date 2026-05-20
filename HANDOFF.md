@@ -1,6 +1,6 @@
 # One Call Locator Dashboard Handoff
 
-Updated: 2026-05-19
+Updated: 2026-05-20
 
 Latest detailed continuation file:
 
@@ -60,7 +60,7 @@ The dashboard now:
 
 The refresh button on the page triggers the server-side Outlook export and reload flow.
 
-Dashboard login is currently disabled by request. The default state user is `default`.
+Dashboard login is enabled on the live cloud server when `data/dashboard_auth.json` exists. User records and password hashes stay only in that ignored runtime file.
 
 Home Assistant `dashboard-home` has a One Call Locator iframe pointed at:
 
@@ -74,6 +74,7 @@ http://192.168.50.231:8765/
   - ticket parsing
   - GeoCall detail serving
   - refresh endpoint
+  - login/session enforcement
   - per-user dashboard state API
   - dashboard serving and state persistence
 
@@ -139,6 +140,8 @@ Vetro provides:
 ## Persistence
 
 State now follows the login, not just the browser.
+
+When login is enabled and the `administrator` state is empty, the server falls back to the old `default` state so existing saved views continue to load after auth is turned on.
 
 Persisted items include:
 

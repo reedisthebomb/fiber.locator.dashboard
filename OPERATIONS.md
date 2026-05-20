@@ -2,7 +2,7 @@
 
 Updated: 2026-05-19
 
-This repository is the main project brain for the private Fiber Locator dashboard. Every meaningful code, deployment, data-flow, or process change should be committed here so the project can be resumed from any device without relying on scattered handoff files.
+This repository is the main project brain for the Fiber Locator dashboard. Every meaningful code, deployment, data-flow, or process change should be committed here so the project can be resumed from any device without relying on scattered handoff files.
 
 ## Current Production Target
 
@@ -153,7 +153,7 @@ After every substantial change:
 2. run `node --check static/app.js`
 3. verify the app in a browser or with an HTTP smoke test
 4. update `README.md`, `PROJECT_OVERVIEW.md`, `HANDOFF.md`, or this file when behavior/process changes
-5. commit and push to the private GitHub repository
+5. commit and push to the GitHub repository
 
 Do not commit:
 

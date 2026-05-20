@@ -17,7 +17,7 @@ The full write-up is in [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md).
 
 That file is the best starting point for the architecture, workflow, persistence model, deployment notes, and the current project state.
 
-Daily operating notes are in [OPERATIONS.md](OPERATIONS.md). Treat that file and this private repository as the main brain for the project going forward.
+Daily operating notes are in [OPERATIONS.md](OPERATIONS.md). The complete script and data-flow breakdown is in [WORKFLOW_BREAKDOWN.md](WORKFLOW_BREAKDOWN.md).
 
 ## Run Locally
 
@@ -31,7 +31,7 @@ Open:
 http://127.0.0.1:8765
 ```
 
-Dashboard login is currently disabled by request.
+Dashboard login is enabled when `data/dashboard_auth.json` exists on the server. Runtime auth files are intentionally ignored by Git.
 
 ## Live Target
 
@@ -126,5 +126,5 @@ python3 tools/update_vetro_export.py --plan-id 462
 - The app is designed to be usable from multiple devices with the same login.
 - Hidden tickets, layer selections, and map state persist.
 - Locator Default View can save the current server-wide default view for every device.
-- This private GitHub repository should be updated after each meaningful project change.
-- The project is intended to stay private until you decide otherwise.
+- This GitHub repository should be updated after each meaningful project change.
+- Runtime ticket data, tokens, auth files, and customer payloads stay outside Git.

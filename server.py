@@ -236,6 +236,10 @@ def get_dashboard_user_state(username: str) -> dict:
         payload = load_dashboard_state(STATE_FILE)
         users = payload.setdefault("users", {})
         state = users.get(username, {})
+        if not isinstance(state, dict) and username != "default":
+            state = users.get("default", {})
+        elif not state and username != "default":
+            state = users.get("default", {})
         return state if isinstance(state, dict) else {}
 
 
@@ -1187,7 +1191,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if verify_credentials(username, password, self.auth_users):
             token = create_auth_session(username)
             self.send_response(302)
-            self.send_header("Set-Cookie", f"onecall_auth={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={AUTH_SESSION_TTL_SECONDS}")
+            self.send_header("Set-Cookie", self.auth_cookie(token, AUTH_SESSION_TTL_SECONDS))
             self.send_header("Location", next_path)
             self.end_headers()
             return
@@ -1199,11 +1203,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def logout(self) -> None:
-        cookie = "onecall_auth=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"
         self.send_response(302)
-        self.send_header("Set-Cookie", cookie)
+        self.send_header("Set-Cookie", self.auth_cookie("", 0))
         self.send_header("Location", "/login")
         self.end_headers()
+
+    def auth_cookie(self, token: str, max_age: int) -> str:
+        secure = "; Secure" if isinstance(self.request, ssl.SSLSocket) else ""
+        return f"onecall_auth={token}; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age={max_age}"
 
     def send_tickets(self) -> None:
         tickets = [asdict(ticket) for ticket in load_tickets(self.downloads_dir, self.data_dir, self.inbox_dir)]
@@ -1651,7 +1658,7 @@ def run(
     DashboardHandler.data_dir = data_dir
     DashboardHandler.inbox_dir = inbox_dir
     DashboardHandler.vetro_layers = find_vetro_layers(layers_dir, downloads_dir)
-    DashboardHandler.auth_users = {}
+    DashboardHandler.auth_users = load_auth_users(auth_file)
     global STATE_FILE
     STATE_FILE = data_dir / "dashboard_state.json"
     DashboardHandler.state_file = STATE_FILE
@@ -1662,7 +1669,7 @@ def run(
         context.load_cert_chain(certfile=str(certfile), keyfile=str(keyfile))
         server.socket = context.wrap_socket(server.socket, server_side=True)
     print(f"One Call dashboard: http://{host}:{port}")
-    print("Auth: disabled")
+    print(f"Auth: {'enabled' if DashboardHandler.auth_users else 'disabled'}")
     print(f"State file: {STATE_FILE}")
     if certfile and keyfile:
         print(f"TLS cert: {certfile}")

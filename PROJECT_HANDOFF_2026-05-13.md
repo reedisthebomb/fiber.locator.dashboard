@@ -4,6 +4,8 @@ This file is the current project handoff for the Arkansas One Call / TCW Fiber l
 
 ## Current Deployment
 
+Update 2026-05-20: login is enabled again on the live cloud dashboard. Auth users and salted password hashes are loaded from `data/dashboard_auth.json`, which remains outside Git and runtime handoffs.
+
 - Primary server: `kali@192.168.50.231`
 - Deployed app path: `/opt/onecall-locator-dashboard`
 - Systemd service: `onecall-dashboard`
@@ -149,9 +151,10 @@ Saved state includes:
 
 ### Dashboard Access
 
-- Dashboard username/password access was removed for now.
-- With auth disabled, server state uses username `default`.
-- If auth is re-enabled later, be careful to preserve or migrate `users.default` and `locator_default`.
+- Dashboard username/password access is enabled on the live cloud server when the ignored runtime auth file exists.
+- Auth users are loaded from `data/dashboard_auth.json`, outside Git.
+- The session cookie omits `Secure` on plain HTTP so login works at `http://5.78.214.184:8765/`, while still using `HttpOnly` and `SameSite=Lax`.
+- Existing saved views are preserved by falling back from `administrator` to `users.default` until the admin user saves its own state.
 
 ### Home Assistant
 

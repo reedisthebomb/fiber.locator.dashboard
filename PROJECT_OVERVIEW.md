@@ -226,4 +226,4 @@ When making future changes, keep these invariants intact:
 
 ## Publishing Status
 
-This private repository is the main project brain. Update it when app code, deployment process, ticket ingestion, or operational rules change.
+This repository is the main project brain. Update it when app code, deployment process, ticket ingestion, or operational rules change. Keep runtime ticket data, token caches, copied cookies, auth files, and private customer payloads out of Git.
