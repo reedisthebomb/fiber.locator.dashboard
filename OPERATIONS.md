@@ -27,6 +27,7 @@ The dashboard supports:
 - Dig Tickets sheet view with current-ticket search and historical-ticket search
 - mobile view with synced search and ticket review controls
 - admin-controlled employee dashboard profile with locked Vetro layer/filter controls
+- admin filter and Vetro layer changes automatically refresh the employee/mobile dashboard snapshot
 
 The old Vitruvi overlay has been removed from the app UI and server API.
 
@@ -63,6 +64,8 @@ The dot menu includes `Employee Profile` for previewing the employee dashboard. 
 - The only layer-style controls left visible are whole Vetro opacity and whole ticket opacity.
 
 Use `Save to employee dashboard` from the admin profile after setting the desired Vetro layers, filters, map view, search, and ticket display. The app saves that snapshot to the server under `employee_dashboard` in `data/dashboard_state.json`, then shows a short confirmation message.
+
+Admin filter and Vetro layer changes also sync the employee dashboard snapshot automatically. Employee mode keeps its allowed map style and opacity writes while inheriting the admin-controlled ticket filters and Vetro layer/filter state.
 
 ## Ticket And History Data
 

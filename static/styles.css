@@ -2565,6 +2565,59 @@ button {
     #1b2430;
 }
 
+.mobile-ticket-card.ticket-due-today,
+.mobile-detail-card.ticket-due-today {
+  border-color: #ffb3b3;
+  background:
+    linear-gradient(135deg, rgba(255, 179, 179, 0.24), rgba(255, 179, 179, 0.06) 56%, rgba(255, 179, 179, 0.18)),
+    #1b2430;
+  box-shadow: 0 0 0 1px rgba(255, 179, 179, 0.42);
+}
+
+.mobile-ticket-card.ticket-due-next,
+.mobile-detail-card.ticket-due-next {
+  border-color: #c026ff;
+  background:
+    linear-gradient(135deg, rgba(192, 38, 255, 0.25), rgba(192, 38, 255, 0.06) 56%, rgba(192, 38, 255, 0.18)),
+    #1b2430;
+  box-shadow: 0 0 0 1px rgba(192, 38, 255, 0.46);
+}
+
+.mobile-ticket-card.ticket-due-later,
+.mobile-detail-card.ticket-due-later {
+  border-color: #8df5a5;
+  background:
+    linear-gradient(135deg, rgba(141, 245, 165, 0.2), rgba(141, 245, 165, 0.05) 56%, rgba(141, 245, 165, 0.14)),
+    #1b2430;
+  box-shadow: 0 0 0 1px rgba(141, 245, 165, 0.36);
+}
+
+.mobile-ticket-card.ticket-actioned,
+.mobile-detail-card.ticket-actioned {
+  border-color: #ff2b2b;
+  background:
+    linear-gradient(90deg, rgba(255, 43, 43, 0.18), rgba(27, 36, 48, 0.96) 48%),
+    #1b2430;
+}
+
+.mobile-ticket-card.ticket-emergency-priority:not(.ticket-tcw-dmi-work),
+.mobile-detail-card.ticket-emergency-priority:not(.ticket-tcw-dmi-work) {
+  border-color: #ff0033;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 0, 51, 0.38), transparent 58%),
+    linear-gradient(135deg, rgba(255, 0, 51, 0.24), rgba(255, 0, 51, 0.06) 56%, rgba(255, 0, 51, 0.2)),
+    #1b2430;
+}
+
+.mobile-ticket-card.ticket-remark-priority:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority),
+.mobile-detail-card.ticket-remark-priority:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority) {
+  border-color: #008cff;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(0, 140, 255, 0.32), transparent 58%),
+    linear-gradient(135deg, rgba(0, 140, 255, 0.2), rgba(0, 140, 255, 0.06) 56%, rgba(0, 140, 255, 0.18)),
+    #1b2430;
+}
+
 .mobile-ticket-detail {
   min-width: 0;
   padding: 12px;

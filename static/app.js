@@ -215,6 +215,7 @@ function updateTicketSearch(value, options = {}) {
   syncTicketSearchInputs();
   if (options.renderSheet) renderSheetView();
   render();
+  scheduleEmployeeDashboardSync();
 }
 
 async function loadMapConfig() {
@@ -328,6 +329,29 @@ function employeeWritableStatePayload() {
     mapStyle,
     mapDataOverlay,
   };
+}
+
+function employeeDashboardStateFromAdminFilters() {
+  const state = dashboardStatePayload();
+  const current = employeeDashboardState() || {};
+  return {
+    ...state,
+    vetroOpacity: typeof current.vetroOpacity === "number" ? current.vetroOpacity : state.vetroOpacity,
+    ticketOpacity: typeof current.ticketOpacity === "number" ? current.ticketOpacity : state.ticketOpacity,
+    mapStyle: typeof current.mapStyle === "string" && MAP_TILE_STYLES[current.mapStyle] ? current.mapStyle : state.mapStyle,
+    mapDataOverlay: typeof current.mapDataOverlay === "string" && isValidMapDataOverlay(current.mapDataOverlay) ? current.mapDataOverlay : state.mapDataOverlay,
+  };
+}
+
+function scheduleEmployeeDashboardSync() {
+  if (!dashboardStateReady || dashboardStateHydrating || currentProfileMode !== "admin") return;
+  if (employeeDashboardSyncTimer) window.clearTimeout(employeeDashboardSyncTimer);
+  employeeDashboardSyncTimer = window.setTimeout(() => {
+    employeeDashboardSyncTimer = null;
+    void saveEmployeeDashboard({ enabled: true, state: employeeDashboardStateFromAdminFilters(), toast: false }).catch((error) => {
+      console.warn("Unable to sync employee dashboard filters", error);
+    });
+  }, 550);
 }
 
 function applyEmployeeDashboardState() {
@@ -838,6 +862,7 @@ let pendingTicketListScroll = { top: 0, left: 0 };
 let dashboardStateReady = false;
 let dashboardStateHydrating = false;
 let dashboardStateSaveTimer = null;
+let employeeDashboardSyncTimer = null;
 let saveToastTimer = null;
 let locatorDefaultConfig = { enabled: false, state: {}, saved_at: "", saved_by: "" };
 let employeeDashboardConfig = { enabled: false, state: {}, saved_at: "", saved_by: "" };
@@ -1808,6 +1833,7 @@ function setFilterChecked(container, checked, sync = syncVetroFacetSelection) {
   setAllChecked(container, checked);
   sync();
   renderVetroLayer();
+  scheduleEmployeeDashboardSync();
 }
 
 function sleep(ms) {
@@ -2706,6 +2732,7 @@ function renderCountyFilter() {
       writeJsonStorage(STORAGE_KEYS.countyFilterSelected, [...selectedCounties]);
       localStorage.removeItem("countyFilter");
       render();
+      scheduleEmployeeDashboardSync();
     });
     label.append(input, document.createTextNode(county));
     elements.countyFilter.appendChild(label);
@@ -3395,7 +3422,7 @@ function mobileTicketCardHtml(ticket) {
 
 function renderMobileView() {
   if (!elements.mobileView || currentView !== "mobile") return;
-  const list = matchingTickets();
+  const list = visibleTickets();
   if (elements.mobileSummary) {
     elements.mobileSummary.textContent = `${list.length.toLocaleString()} active ticket${list.length === 1 ? "" : "s"}`;
   }
@@ -3799,6 +3826,7 @@ elements.countyAll.addEventListener("click", () => {
   writeJsonStorage(STORAGE_KEYS.countyFilterSelected, []);
   localStorage.removeItem("countyFilter");
   render();
+  scheduleEmployeeDashboardSync();
 });
 elements.countyClear.addEventListener("click", () => {
   rememberUndoState();
@@ -3807,6 +3835,7 @@ elements.countyClear.addEventListener("click", () => {
   writeBooleanStorage(STORAGE_KEYS.countyFilterAll, countyFilterAll);
   writeJsonStorage(STORAGE_KEYS.countyFilterSelected, [...selectedCounties]);
   render();
+  scheduleEmployeeDashboardSync();
 });
 elements.locatorDefaultToggle.addEventListener("change", async () => {
   try {
@@ -3846,6 +3875,7 @@ elements.showHiddenToggle.addEventListener("change", () => {
   showHiddenTickets = elements.showHiddenToggle.checked;
   writeBooleanStorage(STORAGE_KEYS.showHidden, showHiddenTickets);
   render();
+  scheduleEmployeeDashboardSync();
 });
 elements.polygonColor.addEventListener("change", () => {
   rememberUndoState();
@@ -3893,6 +3923,7 @@ elements.vetroLayerFilter.addEventListener("input", (event) => {
     localStorage.setItem("vetroLayerColors", JSON.stringify(vetroLayerColors));
     renderVetroLayer();
     scheduleDashboardStateSave();
+    scheduleEmployeeDashboardSync();
     return;
   }
   if (event.target.matches(".layer-size")) {
@@ -3902,6 +3933,7 @@ elements.vetroLayerFilter.addEventListener("input", (event) => {
     vetroLayerSizeOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerSizes, vetroLayerSizeOverrides, (layerId, value) => Number.isFinite(Number(value)));
     renderVetroLayer();
     scheduleDashboardStateSave();
+    scheduleEmployeeDashboardSync();
     return;
   }
   if (event.target.matches(".layer-opacity")) {
@@ -3910,6 +3942,7 @@ elements.vetroLayerFilter.addEventListener("input", (event) => {
     vetroLayerOpacityOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerOpacities, vetroLayerOpacityOverrides, (layerId, value) => Number.isFinite(Number(value)));
     renderVetroLayer();
     scheduleDashboardStateSave();
+    scheduleEmployeeDashboardSync();
   }
 });
 elements.vetroLayerFilter.addEventListener("change", (event) => {
@@ -3918,6 +3951,7 @@ elements.vetroLayerFilter.addEventListener("change", (event) => {
     vetroLayerStyleOverrides[event.target.dataset.layerStyle] = event.target.value;
     vetroLayerStyleOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerStyles, vetroLayerStyleOverrides, (layerId, value) => vetroLayerStyleValid(layerId, value));
     renderVetroLayer();
+    scheduleEmployeeDashboardSync();
     return;
   }
   if (event.target.matches(".layer-alias")) {
@@ -3929,6 +3963,7 @@ elements.vetroLayerFilter.addEventListener("change", (event) => {
     vetroLayerNameOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerNames, vetroLayerNameOverrides, (id, item) => typeof item === "string");
     populateVetroFilters();
     renderVetroLayer();
+    scheduleEmployeeDashboardSync();
     return;
   }
   if (event.target.matches(".layer-note")) {
@@ -3940,23 +3975,27 @@ elements.vetroLayerFilter.addEventListener("change", (event) => {
     vetroLayerNoteOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerNotes, vetroLayerNoteOverrides, (id, item) => typeof item === "string");
     populateVetroFilters();
     renderVetroLayer();
+    scheduleEmployeeDashboardSync();
     return;
   }
   rememberUndoState();
   syncVetroLayerSelection();
   renderVetroLayer();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroLayerAll.addEventListener("click", () => {
   rememberUndoState();
   setAllChecked(elements.vetroLayerFilter, true);
   syncVetroLayerSelection();
   renderVetroLayer();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroLayerClear.addEventListener("click", () => {
   rememberUndoState();
   setAllChecked(elements.vetroLayerFilter, false);
   syncVetroLayerSelection();
   renderVetroLayer();
+  scheduleEmployeeDashboardSync();
 });
 [
   elements.vetroPlanFilter,
@@ -3972,6 +4011,7 @@ elements.vetroLayerClear.addEventListener("click", () => {
     rememberUndoState();
     syncVetroFacetSelection();
     renderVetroLayer();
+    scheduleEmployeeDashboardSync();
   });
 });
 [
@@ -3991,18 +4031,21 @@ elements.vetroSearch.addEventListener("input", () => {
   rememberUndoState();
   syncVetroFacetSelection();
   renderVetroLayer();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroSlToggle.addEventListener("change", () => {
   rememberUndoState();
   vetroSlVisible = elements.vetroSlToggle.checked;
   writeBooleanStorage(STORAGE_KEYS.vetroSlVisible, vetroSlVisible);
   renderVetroLayer();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroSlShape.addEventListener("change", () => {
   rememberUndoState();
   vetroSlShape = elements.vetroSlShape.value;
   localStorage.setItem(STORAGE_KEYS.vetroSlShape, vetroSlShape);
   renderVetroLayer();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroSlColor.addEventListener("change", () => {
   rememberUndoState();
@@ -4010,6 +4053,7 @@ elements.vetroSlColor.addEventListener("change", () => {
   localStorage.setItem(STORAGE_KEYS.vetroSlColor, vetroSlColor);
   renderVetroLayer();
   scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroSlOutlineColor.addEventListener("change", () => {
   rememberUndoState();
@@ -4017,6 +4061,7 @@ elements.vetroSlOutlineColor.addEventListener("change", () => {
   localStorage.setItem(STORAGE_KEYS.vetroSlOutlineColor, vetroSlOutlineColor);
   renderVetroLayer();
   scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroSlOpacity.addEventListener("input", () => {
   rememberUndoState();
@@ -4024,6 +4069,7 @@ elements.vetroSlOpacity.addEventListener("input", () => {
   localStorage.setItem(STORAGE_KEYS.vetroSlOpacity, String(vetroSlOpacity));
   renderVetroLayer();
   scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroSlSize.addEventListener("input", () => {
   rememberUndoState();
@@ -4031,12 +4077,14 @@ elements.vetroSlSize.addEventListener("input", () => {
   localStorage.setItem(STORAGE_KEYS.vetroSlSize, String(vetroSlSize));
   renderVetroLayer();
   scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroSlLabels.addEventListener("change", () => {
   rememberUndoState();
   vetroSlLabels = elements.vetroSlLabels.checked;
   writeBooleanStorage(STORAGE_KEYS.vetroSlLabels, vetroSlLabels);
   renderVetroLayer();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroColor.addEventListener("change", () => {
   rememberUndoState();
@@ -4044,6 +4092,7 @@ elements.vetroColor.addEventListener("change", () => {
   localStorage.setItem("vetroColor", vetroColor);
   renderVetroLayer();
   scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroOpacity.addEventListener("input", () => {
   rememberUndoState();
@@ -4051,6 +4100,7 @@ elements.vetroOpacity.addEventListener("input", () => {
   localStorage.setItem("vetroOpacity", String(vetroOpacity));
   renderVetroLayer();
   scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
 });
 elements.vetroToggle.addEventListener("change", async () => {
   try {
@@ -4058,6 +4108,7 @@ elements.vetroToggle.addEventListener("change", async () => {
     vetroVisible = elements.vetroToggle.checked;
     writeBooleanStorage(STORAGE_KEYS.vetroVisible, vetroVisible);
     await setVetroVisible(vetroVisible);
+    scheduleEmployeeDashboardSync();
   } catch (error) {
     console.error(error);
   }
