@@ -150,6 +150,23 @@ const TICKET_ACTIONS = [
   { key: "excavation-started", label: "An excavation started", hidesFromDashboard: true },
 ];
 
+const DASHBOARD_TIME_ZONE = "America/Chicago";
+const DASHBOARD_TIME_FORMAT = {
+  timeZone: DASHBOARD_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  timeZoneName: "short",
+};
+
+function formatDashboardDateTime(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleString(undefined, DASHBOARD_TIME_FORMAT);
+}
+
 const ARCGIS_POINT_OVERLAYS = {
   addresses: {
     label: "address",
@@ -838,7 +855,7 @@ function updateLocatorDefaultStatus() {
     return;
   }
   const savedAt = locatorDefaultConfig.saved_at ? new Date(locatorDefaultConfig.saved_at) : null;
-  const savedText = savedAt && !Number.isNaN(savedAt.getTime()) ? savedAt.toLocaleString() : "saved";
+  const savedText = savedAt && !Number.isNaN(savedAt.getTime()) ? formatDashboardDateTime(savedAt) : "saved";
   elements.locatorDefaultStatus.textContent = `Default view on: ${savedText}`;
 }
 
@@ -2323,7 +2340,7 @@ function ticketLatLong(ticket) {
 function formatTicketDate(value) {
   if (!value) return "";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? String(value) : formatDashboardDateTime(date);
 }
 
 function ticketAttachmentSummary(ticketNumber) {
@@ -2672,7 +2689,7 @@ function exportSheetPdf() {
       </head>
       <body>
         <h1>Dig Tickets</h1>
-        <p>Exported ${escapeHtml(new Date().toLocaleString())}</p>
+        <p>Exported ${escapeHtml(formatDashboardDateTime(new Date()))}</p>
         ${exportTableHtml()}
       </body>
     </html>`);

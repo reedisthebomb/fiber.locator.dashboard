@@ -26,6 +26,7 @@ from typing import Iterable
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from zoneinfo import ZoneInfo
 
 
 TICKET_RE = re.compile(r"\b\d{6}-\d{4}\b")
@@ -57,6 +58,7 @@ MICROSOFT_AUTH_BASE = "https://login.microsoftonline.com"
 ONEDRIVE_DEFAULT_SCOPE = "offline_access Files.ReadWrite User.Read"
 ONEDRIVE_DEFAULT_ROOT = "Fiber Locator Attachments"
 ONEDRIVE_MAX_ATTACHMENTS = 80
+DASHBOARD_TIME_ZONE = ZoneInfo(os.getenv("DASHBOARD_TIME_ZONE", "America/Chicago"))
 
 
 @dataclass
@@ -146,9 +148,17 @@ def verify_credentials(username: str, password: str, users: dict[str, dict[str, 
     return auth_password_hash(username, password, record["salt"]) == record["password_sha256"]
 
 
+def dashboard_now() -> datetime:
+    return datetime.now(DASHBOARD_TIME_ZONE)
+
+
+def dashboard_now_iso(timespec: str = "seconds") -> str:
+    return dashboard_now().isoformat(timespec=timespec)
+
+
 def create_auth_session(username: str) -> str:
     token = secrets.token_urlsafe(32)
-    AUTH_SESSIONS[token] = {"username": username, "created": datetime.now().isoformat()}
+    AUTH_SESSIONS[token] = {"username": username, "created": dashboard_now_iso()}
     return token
 
 
@@ -161,7 +171,9 @@ def valid_auth_session(token: str) -> bool:
     except Exception:
         AUTH_SESSIONS.pop(token, None)
         return False
-    if (datetime.now() - created).total_seconds() > AUTH_SESSION_TTL_SECONDS:
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=DASHBOARD_TIME_ZONE)
+    if (dashboard_now() - created).total_seconds() > AUTH_SESSION_TTL_SECONDS:
         AUTH_SESSIONS.pop(token, None)
         return False
     return True
@@ -353,7 +365,7 @@ def onedrive_refresh_access_token(data_dir: Path) -> str | None:
             "scope": onedrive_scope(),
         },
     )
-    payload["saved_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["saved_at"] = dashboard_now_iso()
     save_private_json(cache_path, payload)
     return str(payload.get("access_token") or "")
 
@@ -570,7 +582,7 @@ def set_locator_default_state(username: str, payload_update: dict) -> dict:
         saved = {
             "enabled": enabled,
             "state": state,
-            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "saved_at": dashboard_now_iso(),
             "saved_by": username,
         }
         payload["locator_default"] = saved
@@ -593,7 +605,7 @@ def set_employee_dashboard_state(username: str, payload_update: dict) -> dict:
         saved = {
             "enabled": enabled,
             "state": state,
-            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "saved_at": dashboard_now_iso(),
             "saved_by": username,
         }
         payload["employee_dashboard"] = saved
@@ -1403,7 +1415,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_portal_html(ticket_number)
             return
         if parsed.path == "/api/health":
-            self.send_json({"ok": True, "time": datetime.now().isoformat()})
+            self.send_json({"ok": True, "time": dashboard_now_iso()})
             return
         super().do_GET()
 
@@ -1747,7 +1759,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
             return
-        payload["saved_at"] = datetime.now().isoformat(timespec="seconds")
+        payload["saved_at"] = dashboard_now_iso()
         save_private_json(onedrive_token_cache_path(self.data_dir), payload)
         with ONEDRIVE_AUTH_LOCK:
             ONEDRIVE_PENDING_AUTH.clear()
@@ -1888,7 +1900,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 original_name = safe_file_component(part.get_filename() or "", "")
                 if not original_name:
                     continue
-                attachment_id = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
+                attachment_id = f"{dashboard_now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
                 file_body = part.get_payload(decode=True) or b""
                 size = len(file_body)
                 content_type = str(part.get_content_type() or mimetypes.guess_type(original_name)[0] or "application/octet-stream")
@@ -1910,7 +1922,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "content_type": content_type,
                     "size": size,
                     "note": note,
-                    "uploaded_at": datetime.now().isoformat(timespec="seconds"),
+                    "uploaded_at": dashboard_now_iso(),
                     "uploaded_by": self.current_username() or "default",
                     "url": str(drive_item.get("webUrl") or f"/api/attachments/file?ticket={quote(ticket_number)}&id={quote(attachment_id)}"),
                     "folder_url": folder_url,
@@ -1934,7 +1946,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         REFRESH_STATE.update(
             {
                 "running": True,
-                "started": datetime.now().isoformat(),
+                "started": dashboard_now_iso(),
                 "finished": "",
                 "success": None,
                 "message": "Starting Outlook export and local sync",
@@ -2010,7 +2022,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             REFRESH_STATE.update(
                 {
                     "running": False,
-                    "finished": datetime.now().isoformat(),
+                    "finished": dashboard_now_iso(),
                     "success": exit_code == 0,
                     "message": "Refresh complete" if exit_code == 0 else "Refresh failed",
                     "exit_code": exit_code,
@@ -2025,7 +2037,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             REFRESH_STATE.update(
                 {
                     "running": False,
-                    "finished": datetime.now().isoformat(),
+                    "finished": dashboard_now_iso(),
                     "success": False,
                     "message": f"Refresh failed: {exc}",
                 }
