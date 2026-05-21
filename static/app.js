@@ -3052,7 +3052,8 @@ function bindTicketActionControls(container) {
       const ticketNumber = button.dataset.ticketActionSubmit;
       const selected = stagedActionKeys(wrapper);
       const uploader = wrapper.querySelector("[data-ticket-upload]");
-      if (uploader && window.confirm(`Do you want to upload attachments to ticket ${ticketNumber} before submitting these actions?`)) {
+      const shouldAskForAttachments = selected.some((key) => key !== "clear");
+      if (uploader && shouldAskForAttachments && window.confirm(`Do you want to upload attachments to ticket ${ticketNumber} before submitting these actions?`)) {
         const fileInput = uploader.querySelector("[data-ticket-file-input]");
         if (fileInput?.files?.length) {
           try {
