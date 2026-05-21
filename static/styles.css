@@ -2436,6 +2436,12 @@ button {
   border-top: 1px solid #d4dce7;
 }
 
+.ticket-attachment-upload.compact {
+  min-width: 220px;
+  padding-top: 0;
+  border-top: 0;
+}
+
 .ticket-attachment-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2452,6 +2458,15 @@ button {
   text-decoration: none;
 }
 
+.ticket-attachment-upload.compact .ticket-attachment-head {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.ticket-attachment-upload.compact .ticket-attachment-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ticket-attachment-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2466,6 +2481,15 @@ button {
   color: #0f172a;
   font: 800 12px/1 Arial, Helvetica, sans-serif;
   cursor: pointer;
+}
+
+.ticket-attachment-upload.compact .ticket-attachment-actions {
+  grid-template-columns: 1fr;
+}
+
+.ticket-attachment-upload.compact .ticket-attachment-actions button {
+  min-height: 28px;
+  font-size: 11px;
 }
 
 .ticket-attachment-actions button:disabled {

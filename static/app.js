@@ -2374,11 +2374,11 @@ function attachmentFolderLinkHtml(ticketNumber) {
   return `<a href="${escapeHtml(summary.folder_url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`;
 }
 
-function attachmentUploadHtml(ticketNumber) {
+function attachmentUploadHtml(ticketNumber, compact = false) {
   return `
-    <div class="ticket-attachment-upload" data-ticket-upload="${escapeHtml(ticketNumber)}">
+    <div class="ticket-attachment-upload${compact ? " compact" : ""}" data-ticket-upload="${escapeHtml(ticketNumber)}">
       <div class="ticket-attachment-head">
-        <strong>Attachments</strong>
+        ${compact ? "" : "<strong>Attachments</strong>"}
         <span data-ticket-attachment-folder="${escapeHtml(ticketNumber)}">${attachmentFolderLinkHtml(ticketNumber)}</span>
       </div>
       <input type="file" multiple hidden data-ticket-file-input="${escapeHtml(ticketNumber)}">
@@ -2396,7 +2396,7 @@ function attachmentUploadHtml(ticketNumber) {
 
 const SHEET_COLUMNS = [
   ["Action", (ticket, expanded) => expanded ? actionControlHtml(ticket.ticket_number, true) : sheetActionSummaryHtml(ticket.ticket_number), "html"],
-  ["Attachments", (ticket) => attachmentFolderLinkHtml(ticket.ticket_number), "html"],
+  ["Attachments", (ticket) => attachmentUploadHtml(ticket.ticket_number, true), "html"],
   ["Description", (ticket, expanded) => expanded ? `
     <textarea class="sheet-description" data-ticket-description="${escapeHtml(ticket.ticket_number)}" placeholder="Leave a description">${escapeHtml(ticketDescription(ticket.ticket_number))}</textarea>
   ` : escapeHtml(ticketDescription(ticket.ticket_number) || workDescription(ticket)), "html"],
@@ -2995,6 +2995,11 @@ function bindSheetFilterControls() {
 }
 
 function bindTicketActionControls(container) {
+  for (const uploader of container.querySelectorAll("[data-ticket-upload]")) {
+    uploader.addEventListener("click", (event) => event.stopPropagation());
+    uploader.addEventListener("keydown", (event) => event.stopPropagation());
+  }
+
   function stagedActionKeys(wrapper) {
     return [...wrapper.querySelectorAll("[data-ticket-action-stage]")]
       .filter((input) => input.checked)
