@@ -196,6 +196,43 @@ What it does:
 
 This script is useful after a manual Windows export, after copying files from another machine, or inside a systemd refresh job.
 
+## Google Earth KML Export
+
+`tools/export_google_earth_kml.py` exports the same loaded ticket set used by the dashboard into a Google Earth KML file.
+
+Use it on the live server:
+
+```sh
+cd /opt/onecall-locator-dashboard
+python3 tools/export_google_earth_kml.py \
+  --downloads-dir data/inbox \
+  --data-dir data \
+  --inbox-dir data/inbox \
+  --output "Google Earth/Google Earth.kml"
+```
+
+What it does:
+
+- loads `Arkansas One Call Ticket *.txt` files from `data/inbox/`
+- attaches cached GeoCall printable pages and polygons from `data/`
+- writes one Google Earth placemark per ticket
+- includes ticket number, county, place, work dates, contractor/caller, location notes, utilities, source filename, and GeoCall page link in the placemark description
+- uses polygons when available and includes point coordinates when the ticket has latitude/longitude
+
+The generated export can be zipped as a KMZ with Python if the `zip` command is unavailable:
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+from zipfile import ZipFile, ZIP_DEFLATED
+folder = Path("Google Earth")
+with ZipFile(folder / "Google Earth.kmz", "w", ZIP_DEFLATED) as zf:
+    zf.write(folder / "Google Earth.kml", "doc.kml")
+PY
+```
+
+These exports contain ticket/customer data, so keep them in the ignored runtime/server area or another private folder.
+
 ## GeoCall Browser Console Export
 
 `tools/geocall_detail_export_console.js` is a manual browser-session export helper.
@@ -298,7 +335,9 @@ The normal cloud deployment pattern is:
 ```sh
 rsync -az --delete \
   --exclude data \
+  --exclude .env \
   --exclude __pycache__ \
+  --exclude '*.pyc' \
   ./ root@5.78.214.184:/opt/onecall-locator-dashboard/
 ssh root@5.78.214.184 'cd /opt/onecall-locator-dashboard && python3 -m py_compile server.py'
 ssh root@5.78.214.184 'systemctl restart onecall-dashboard && systemctl is-active onecall-dashboard'

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Fiber Locator</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260521102500">
+    <link rel="stylesheet" href="/static/styles.css?v=20260521133500">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
@@ -60,10 +60,13 @@
       <section class="panel list-panel">
         <button id="sidebarCollapse" class="sidebar-collapse" type="button" title="Collapse ticket panel" aria-label="Collapse ticket panel">‹</button>
         <div class="defaultbar">
-          <label><input id="locatorDefaultToggle" type="checkbox"> Locator Default View</label>
-          <button id="saveLocatorDefault" type="button">Save current</button>
+          <label>
+            View
+            <select id="savedViewSelect"></select>
+          </label>
+          <button id="saveView" type="button">Save view</button>
           <button id="saveEmployeeDashboard" type="button">Save to employee dashboard</button>
-          <span id="locatorDefaultStatus">Not saved</span>
+          <span id="savedViewStatus">No saved view selected</span>
         </div>
         <div id="employeeBar" class="employeebar" hidden>
           <strong>Employee dashboard</strong>
@@ -88,6 +91,13 @@
           <details>
             <summary><span>Vetro</span><span id="vetroStatus">Off</span></summary>
             <div class="layerbar layerbar-controls">
+              <div class="vetro-refresh-panel">
+                <button id="updateVetro" type="button">Update VETRO</button>
+                <div class="vetro-refresh-progress" id="vetroRefreshProgress" hidden>
+                  <span id="vetroRefreshStatus">Idle</span>
+                  <div class="vetro-progress-track"><i id="vetroRefreshBar"></i></div>
+                </div>
+              </div>
               <label><input id="vetroToggle" type="checkbox"> Show Vetro layer</label>
               <label>
                 Search
@@ -113,105 +123,6 @@
                   </span>
                 </span>
               </label>
-              <label>
-                Status
-                <span class="multi-filter">
-                  <span id="vetroStatusFilter" class="check-list facet-check-list"></span>
-                  <span class="filter-buttons">
-                    <button id="vetroStatusAll" type="button">All</button>
-                    <button id="vetroStatusClear" type="button">Clear</button>
-                  </span>
-                </span>
-              </label>
-              <label>
-                Fiber
-                <span class="multi-filter">
-                  <span id="vetroFiberFilter" class="check-list facet-check-list"></span>
-                  <span class="filter-buttons">
-                    <button id="vetroFiberAll" type="button">All</button>
-                    <button id="vetroFiberClear" type="button">Clear</button>
-                  </span>
-                </span>
-              </label>
-              <label>
-                Placement
-                <span class="multi-filter">
-                  <span id="vetroPlacementFilter" class="check-list facet-check-list"></span>
-                  <span class="filter-buttons">
-                    <button id="vetroPlacementAll" type="button">All</button>
-                    <button id="vetroPlacementClear" type="button">Clear</button>
-                  </span>
-                </span>
-              </label>
-              <label>
-                Route
-                <span class="multi-filter">
-                  <span id="vetroRouteFilter" class="check-list facet-check-list"></span>
-                  <span class="filter-buttons">
-                    <button id="vetroRouteAll" type="button">All</button>
-                    <button id="vetroRouteClear" type="button">Clear</button>
-                  </span>
-                </span>
-              </label>
-              <label>
-                Point type
-                <span class="multi-filter">
-                  <span id="vetroPointFilter" class="check-list facet-check-list"></span>
-                  <span class="filter-buttons">
-                    <button id="vetroPointAll" type="button">All</button>
-                    <button id="vetroPointClear" type="button">Clear</button>
-                  </span>
-                </span>
-              </label>
-              <label>
-                Geometry
-                <span class="multi-filter">
-                  <span id="vetroGeometryFilter" class="check-list facet-check-list"></span>
-                  <span class="filter-buttons">
-                    <button id="vetroGeometryAll" type="button">All</button>
-                    <button id="vetroGeometryClear" type="button">Clear</button>
-                  </span>
-                </span>
-              </label>
-              <label>
-                Build
-                <span class="multi-filter">
-                  <span id="vetroBuildFilter" class="check-list facet-check-list"></span>
-                  <span class="filter-buttons">
-                    <button id="vetroBuildAll" type="button">All</button>
-                    <button id="vetroBuildClear" type="button">Clear</button>
-                  </span>
-                </span>
-              </label>
-              <label><input id="vetroSlToggle" type="checkbox"> Show SL service locations</label>
-              <label>
-                SL shape
-                <select id="vetroSlShape">
-                  <option value="circle">Circle</option>
-                  <option value="square">Square</option>
-                  <option value="rectangle">Rectangle</option>
-                  <option value="diamond">Diamond</option>
-                  <option value="pin">Pin</option>
-                  <option value="house">House</option>
-                </select>
-              </label>
-              <label>
-                SL color
-                <input id="vetroSlColor" type="color" value="#e7298a">
-              </label>
-              <label>
-                SL outline
-                <input id="vetroSlOutlineColor" type="color" value="#111827">
-              </label>
-              <label>
-                SL opacity %
-                <input id="vetroSlOpacity" type="number" min="0" max="100" step="1" value="100">
-              </label>
-              <label>
-                SL size
-                <input id="vetroSlSize" type="number" min="8" max="22" step="1" value="13">
-              </label>
-              <label><input id="vetroSlLabels" type="checkbox"> Show SL labels</label>
               <label>
                 Color
                 <input id="vetroColor" type="color" value="#00a5ff">
@@ -356,6 +267,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="/static/app.js?v=20260520181500"></script>
+    <script src="/static/app.js?v=20260521153500"></script>
   </body>
 </html>

@@ -29,6 +29,7 @@ const STORAGE_KEYS = {
   hiddenTickets: "hiddenTickets",
   archivedTickets: "archivedTickets",
   ticketActions: "ticketActions",
+  ticketActionUpdatedAt: "ticketActionUpdatedAt",
   ticketDescriptions: "ticketDescriptions",
   showHidden: "showHiddenTickets",
   countyFilterAll: "countyFilterAll",
@@ -43,6 +44,7 @@ const STORAGE_KEYS = {
   vetroFiber: "vetroFiberFilterSelected",
   vetroRoute: "vetroRouteFilterSelected",
   vetroPoint: "vetroPointFilterSelected",
+  vetroLayerColors: "vetroLayerColorOverrides",
   vetroLayerStyles: "vetroLayerStyleOverrides",
   vetroLayerNames: "vetroLayerNameOverrides",
   vetroLayerNotes: "vetroLayerNoteOverrides",
@@ -56,6 +58,7 @@ const STORAGE_KEYS = {
   vetroSlSize: "vetroSlSize",
   vetroSlLabels: "vetroSlLabels",
   vetroSearch: "vetroSearch",
+  savedViewSelected: "savedViewSelected",
   mapStyle: "mapStyle",
   mapDataOverlay: "mapDataOverlay",
   sidebarCollapsed: "sidebarCollapsed",
@@ -69,6 +72,11 @@ const STORAGE_KEYS = {
 const ACTIVE_COUNTIES = new Set(["UNION", "COLUMBIA"]);
 const FOCUS_ZOOM_THRESHOLD = 14;
 const FOCUS_TARGET_ZOOM = 17;
+const VETRO_SERVICE_LOCATION_LAYER_ID = "26";
+const NEW_SAVED_VIEW_OPTION = "__new_saved_view__";
+const VETRO_PREFIX_LAYERS = [
+  { prefix: "SL-", id: "prefix:SL", name: "Customers", detail: "customer service-location points from VETRO layer 26" },
+];
 const MAP_TILE_STYLES = {
   standard: {
     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -146,7 +154,7 @@ const TICKET_ACTIONS = [
   { key: "ticket-canceled-by-customer", label: "TICKET CANCELED BY customer", hidesFromDashboard: true },
   { key: "in-conflict", label: "In conflict", hidesFromDashboard: true },
   { key: "cannot-locate", label: "Cannot locate", hidesFromDashboard: true },
-  { key: "partially-located-large-project", label: "Partially located/large project", hidesFromDashboard: false },
+  { key: "partially-located-large-project", label: "Partially located/large project", hidesFromDashboard: true },
   { key: "excavation-started", label: "An excavation started", hidesFromDashboard: true },
 ];
 
@@ -283,7 +291,9 @@ function rememberUndoState() {
 }
 
 function restoreDashboardStateSnapshot(state) {
+  const beforeActions = normalizeTicketActions(ticketActions);
   applyDashboardState(cloneState(state));
+  stampTicketActionDifferences(beforeActions, ticketActions);
   render();
   renderVetroLayer();
   scheduleDashboardStateSave();
@@ -433,6 +443,7 @@ function employeeWritableStatePayload() {
   const baseState = employeeDashboardState() || employeeFallbackState() || {};
   return {
     ...cloneState(baseState),
+    ...ticketWorkflowStatePayload(),
     vetroOpacity,
     ticketOpacity,
     mapStyle,
@@ -448,6 +459,237 @@ function employeeDashboardStateFromAdminFilters() {
     ticketOpacity: typeof current.ticketOpacity === "number" ? current.ticketOpacity : state.ticketOpacity,
     mapStyle: typeof current.mapStyle === "string" && MAP_TILE_STYLES[current.mapStyle] ? current.mapStyle : state.mapStyle,
   };
+}
+
+function currentMapViewPayload() {
+  return map
+    ? {
+        center: [map.getCenter().lat, map.getCenter().lng],
+        zoom: map.getZoom(),
+      }
+    : pendingMapView;
+}
+
+function savedViewStatePayload() {
+  return {
+    vetroVisible,
+    vetroLayerFilterSelected: [...vetroSelectedLayers],
+    vetroPlanFilterSelected: [...vetroSelectedPlans],
+    vetroBuildFilterSelected: [...vetroSelectedBuilds],
+    vetroPlacementFilterSelected: [...vetroSelectedPlacements],
+    vetroStatusFilterSelected: [...vetroSelectedStatuses],
+    vetroGeometryFilterSelected: [...vetroSelectedGeometries],
+    vetroFiberFilterSelected: [...vetroSelectedFibers],
+    vetroRouteFilterSelected: [...vetroSelectedRoutes],
+    vetroPointFilterSelected: [...vetroSelectedPoints],
+    vetroLayerColorOverrides,
+    vetroLayerStyleOverrides,
+    vetroLayerNameOverrides,
+    vetroLayerNoteOverrides,
+    vetroLayerSizeOverrides,
+    vetroLayerOpacityOverrides,
+    vetroSlVisible,
+    vetroSlShape,
+    vetroSlColor,
+    vetroSlOutlineColor,
+    vetroSlOpacity,
+    vetroSlSize,
+    vetroSlLabels,
+    vetroSearch,
+    vetroColor,
+    vetroOpacity,
+    mapStyle,
+    mapView: currentMapViewPayload(),
+  };
+}
+
+function normalizeViewPresets(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value
+    .map((item) => ({
+      id: String(item?.id || item?.name || "").trim(),
+      name: String(item?.name || "").trim().slice(0, 80),
+      state: item?.state && typeof item.state === "object" ? item.state : {},
+      saved_at: String(item?.saved_at || ""),
+      saved_by: String(item?.saved_by || ""),
+    }))
+    .filter((item) => item.id && item.name && !seen.has(item.id) && seen.add(item.id));
+}
+
+function selectedSavedView() {
+  return viewPresets.find((preset) => preset.id === selectedSavedViewId) || null;
+}
+
+function updateSavedViewStatus(message = "") {
+  if (!elements.savedViewStatus) return;
+  if (message) {
+    elements.savedViewStatus.textContent = message;
+    return;
+  }
+  const preset = selectedSavedView();
+  if (!preset) {
+    elements.savedViewStatus.textContent = selectedSavedViewId === NEW_SAVED_VIEW_OPTION ? "New view selected" : (viewPresets.length ? "Choose a saved view" : "No saved views");
+    return;
+  }
+  const savedAt = preset.saved_at ? new Date(preset.saved_at) : null;
+  const savedText = savedAt && !Number.isNaN(savedAt.getTime()) ? formatDashboardDateTime(savedAt) : "saved";
+  elements.savedViewStatus.textContent = `${preset.name}: ${savedText}`;
+}
+
+function renderSavedViewControls() {
+  if (!elements.savedViewSelect) return;
+  const selectedExists = viewPresets.some((preset) => preset.id === selectedSavedViewId);
+  if (!selectedExists) selectedSavedViewId = viewPresets[0]?.id || "";
+  localStorage.setItem(STORAGE_KEYS.savedViewSelected, selectedSavedViewId);
+  elements.savedViewSelect.innerHTML = `
+    <option value="">Choose view</option>
+    ${viewPresets.map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)}</option>`).join("")}
+    <option value="${NEW_SAVED_VIEW_OPTION}">Add new view...</option>
+  `;
+  elements.savedViewSelect.value = selectedSavedViewId;
+  updateSavedViewStatus();
+}
+
+async function applySavedViewState(state) {
+  if (!state || typeof state !== "object") return;
+  dashboardStateHydrating = true;
+  try {
+    if (typeof state.vetroVisible === "boolean") {
+      vetroVisible = state.vetroVisible;
+      writeBooleanStorage(STORAGE_KEYS.vetroVisible, vetroVisible);
+      elements.vetroToggle.checked = vetroVisible;
+    }
+    if (Array.isArray(state.vetroLayerFilterSelected)) {
+      vetroSelectedLayers = new Set(state.vetroLayerFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroLayers, [...vetroSelectedLayers]);
+    }
+    if (Array.isArray(state.vetroPlanFilterSelected)) {
+      vetroSelectedPlans = new Set(state.vetroPlanFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroPlan, [...vetroSelectedPlans]);
+    }
+    if (Array.isArray(state.vetroBuildFilterSelected)) {
+      vetroSelectedBuilds = new Set(state.vetroBuildFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroBuild, [...vetroSelectedBuilds]);
+    }
+    if (Array.isArray(state.vetroPlacementFilterSelected)) {
+      vetroSelectedPlacements = new Set(state.vetroPlacementFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroPlacement, [...vetroSelectedPlacements]);
+    }
+    if (Array.isArray(state.vetroStatusFilterSelected)) {
+      vetroSelectedStatuses = new Set(state.vetroStatusFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroStatus, [...vetroSelectedStatuses]);
+    }
+    if (Array.isArray(state.vetroGeometryFilterSelected)) {
+      vetroSelectedGeometries = new Set(state.vetroGeometryFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroGeometry, [...vetroSelectedGeometries]);
+    }
+    if (Array.isArray(state.vetroFiberFilterSelected)) {
+      vetroSelectedFibers = new Set(state.vetroFiberFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroFiber, [...vetroSelectedFibers]);
+    }
+    if (Array.isArray(state.vetroRouteFilterSelected)) {
+      vetroSelectedRoutes = new Set(state.vetroRouteFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroRoute, [...vetroSelectedRoutes]);
+    }
+    if (Array.isArray(state.vetroPointFilterSelected)) {
+      vetroSelectedPoints = new Set(state.vetroPointFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.vetroPoint, [...vetroSelectedPoints]);
+    }
+    if (state.vetroLayerColorOverrides && typeof state.vetroLayerColorOverrides === "object") {
+      vetroLayerColorOverrides = state.vetroLayerColorOverrides;
+      localStorage.setItem(STORAGE_KEYS.vetroLayerColors, JSON.stringify(vetroLayerColorOverrides));
+    }
+    if (state.vetroLayerStyleOverrides && typeof state.vetroLayerStyleOverrides === "object") {
+      vetroLayerStyleOverrides = state.vetroLayerStyleOverrides;
+      localStorage.setItem(STORAGE_KEYS.vetroLayerStyles, JSON.stringify(vetroLayerStyleOverrides));
+    }
+    if (state.vetroLayerNameOverrides && typeof state.vetroLayerNameOverrides === "object") {
+      vetroLayerNameOverrides = state.vetroLayerNameOverrides;
+      localStorage.setItem(STORAGE_KEYS.vetroLayerNames, JSON.stringify(vetroLayerNameOverrides));
+    }
+    if (state.vetroLayerNoteOverrides && typeof state.vetroLayerNoteOverrides === "object") {
+      vetroLayerNoteOverrides = state.vetroLayerNoteOverrides;
+      localStorage.setItem(STORAGE_KEYS.vetroLayerNotes, JSON.stringify(vetroLayerNoteOverrides));
+    }
+    if (state.vetroLayerSizeOverrides && typeof state.vetroLayerSizeOverrides === "object") {
+      vetroLayerSizeOverrides = state.vetroLayerSizeOverrides;
+      localStorage.setItem(STORAGE_KEYS.vetroLayerSizes, JSON.stringify(vetroLayerSizeOverrides));
+    }
+    if (state.vetroLayerOpacityOverrides && typeof state.vetroLayerOpacityOverrides === "object") {
+      vetroLayerOpacityOverrides = state.vetroLayerOpacityOverrides;
+      localStorage.setItem(STORAGE_KEYS.vetroLayerOpacities, JSON.stringify(vetroLayerOpacityOverrides));
+    }
+    if (typeof state.vetroSlVisible === "boolean") {
+      vetroSlVisible = state.vetroSlVisible;
+      writeBooleanStorage(STORAGE_KEYS.vetroSlVisible, vetroSlVisible);
+      if (elements.vetroSlToggle) elements.vetroSlToggle.checked = vetroSlVisible;
+    }
+    if (typeof state.vetroSlShape === "string") {
+      vetroSlShape = state.vetroSlShape;
+      localStorage.setItem(STORAGE_KEYS.vetroSlShape, vetroSlShape);
+      if (elements.vetroSlShape) elements.vetroSlShape.value = vetroSlShape;
+    }
+    if (typeof state.vetroSlColor === "string") {
+      vetroSlColor = state.vetroSlColor;
+      localStorage.setItem(STORAGE_KEYS.vetroSlColor, vetroSlColor);
+      if (elements.vetroSlColor) elements.vetroSlColor.value = vetroSlColor;
+    }
+    if (typeof state.vetroSlOutlineColor === "string") {
+      vetroSlOutlineColor = state.vetroSlOutlineColor;
+      localStorage.setItem(STORAGE_KEYS.vetroSlOutlineColor, vetroSlOutlineColor);
+      if (elements.vetroSlOutlineColor) elements.vetroSlOutlineColor.value = vetroSlOutlineColor;
+    }
+    if (typeof state.vetroSlOpacity === "number") {
+      vetroSlOpacity = state.vetroSlOpacity;
+      localStorage.setItem(STORAGE_KEYS.vetroSlOpacity, String(vetroSlOpacity));
+      if (elements.vetroSlOpacity) elements.vetroSlOpacity.value = String(opacityToPercent(vetroSlOpacity));
+    }
+    if (typeof state.vetroSlSize === "number") {
+      vetroSlSize = state.vetroSlSize;
+      localStorage.setItem(STORAGE_KEYS.vetroSlSize, String(vetroSlSize));
+      if (elements.vetroSlSize) elements.vetroSlSize.value = String(vetroSlSize);
+    }
+    if (typeof state.vetroSlLabels === "boolean") {
+      vetroSlLabels = state.vetroSlLabels;
+      writeBooleanStorage(STORAGE_KEYS.vetroSlLabels, vetroSlLabels);
+      if (elements.vetroSlLabels) elements.vetroSlLabels.checked = vetroSlLabels;
+    }
+    if (typeof state.vetroSearch === "string") {
+      vetroSearch = state.vetroSearch;
+      localStorage.setItem(STORAGE_KEYS.vetroSearch, vetroSearch);
+      elements.vetroSearch.value = vetroSearch;
+    }
+    if (typeof state.vetroColor === "string") {
+      vetroColor = state.vetroColor;
+      localStorage.setItem("vetroColor", vetroColor);
+      elements.vetroColor.value = vetroColor;
+    }
+    if (typeof state.vetroOpacity === "number") {
+      vetroOpacity = state.vetroOpacity;
+      localStorage.setItem("vetroOpacity", String(vetroOpacity));
+      elements.vetroOpacity.value = String(opacityToPercent(vetroOpacity));
+    }
+    if (typeof state.mapStyle === "string" && MAP_TILE_STYLES[state.mapStyle]) {
+      mapStyle = state.mapStyle;
+      localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
+      elements.mapStyle.value = mapStyle;
+    }
+    if (state.mapView && typeof state.mapView === "object") pendingMapView = state.mapView;
+  } finally {
+    dashboardStateHydrating = false;
+  }
+  if (mapStyle) await setMapTileStyle(mapStyle, false);
+  if (vetroVisible) await ensureVetroLoaded();
+  else renderVetroLayer();
+  if (vetroLoaded) populateVetroFilters();
+  renderVetroLayer();
+  if (map && pendingMapView) {
+    const center = pendingMapView.center;
+    if (Array.isArray(center) && center.length === 2) map.setView(center, pendingMapView.zoom || map.getZoom());
+  }
+  scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
 }
 
 function scheduleEmployeeDashboardSync() {
@@ -558,6 +800,7 @@ function dashboardStatePayload() {
     hiddenTickets: [...hiddenTickets],
     archivedTickets: [...archivedTickets],
     ticketActions,
+    ticketActionUpdatedAt,
     ticketDescriptions,
     showHiddenTickets,
     ticketSearch,
@@ -573,6 +816,7 @@ function dashboardStatePayload() {
     vetroFiberFilterSelected: [...vetroSelectedFibers],
     vetroRouteFilterSelected: [...vetroSelectedRoutes],
     vetroPointFilterSelected: [...vetroSelectedPoints],
+    vetroLayerColorOverrides,
     vetroLayerStyleOverrides,
     vetroLayerNameOverrides,
     vetroLayerNoteOverrides,
@@ -595,12 +839,15 @@ function dashboardStatePayload() {
     sidebarCollapsed,
     locatorProfile,
     selectedTicketNumber: selectedTicket?.ticket_number || pendingSelectedTicketNumber || "",
-    mapView: map
-      ? {
-          center: [map.getCenter().lat, map.getCenter().lng],
-          zoom: map.getZoom(),
-        }
-      : pendingMapView,
+    mapView: currentMapViewPayload(),
+  };
+}
+
+function ticketWorkflowStatePayload() {
+  return {
+    ticketActions,
+    ticketActionUpdatedAt,
+    ticketDescriptions,
   };
 }
 
@@ -619,6 +866,10 @@ function applyDashboardState(state) {
     if (state.ticketActions && typeof state.ticketActions === "object") {
       ticketActions = normalizeTicketActions(state.ticketActions);
       writeJsonStorage(STORAGE_KEYS.ticketActions, ticketActions);
+    }
+    if (state.ticketActionUpdatedAt && typeof state.ticketActionUpdatedAt === "object") {
+      ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(state.ticketActionUpdatedAt);
+      writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
     }
     if (state.ticketDescriptions && typeof state.ticketDescriptions === "object") {
       ticketDescriptions = normalizeTicketDescriptions(state.ticketDescriptions);
@@ -693,6 +944,10 @@ function applyDashboardState(state) {
       vetroSelectedPoints = new Set(state.vetroPointFilterSelected.map(String));
       writeJsonStorage(STORAGE_KEYS.vetroPoint, [...vetroSelectedPoints]);
     }
+    if (state.vetroLayerColorOverrides && typeof state.vetroLayerColorOverrides === "object") {
+      vetroLayerColorOverrides = state.vetroLayerColorOverrides;
+      localStorage.setItem(STORAGE_KEYS.vetroLayerColors, JSON.stringify(vetroLayerColorOverrides));
+    }
     if (state.vetroLayerStyleOverrides && typeof state.vetroLayerStyleOverrides === "object") {
       vetroLayerStyleOverrides = state.vetroLayerStyleOverrides;
       localStorage.setItem(STORAGE_KEYS.vetroLayerStyles, JSON.stringify(vetroLayerStyleOverrides));
@@ -716,37 +971,37 @@ function applyDashboardState(state) {
     if (typeof state.vetroSlVisible === "boolean") {
       vetroSlVisible = state.vetroSlVisible;
       writeBooleanStorage(STORAGE_KEYS.vetroSlVisible, vetroSlVisible);
-      elements.vetroSlToggle.checked = vetroSlVisible;
+      if (elements.vetroSlToggle) elements.vetroSlToggle.checked = vetroSlVisible;
     }
     if (typeof state.vetroSlShape === "string") {
       vetroSlShape = state.vetroSlShape;
       localStorage.setItem(STORAGE_KEYS.vetroSlShape, vetroSlShape);
-      elements.vetroSlShape.value = vetroSlShape;
+      if (elements.vetroSlShape) elements.vetroSlShape.value = vetroSlShape;
     }
     if (typeof state.vetroSlColor === "string") {
       vetroSlColor = state.vetroSlColor;
       localStorage.setItem(STORAGE_KEYS.vetroSlColor, vetroSlColor);
-      elements.vetroSlColor.value = vetroSlColor;
+      if (elements.vetroSlColor) elements.vetroSlColor.value = vetroSlColor;
     }
     if (typeof state.vetroSlOutlineColor === "string") {
       vetroSlOutlineColor = state.vetroSlOutlineColor;
       localStorage.setItem(STORAGE_KEYS.vetroSlOutlineColor, vetroSlOutlineColor);
-      elements.vetroSlOutlineColor.value = vetroSlOutlineColor;
+      if (elements.vetroSlOutlineColor) elements.vetroSlOutlineColor.value = vetroSlOutlineColor;
     }
     if (typeof state.vetroSlOpacity === "number") {
       vetroSlOpacity = state.vetroSlOpacity;
       localStorage.setItem(STORAGE_KEYS.vetroSlOpacity, String(vetroSlOpacity));
-      elements.vetroSlOpacity.value = String(opacityToPercent(vetroSlOpacity));
+      if (elements.vetroSlOpacity) elements.vetroSlOpacity.value = String(opacityToPercent(vetroSlOpacity));
     }
     if (typeof state.vetroSlSize === "number") {
       vetroSlSize = state.vetroSlSize;
       localStorage.setItem(STORAGE_KEYS.vetroSlSize, String(vetroSlSize));
-      elements.vetroSlSize.value = String(vetroSlSize);
+      if (elements.vetroSlSize) elements.vetroSlSize.value = String(vetroSlSize);
     }
     if (typeof state.vetroSlLabels === "boolean") {
       vetroSlLabels = state.vetroSlLabels;
       writeBooleanStorage(STORAGE_KEYS.vetroSlLabels, vetroSlLabels);
-      elements.vetroSlLabels.checked = vetroSlLabels;
+      if (elements.vetroSlLabels) elements.vetroSlLabels.checked = vetroSlLabels;
     }
     if (typeof state.vetroSearch === "string") {
       vetroSearch = state.vetroSearch;
@@ -830,7 +1085,57 @@ async function saveDashboardState() {
   }
 }
 
+async function saveTicketWorkflowStateToServer() {
+  if (!dashboardStateReady || dashboardStateHydrating) return;
+  const response = await fetch("/api/state", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(ticketWorkflowStatePayload()),
+    keepalive: true,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to save ticket workflow state: ${response.status}`);
+  }
+}
+
+function scheduleTicketWorkflowServerSave() {
+  if (!dashboardStateReady || dashboardStateHydrating) return;
+  if (ticketWorkflowSaveTimer) window.clearTimeout(ticketWorkflowSaveTimer);
+  ticketWorkflowSaveTimer = window.setTimeout(() => {
+    ticketWorkflowSaveTimer = null;
+    void saveTicketWorkflowStateToServer().catch((error) => {
+      console.warn("Unable to save ticket workflow state", error);
+    });
+  }, 150);
+}
+
+function flushTicketWorkflowState() {
+  if (!dashboardStateReady || dashboardStateHydrating) return;
+  if (ticketWorkflowSaveTimer) {
+    window.clearTimeout(ticketWorkflowSaveTimer);
+    ticketWorkflowSaveTimer = null;
+  }
+  const payload = JSON.stringify(ticketWorkflowStatePayload());
+  if (navigator.sendBeacon) {
+    const blob = new Blob([payload], { type: "application/json" });
+    if (navigator.sendBeacon("/api/state", blob)) return;
+  }
+  void fetch("/api/state", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: payload,
+    keepalive: true,
+  }).catch((error) => {
+    console.warn("Unable to flush ticket workflow state", error);
+  });
+}
+
 async function saveEmployeeDashboard({ enabled = true, state = dashboardStatePayload(), toast = true } = {}) {
+  if (toast) showSavedToast("Saving employee dashboard...");
   const response = await fetch("/api/employee-dashboard", {
     method: "POST",
     headers: {
@@ -847,18 +1152,6 @@ async function saveEmployeeDashboard({ enabled = true, state = dashboardStatePay
   return employeeDashboardConfig;
 }
 
-function updateLocatorDefaultStatus() {
-  if (!elements.locatorDefaultToggle || !elements.locatorDefaultStatus) return;
-  elements.locatorDefaultToggle.checked = Boolean(locatorDefaultConfig.enabled);
-  if (!locatorDefaultConfig.enabled) {
-    elements.locatorDefaultStatus.textContent = "Default view is off";
-    return;
-  }
-  const savedAt = locatorDefaultConfig.saved_at ? new Date(locatorDefaultConfig.saved_at) : null;
-  const savedText = savedAt && !Number.isNaN(savedAt.getTime()) ? formatDashboardDateTime(savedAt) : "saved";
-  elements.locatorDefaultStatus.textContent = `Default view on: ${savedText}`;
-}
-
 function showSavedToast(message = "Saved") {
   if (!elements.saveToast) return;
   elements.saveToast.textContent = message;
@@ -873,24 +1166,32 @@ function showSavedToast(message = "Saved") {
   }, 1800);
 }
 
-async function saveLocatorDefault({ enabled = elements.locatorDefaultToggle.checked, includeState = true } = {}) {
-  const body = { enabled };
-  if (includeState) body.state = dashboardStatePayload();
-  const response = await fetch("/api/locator-default", {
+async function saveNamedView(name) {
+  const trimmedName = String(name || "").trim().slice(0, 80);
+  if (!trimmedName) return null;
+  updateSavedViewStatus(`Saving ${trimmedName}...`);
+  showSavedToast(`Saving ${trimmedName}...`);
+  const existing = viewPresets.find((preset) => preset.name.toLowerCase() === trimmedName.toLowerCase());
+  const response = await fetch("/api/view-presets", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      id: existing?.id || trimmedName,
+      name: trimmedName,
+      state: savedViewStatePayload(),
+    }),
   });
   if (!response.ok) {
-    throw new Error(`Failed to save locator default: ${response.status}`);
+    throw new Error(`Failed to save view: ${response.status}`);
   }
   const payload = await response.json();
-  locatorDefaultConfig = payload.locatorDefault || { enabled, state: body.state || {} };
-  updateLocatorDefaultStatus();
-  showSavedToast("Saved");
-  return locatorDefaultConfig;
+  viewPresets = normalizeViewPresets(payload.viewPresets || []);
+  selectedSavedViewId = String(payload.savedView?.id || existing?.id || trimmedName);
+  renderSavedViewControls();
+  showSavedToast(`${trimmedName} saved`);
+  return selectedSavedView();
 }
 
 async function loadDashboardState() {
@@ -898,15 +1199,16 @@ async function loadDashboardState() {
   if (!response.ok) return;
   const payload = await response.json();
   locatorDefaultConfig = payload.locatorDefault || { enabled: false, state: {}, saved_at: "", saved_by: "" };
+  viewPresets = normalizeViewPresets(payload.viewPresets || []);
   employeeDashboardConfig = payload.employeeDashboard || { enabled: false, state: {}, saved_at: "", saved_by: "" };
-  updateLocatorDefaultStatus();
-  const defaultState = locatorDefaultConfig.enabled && locatorDefaultConfig.state ? locatorDefaultConfig.state : null;
-  applyDashboardState(defaultState || payload.state || {});
+  renderSavedViewControls();
+  applyDashboardState(payload.state || {});
 }
 
 let hiddenTickets = new Set(readJsonStorage(STORAGE_KEYS.hiddenTickets, []));
 let archivedTickets = new Set(readJsonStorage(STORAGE_KEYS.archivedTickets, []));
 let ticketActions = normalizeTicketActions(readObjectStorage(STORAGE_KEYS.ticketActions));
+let ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(readObjectStorage(STORAGE_KEYS.ticketActionUpdatedAt));
 let ticketDescriptions = normalizeTicketDescriptions(readObjectStorage(STORAGE_KEYS.ticketDescriptions));
 let polygonColor = localStorage.getItem("polygonColor") || "#1f7a4d";
 let polygonOpacity = Number(localStorage.getItem("polygonOpacity") || "0.14");
@@ -923,7 +1225,6 @@ localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
 let sheetSort = readJsonStorage(STORAGE_KEYS.sheetSort, { column: "Due Date", direction: "desc" });
 let sheetColumnFilters = readObjectStorage(STORAGE_KEYS.sheetColumnFilters);
 let sheetSavedFilters = readJsonStorage(STORAGE_KEYS.sheetSavedFilters, []);
-localStorage.removeItem("vetroLayerColors");
 let showHiddenTickets = readBooleanStorage(STORAGE_KEYS.showHidden, false);
 let vetroVisible = readBooleanStorage(STORAGE_KEYS.vetroVisible, false);
 let vetroSelectedLayers = new Set(readJsonStorage(STORAGE_KEYS.vetroLayers, []));
@@ -935,6 +1236,7 @@ let vetroSelectedGeometries = readSetStorage(STORAGE_KEYS.vetroGeometry);
 let vetroSelectedFibers = readSetStorage(STORAGE_KEYS.vetroFiber);
 let vetroSelectedRoutes = readSetStorage(STORAGE_KEYS.vetroRoute);
 let vetroSelectedPoints = readSetStorage(STORAGE_KEYS.vetroPoint);
+let vetroLayerColorOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vetroLayerColors) || localStorage.getItem("vetroLayerColors") || "{}");
 let vetroLayerStyleOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vetroLayerStyles) || "{}");
 let vetroLayerNameOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vetroLayerNames) || "{}");
 let vetroLayerNoteOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vetroLayerNotes) || "{}");
@@ -965,9 +1267,12 @@ let pendingTicketListScroll = { top: 0, left: 0 };
 let dashboardStateReady = false;
 let dashboardStateHydrating = false;
 let dashboardStateSaveTimer = null;
+let ticketWorkflowSaveTimer = null;
 let employeeDashboardSyncTimer = null;
 let saveToastTimer = null;
 let locatorDefaultConfig = { enabled: false, state: {}, saved_at: "", saved_by: "" };
+let viewPresets = [];
+let selectedSavedViewId = localStorage.getItem(STORAGE_KEYS.savedViewSelected) || "";
 let employeeDashboardConfig = { enabled: false, state: {}, saved_at: "", saved_by: "" };
 let locatorProfile = normalizeProfile(readObjectStorage(STORAGE_KEYS.profile));
 
@@ -984,15 +1289,19 @@ const elements = {
   countyFilterSummary: document.querySelector("#countyFilterSummary"),
   countyAll: document.querySelector("#countyAll"),
   countyClear: document.querySelector("#countyClear"),
-  locatorDefaultToggle: document.querySelector("#locatorDefaultToggle"),
-  saveLocatorDefault: document.querySelector("#saveLocatorDefault"),
+  savedViewSelect: document.querySelector("#savedViewSelect"),
+  saveView: document.querySelector("#saveView"),
   saveEmployeeDashboard: document.querySelector("#saveEmployeeDashboard"),
-  locatorDefaultStatus: document.querySelector("#locatorDefaultStatus"),
+  savedViewStatus: document.querySelector("#savedViewStatus"),
   employeeBar: document.querySelector("#employeeBar"),
   saveToast: document.querySelector("#saveToast"),
   refresh: document.querySelector("#refresh"),
   vetroToggle: document.querySelector("#vetroToggle"),
   vetroStatus: document.querySelector("#vetroStatus"),
+  updateVetro: document.querySelector("#updateVetro"),
+  vetroRefreshProgress: document.querySelector("#vetroRefreshProgress"),
+  vetroRefreshStatus: document.querySelector("#vetroRefreshStatus"),
+  vetroRefreshBar: document.querySelector("#vetroRefreshBar"),
   vetroSearch: document.querySelector("#vetroSearch"),
   vetroLayerFilter: document.querySelector("#vetroLayerFilter"),
   vetroLayerAll: document.querySelector("#vetroLayerAll"),
@@ -1094,13 +1403,13 @@ elements.polygonOpacity.value = String(opacityToPercent(polygonOpacity));
 elements.ticketOpacity.value = String(opacityToPercent(ticketOpacity));
 elements.vetroColor.value = vetroColor;
 elements.vetroOpacity.value = String(opacityToPercent(vetroOpacity));
-elements.vetroSlToggle.checked = vetroSlVisible;
-elements.vetroSlShape.value = vetroSlShape;
-elements.vetroSlColor.value = vetroSlColor;
-elements.vetroSlOutlineColor.value = vetroSlOutlineColor;
-elements.vetroSlOpacity.value = String(opacityToPercent(vetroSlOpacity));
-elements.vetroSlSize.value = String(vetroSlSize);
-elements.vetroSlLabels.checked = vetroSlLabels;
+if (elements.vetroSlToggle) elements.vetroSlToggle.checked = vetroSlVisible;
+if (elements.vetroSlShape) elements.vetroSlShape.value = vetroSlShape;
+if (elements.vetroSlColor) elements.vetroSlColor.value = vetroSlColor;
+if (elements.vetroSlOutlineColor) elements.vetroSlOutlineColor.value = vetroSlOutlineColor;
+if (elements.vetroSlOpacity) elements.vetroSlOpacity.value = String(opacityToPercent(vetroSlOpacity));
+if (elements.vetroSlSize) elements.vetroSlSize.value = String(vetroSlSize);
+if (elements.vetroSlLabels) elements.vetroSlLabels.checked = vetroSlLabels;
 elements.vetroSearch.value = vetroSearch;
 syncTicketSearchInputs();
 elements.mapStyle.value = mapStyle;
@@ -1201,8 +1510,30 @@ const VETRO_LAYER_INFO = {
 
 let vetroLayerGeometryById = {};
 
+function vetroFeatureId(feature) {
+  return propValue(feature?.properties || {}, "ID", "feature_id", "Name", "name", "vetro_id");
+}
+
+function vetroPrefixLayerForFeature(feature) {
+  const props = feature?.properties || {};
+  if (propValue(props, "layer_id", "Layer_ID") !== VETRO_SERVICE_LOCATION_LAYER_ID) return null;
+  const id = vetroFeatureId(feature).toUpperCase();
+  return VETRO_PREFIX_LAYERS.find((item) => id.startsWith(item.prefix)) || null;
+}
+
+function vetroLayerControlId(feature) {
+  return vetroPrefixLayerForFeature(feature)?.id || propValue(feature?.properties || {}, "layer_id", "Layer_ID");
+}
+
+function vetroLayerInfo(layerId) {
+  const key = String(layerId);
+  const prefixLayer = VETRO_PREFIX_LAYERS.find((item) => item.id === key);
+  if (prefixLayer) return { name: prefixLayer.name, geometry: "Point", detail: prefixLayer.detail, virtual: true };
+  return VETRO_LAYER_INFO[key] || null;
+}
+
 function vetroLayerGeometryType(layerId) {
-  return vetroLayerGeometryById[String(layerId)] || VETRO_LAYER_INFO[String(layerId)]?.geometry || "";
+  return vetroLayerGeometryById[String(layerId)] || vetroLayerInfo(layerId)?.geometry || "";
 }
 
 function vetroLayerStyleChoice(layerId) {
@@ -1210,7 +1541,7 @@ function vetroLayerStyleChoice(layerId) {
 }
 
 function vetroLayerDefaultName(layerId) {
-  return VETRO_LAYER_INFO[String(layerId)]?.name || `Layer ${layerId}`;
+  return vetroLayerInfo(layerId)?.name || `Layer ${layerId}`;
 }
 
 function vetroLayerDisplayName(layerId) {
@@ -1225,11 +1556,13 @@ function vetroLayerLabel(layerId, count = 0) {
   const geometry = vetroLayerGeometryType(layerId);
   const geometryLabel = geometry ? ` · ${geometry.startsWith("Line") ? "Line" : "Point"}` : "";
   const countLabel = count ? ` (${Number(count).toLocaleString()})` : "";
-  return `Layer ${layerId}: ${vetroLayerDisplayName(layerId)}${geometryLabel}${countLabel}`;
+  const info = vetroLayerInfo(layerId);
+  const prefixLabel = info?.virtual ? "" : `Layer ${layerId}: `;
+  return `${prefixLabel}${vetroLayerDisplayName(layerId)}${geometryLabel}${countLabel}`;
 }
 
 function vetroLayerTitle(layerId) {
-  const info = VETRO_LAYER_INFO[String(layerId)] || { detail: "features from VETRO export" };
+  const info = vetroLayerInfo(layerId) || { detail: "features from VETRO export" };
   const geometry = vetroLayerGeometryType(layerId);
   const shapeHint = geometry.startsWith("Line")
     ? "Use the layer style selector to switch between solid, dashed, and dotted lines."
@@ -1237,7 +1570,8 @@ function vetroLayerTitle(layerId) {
   const note = vetroLayerNote(layerId);
   const sizeHint = geometry.startsWith("Line") ? `Line width ${vetroLayerSize(layerId)}.` : `Marker size ${vetroLayerSize(layerId)}.`;
   const opacityHint = `Opacity ${Math.round(vetroLayerOpacity(layerId) * 100)}%.`;
-  return `Layer ${layerId}: ${vetroLayerDisplayName(layerId)}. ${info.detail} ${shapeHint} ${sizeHint} ${opacityHint}${note ? ` Note: ${note}` : ""}`;
+  const colorHint = `Color ${colorForVetroLayer(layerId)}.`;
+  return `${vetroLayerLabel(layerId)}. ${info.detail} ${shapeHint} ${sizeHint} ${opacityHint} ${colorHint}${note ? ` Note: ${note}` : ""}`;
 }
 
 function vetroStatusLabel(statusId) {
@@ -1357,8 +1691,7 @@ function pointValue(feature) {
 }
 
 function isSlFeature(feature) {
-  const props = feature.properties || {};
-  return propValue(props, "layer_id", "Layer_ID") === "26" && propValue(props, "ID", "feature_id").toUpperCase().startsWith("SL-");
+  return Boolean(vetroPrefixLayerForFeature(feature));
 }
 
 function slLabel(feature) {
@@ -1411,21 +1744,23 @@ function vetroLayerOpacity(layerId) {
   return clampNumber(vetroLayerOpacityOverrides[String(layerId)], 0, 1, vetroOpacity);
 }
 
+function isHexColor(value) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || ""));
+}
+
 function vetroLayerShape(layerId) {
   const geometryChoice = vetroLayerStyleChoice(layerId);
   return vetroLayerStyleOverrides[String(layerId)] || (geometryChoice === "line" ? "solid" : "circle");
 }
 
 function vetroPointToLayer(feature, latlng) {
-  const layerId = propValue(feature?.properties || {}, "layer_id", "Layer_ID");
-  if (isSlFeature(feature)) {
-    return L.marker(latlng, { icon: slMarkerIcon(feature) });
-  }
+  const layerId = vetroLayerControlId(feature);
   const shape = vetroLayerShape(layerId);
   const size = vetroLayerSize(layerId);
   const opacity = vetroLayerOpacity(layerId);
+  const label = vetroSlLabels && isSlFeature(feature) ? slLabel(feature) : "";
   return L.marker(latlng, {
-    icon: vetroMarkerIcon(shape, colorForVetroLayer(layerId), size, opacity),
+    icon: vetroMarkerIcon(shape, colorForVetroLayer(layerId), size, opacity, label),
   });
 }
 
@@ -1726,7 +2061,8 @@ async function refreshMapDataOverlay() {
 }
 
 function colorForVetroLayer(layerId) {
-  return vetroColor;
+  const override = vetroLayerColorOverrides[String(layerId)];
+  return isHexColor(override) ? override : vetroColor;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -1756,10 +2092,12 @@ function hexToRgba(color, opacity) {
 }
 
 function selectedValues(select) {
+  if (!select) return [];
   return [...select.querySelectorAll("input[type='checkbox']:checked")].map((input) => input.value);
 }
 
 function setAllChecked(container, checked) {
+  if (!container) return;
   for (const input of container.querySelectorAll("input[type='checkbox']")) {
     input.checked = checked;
   }
@@ -1772,22 +2110,8 @@ function syncVetroLayerSelection() {
 
 function syncVetroFacetSelection() {
   vetroSelectedPlans = new Set(selectedValues(elements.vetroPlanFilter));
-  vetroSelectedBuilds = new Set(selectedValues(elements.vetroBuildFilter));
-  vetroSelectedPlacements = new Set(selectedValues(elements.vetroPlacementFilter));
-  vetroSelectedStatuses = new Set(selectedValues(elements.vetroStatusFilter));
-  vetroSelectedGeometries = new Set(selectedValues(elements.vetroGeometryFilter));
-  vetroSelectedFibers = new Set(selectedValues(elements.vetroFiberFilter));
-  vetroSelectedRoutes = new Set(selectedValues(elements.vetroRouteFilter));
-  vetroSelectedPoints = new Set(selectedValues(elements.vetroPointFilter));
   vetroSearch = elements.vetroSearch.value.trim();
   writeJsonStorage(STORAGE_KEYS.vetroPlan, [...vetroSelectedPlans]);
-  writeJsonStorage(STORAGE_KEYS.vetroBuild, [...vetroSelectedBuilds]);
-  writeJsonStorage(STORAGE_KEYS.vetroPlacement, [...vetroSelectedPlacements]);
-  writeJsonStorage(STORAGE_KEYS.vetroStatus, [...vetroSelectedStatuses]);
-  writeJsonStorage(STORAGE_KEYS.vetroGeometry, [...vetroSelectedGeometries]);
-  writeJsonStorage(STORAGE_KEYS.vetroFiber, [...vetroSelectedFibers]);
-  writeJsonStorage(STORAGE_KEYS.vetroRoute, [...vetroSelectedRoutes]);
-  writeJsonStorage(STORAGE_KEYS.vetroPoint, [...vetroSelectedPoints]);
   localStorage.setItem(STORAGE_KEYS.vetroSearch, vetroSearch);
 }
 
@@ -1822,6 +2146,10 @@ function renderVetroLayerList(container, values, selected, counts = {}) {
               <span>${escapeHtml(vetroLayerLabel(layerId, count))}</span>
             </label>
             <div class="vetro-layer-appearance">
+              <label class="layer-swatch">
+                <span>Color</span>
+                <input class="layer-color" type="color" data-layer-color="${escapeHtml(layerId)}" value="${escapeHtml(colorForVetroLayer(layerId))}">
+              </label>
               <label class="layer-swatch">
                 <span>Opacity %</span>
                 <input class="layer-opacity" type="number" min="0" max="100" step="1" data-layer-opacity="${escapeHtml(layerId)}" value="${escapeHtml(opacityToPercent(vetroLayerOpacity(layerId)))}">
@@ -1945,12 +2273,12 @@ function sleep(ms) {
 }
 
 function vetroStyle(feature) {
-  const layerId = propValue(feature?.properties || {}, "layer_id", "Layer_ID");
-  const color = isSlFeature(feature) ? vetroSlColor : colorForVetroLayer(layerId);
-  const outlineColor = isSlFeature(feature) ? vetroSlOutlineColor : color;
+  const layerId = vetroLayerControlId(feature);
+  const color = colorForVetroLayer(layerId);
+  const outlineColor = color;
   const geometry = feature?.geometry?.type || "";
-  const size = isSlFeature(feature) ? vetroSlSize : vetroLayerSize(layerId);
-  const opacity = isSlFeature(feature) ? vetroSlOpacity : vetroLayerOpacity(layerId);
+  const size = vetroLayerSize(layerId);
+  const opacity = vetroLayerOpacity(layerId);
   const style = {
     color: outlineColor,
     fillColor: color,
@@ -1970,22 +2298,23 @@ function vetroStyle(feature) {
 
 function bindVetroPopup(feature, layer) {
   const props = feature.properties || {};
-  const title = isSlFeature(feature)
-    ? `Service location ${propValue(props, "ID", "feature_id")}`
-    : propValue(props, "feature_id", "ID", "Name", "name") || `Layer ${propValue(props, "layer_id", "Layer_ID")}`.trim() || "Vetro feature";
-  const layerId = propValue(props, "layer_id", "Layer_ID");
+  const layerId = vetroLayerControlId(feature);
+  const sourceLayerId = propValue(props, "layer_id", "Layer_ID");
+  const title = propValue(props, "feature_id", "ID", "Name", "name") || `Layer ${sourceLayerId}`.trim() || "Vetro feature";
   const rows = [
     ["Customer / Address", propValue(props, "Street_Address", "street_address", "Address")],
-    ["Service Location ID", isSlFeature(feature) ? propValue(props, "ID", "feature_id") : ""],
+    ["VETRO feature ID", propValue(props, "ID", "feature_id")],
     ["Zone", propValue(props, "Zone_Name")],
     ["Zone Status", propValue(props, "Zone_Status")],
     ["Building Type", propValue(props, "Building_Type", "Building Type")],
     ["Drop Type", propValue(props, "Drop_Type", "Drop Type")],
     ["Layer", layerId ? vetroLayerLabel(layerId) : ""],
+    ["Source layer", sourceLayerId],
     ["Layer name", layerId ? vetroLayerDisplayName(layerId) : ""],
     ["Layer note", layerId ? vetroLayerNote(layerId) : ""],
     ["Layer control", layerId ? vetroLayerStyleLabel(layerId) : ""],
     ["Layer setting", layerId ? (vetroLayerStyleOverrides[String(layerId)] || "Auto") : ""],
+    ["Layer color", layerId ? colorForVetroLayer(layerId) : ""],
     ["Layer size", layerId ? String(vetroLayerSize(layerId)) : ""],
     ["Layer opacity", layerId ? `${Math.round(vetroLayerOpacity(layerId) * 100)}%` : ""],
     ["Vector", propValue(props, "vector_layer", "Vector_layer")],
@@ -1999,7 +2328,7 @@ function bindVetroPopup(feature, layer) {
     ["Bore / Plow", propValue(props, "Bore_Plow", "Bore Plow")],
     ["Linear Footage", propValue(props, "Linear_Footage")],
     ["Micro Duct Count", propValue(props, "Micro_Duct_Count")],
-    ["Street Address", isSlFeature(feature) ? "" : propValue(props, "street_address", "Street_Address", "Street Address")],
+    ["Street Address", propValue(props, "street_address", "Street_Address", "Street Address")],
     ["Note", propValue(props, "Note", "note")],
     ["Vetro ID", propValue(props, "vetro_id")],
   ]
@@ -2018,16 +2347,9 @@ function filteredVetroGeojson() {
     type: "FeatureCollection",
     features: sourceFeatures.filter((feature) => {
       const props = feature.properties || {};
-      if (isSlFeature(feature) && !vetroSlVisible) return false;
-      if (layerIds.length && !layerIds.includes(propValue(props, "layer_id", "Layer_ID"))) return false;
+      const layerControlId = vetroLayerControlId(feature);
+      if (!layerIds.includes(layerControlId)) return false;
       if (vetroSelectedPlans.size && !vetroSelectedPlans.has(propValue(props, "plan"))) return false;
-      if (vetroSelectedBuilds.size && !vetroSelectedBuilds.has(propValue(props, "build", "Build"))) return false;
-      if (vetroSelectedPlacements.size && !vetroSelectedPlacements.has(propValue(props, "placement", "Placement"))) return false;
-      if (vetroSelectedStatuses.size && !vetroSelectedStatuses.has(propValue(props, "status_id", "Status_ID"))) return false;
-      if (vetroSelectedGeometries.size && !vetroSelectedGeometries.has(feature.geometry?.type || "")) return false;
-      if (vetroSelectedFibers.size && !vetroSelectedFibers.has(propValue(props, "Fiber_Capacity", "Fiber Capacity"))) return false;
-      if (vetroSelectedRoutes.size && !vetroSelectedRoutes.has(routeValue(feature))) return false;
-      if (vetroSelectedPoints.size && !vetroSelectedPoints.has(pointValue(feature))) return false;
       if (search && !featureSearchText(feature).includes(search)) return false;
       return true;
     }),
@@ -2063,11 +2385,11 @@ function renderVetroLayer() {
 
 function populateVetroFilters() {
   const features = vetroGeojson?.features || [];
-  const layerIds = uniqueSorted(features.map((feature) => propValue(feature.properties || {}, "layer_id", "Layer_ID")));
+  const layerIds = uniqueSorted(features.map(vetroLayerControlId));
   const availableLayers = new Set(layerIds);
   const geometryByLayer = {};
   for (const feature of features) {
-    const layerId = propValue(feature.properties || {}, "layer_id", "Layer_ID");
+    const layerId = vetroLayerControlId(feature);
     const geometry = feature.geometry?.type || "";
     if (!geometryByLayer[layerId]) geometryByLayer[layerId] = new Set();
     if (geometry) geometryByLayer[layerId].add(geometry);
@@ -2077,6 +2399,11 @@ function populateVetroFilters() {
     STORAGE_KEYS.vetroLayerStyles,
     vetroLayerStyleOverrides,
     (layerId, value) => availableLayers.has(layerId) && vetroLayerStyleValid(layerId, value),
+  );
+  vetroLayerColorOverrides = normalizeObjectStorage(
+    STORAGE_KEYS.vetroLayerColors,
+    vetroLayerColorOverrides,
+    (layerId, value) => availableLayers.has(layerId) && isHexColor(value),
   );
   vetroLayerNameOverrides = normalizeObjectStorage(
     STORAGE_KEYS.vetroLayerNames,
@@ -2098,45 +2425,29 @@ function populateVetroFilters() {
     vetroLayerOpacityOverrides,
     (layerId, value) => availableLayers.has(layerId) && Number.isFinite(Number(value)),
   );
+  const selectedLayerIds = [...vetroSelectedLayers];
+  const hadRawLayer26 = vetroSelectedLayers.has(VETRO_SERVICE_LOCATION_LAYER_ID);
+  const hadObsoleteLayer26Split = selectedLayerIds.some((layerId) => String(layerId).startsWith("prefix:") && layerId !== "prefix:SL");
+  if (hadRawLayer26 && availableLayers.has("prefix:SL")) {
+    vetroSelectedLayers.add("prefix:SL");
+  }
+  if (hadObsoleteLayer26Split && availableLayers.has(VETRO_SERVICE_LOCATION_LAYER_ID)) {
+    vetroSelectedLayers.add(VETRO_SERVICE_LOCATION_LAYER_ID);
+  }
   vetroSelectedLayers = new Set([...vetroSelectedLayers].filter((layerId) => availableLayers.has(layerId)));
+  if (!vetroSelectedLayers.size) {
+    vetroSelectedLayers = new Set(layerIds);
+  }
   writeJsonStorage(STORAGE_KEYS.vetroLayers, [...vetroSelectedLayers]);
-  const layerCounts = Object.fromEntries((vetroGeojson.metadata?.layers || []).map((item) => [String(item.id), item.feature_count]));
+  const layerCounts = valueCountMap(features, vetroLayerControlId);
   renderVetroLayerList(elements.vetroLayerFilter, layerIds, [...vetroSelectedLayers], layerCounts);
   const planValues = uniqueSorted(features.map((feature) => propValue(feature.properties || {}, "plan")));
-  const buildValues = uniqueSorted(features.map((feature) => propValue(feature.properties || {}, "build", "Build")));
-  const placementValues = uniqueSorted(features.map((feature) => propValue(feature.properties || {}, "placement", "Placement")));
-  const statusValues = uniqueSorted(features.map((feature) => propValue(feature.properties || {}, "status_id", "Status_ID")));
-  const geometryValues = uniqueSorted(features.map((feature) => feature.geometry?.type || ""));
-  const fiberValues = uniqueSorted(features.map((feature) => propValue(feature.properties || {}, "Fiber_Capacity", "Fiber Capacity")));
-  const routeValues = uniqueSorted(features.map(routeValue));
-  const pointValues = uniqueSorted(features.map(pointValue));
 
   vetroSelectedPlans = normalizeSelectedSet(vetroSelectedPlans, planValues, STORAGE_KEYS.vetroPlan);
-  vetroSelectedBuilds = normalizeSelectedSet(vetroSelectedBuilds, buildValues, STORAGE_KEYS.vetroBuild);
-  vetroSelectedPlacements = normalizeSelectedSet(vetroSelectedPlacements, placementValues, STORAGE_KEYS.vetroPlacement);
-  vetroSelectedStatuses = normalizeSelectedSet(vetroSelectedStatuses, statusValues, STORAGE_KEYS.vetroStatus);
-  vetroSelectedGeometries = normalizeSelectedSet(vetroSelectedGeometries, geometryValues, STORAGE_KEYS.vetroGeometry);
-  vetroSelectedFibers = normalizeSelectedSet(vetroSelectedFibers, fiberValues, STORAGE_KEYS.vetroFiber);
-  vetroSelectedRoutes = normalizeSelectedSet(vetroSelectedRoutes, routeValues, STORAGE_KEYS.vetroRoute);
-  vetroSelectedPoints = normalizeSelectedSet(vetroSelectedPoints, pointValues, STORAGE_KEYS.vetroPoint);
 
   const planCounts = valueCountMap(features, (feature) => propValue(feature.properties || {}, "plan"));
-  const statusCounts = valueCountMap(features, (feature) => propValue(feature.properties || {}, "status_id", "Status_ID"));
-  const fiberCounts = valueCountMap(features, (feature) => propValue(feature.properties || {}, "Fiber_Capacity", "Fiber Capacity"));
-  const placementCounts = valueCountMap(features, (feature) => propValue(feature.properties || {}, "placement", "Placement"));
-  const routeCounts = valueCountMap(features, routeValue);
-  const pointCounts = valueCountMap(features, pointValue);
-  const geometryCounts = valueCountMap(features, (feature) => feature.geometry?.type || "");
-  const buildCounts = valueCountMap(features, (feature) => propValue(feature.properties || {}, "build", "Build"));
 
   renderCheckboxList(elements.vetroPlanFilter, planValues, [...vetroSelectedPlans], (value) => labelWithCount(value, planCounts));
-  renderCheckboxList(elements.vetroStatusFilter, statusValues, [...vetroSelectedStatuses], (value) => labelWithCount(value, statusCounts, vetroStatusLabel));
-  renderCheckboxList(elements.vetroFiberFilter, fiberValues, [...vetroSelectedFibers], (value) => labelWithCount(`${value}`, fiberCounts, (item) => `${item} fiber`));
-  renderCheckboxList(elements.vetroPlacementFilter, placementValues, [...vetroSelectedPlacements], (value) => labelWithCount(value, placementCounts));
-  renderCheckboxList(elements.vetroRouteFilter, routeValues, [...vetroSelectedRoutes], (value) => labelWithCount(value, routeCounts));
-  renderCheckboxList(elements.vetroPointFilter, pointValues, [...vetroSelectedPoints], (value) => labelWithCount(value, pointCounts));
-  renderCheckboxList(elements.vetroGeometryFilter, geometryValues, [...vetroSelectedGeometries], (value) => labelWithCount(value, geometryCounts));
-  renderCheckboxList(elements.vetroBuildFilter, buildValues, [...vetroSelectedBuilds], (value) => labelWithCount(value, buildCounts));
   syncVetroFacetSelection();
   scheduleDashboardStateSave();
 }
@@ -2166,6 +2477,66 @@ async function ensureVetroLoaded() {
   populateVetroFilters();
 }
 
+function updateVetroRefreshUi(status) {
+  if (!elements.vetroRefreshProgress) return;
+  const running = Boolean(status?.running);
+  const complete = status?.success === true;
+  const failed = status?.success === false;
+  elements.vetroRefreshProgress.hidden = !running && !complete && !failed;
+  if (elements.updateVetro) elements.updateVetro.disabled = running;
+  const percent = Math.max(0, Math.min(100, Number(status?.percent) || 0));
+  if (elements.vetroRefreshBar) elements.vetroRefreshBar.style.width = `${percent}%`;
+  if (elements.vetroRefreshStatus) {
+    const message = status?.message || "Idle";
+    elements.vetroRefreshStatus.textContent = running ? `${message} (${percent}%)` : message;
+  }
+}
+
+async function pollVetroRefresh() {
+  for (;;) {
+    const response = await fetch("/api/vetro-refresh");
+    if (!response.ok) throw new Error(`VETRO refresh status failed: ${response.status}`);
+    const status = await response.json();
+    updateVetroRefreshUi(status);
+    if (!status.running) return status;
+    await sleep(2000);
+  }
+}
+
+async function reloadVetroAfterRefresh() {
+  if (vetroLayer) {
+    map.removeLayer(vetroLayer);
+  }
+  vetroGeojson = null;
+  vetroLayer = null;
+  vetroLoaded = false;
+  if (elements.vetroToggle.checked) {
+    await ensureVetroLoaded();
+    renderVetroLayer();
+  } else {
+    elements.vetroStatus.textContent = "Off";
+  }
+}
+
+async function startVetroRefresh() {
+  if (!elements.updateVetro) return;
+  elements.updateVetro.disabled = true;
+  updateVetroRefreshUi({ running: true, message: "Starting VETRO refresh", percent: 3 });
+  try {
+    const response = await fetch("/api/vetro-refresh", { method: "POST" });
+    if (!response.ok && response.status !== 409) throw new Error(`VETRO refresh request failed: ${response.status}`);
+    const status = await pollVetroRefresh();
+    if (!status.success) throw new Error(status.message || "VETRO refresh failed");
+    await reloadVetroAfterRefresh();
+    updateVetroRefreshUi({ ...status, message: "VETRO refresh completed", percent: 100 });
+  } catch (error) {
+    updateVetroRefreshUi({ running: false, success: false, message: error.message || "VETRO refresh failed", percent: 100 });
+    console.error(error);
+  } finally {
+    if (elements.updateVetro) elements.updateVetro.disabled = false;
+  }
+}
+
 async function pollServerRefresh() {
   for (;;) {
     const response = await fetch("/api/refresh");
@@ -2181,6 +2552,7 @@ async function refreshServerData() {
   const originalText = elements.refresh.textContent;
   elements.refresh.disabled = true;
   elements.refresh.textContent = "Refreshing...";
+  showSavedToast("Refreshing tickets...");
   try {
     const response = await fetch("/api/refresh", { method: "POST" });
     if (!response.ok && response.status !== 409) {
@@ -2191,6 +2563,10 @@ async function refreshServerData() {
       throw new Error(status.message || "Refresh failed");
     }
     await loadTickets();
+    showSavedToast("Refresh complete");
+  } catch (error) {
+    showSavedToast("Refresh failed");
+    throw error;
   } finally {
     elements.refresh.disabled = false;
     elements.refresh.textContent = originalText || "Refresh";
@@ -2216,6 +2592,15 @@ function normalizeTicketActions(value) {
     if (!Array.isArray(actions)) continue;
     const selected = [...new Set(actions.map(String).filter((action) => valid.has(action)))];
     if (selected.length) normalized[String(ticketNumber)] = selected;
+  }
+  return normalized;
+}
+
+function normalizeTicketActionUpdatedAt(value) {
+  const normalized = {};
+  for (const [ticketNumber, updatedAt] of Object.entries(value || {})) {
+    const timestamp = Number(updatedAt);
+    if (Number.isFinite(timestamp) && timestamp > 0) normalized[String(ticketNumber)] = timestamp;
   }
   return normalized;
 }
@@ -2247,15 +2632,40 @@ function ticketIsActionHidden(ticket) {
   return ticketSelectedActions(ticket.ticket_number).some((key) => actionByKey(key)?.hidesFromDashboard);
 }
 
+function actionListSignature(actions) {
+  return JSON.stringify([...(actions || [])].map(String).sort());
+}
+
+function stampTicketAction(ticketNumber, timestamp = Date.now()) {
+  ticketActionUpdatedAt[String(ticketNumber)] = timestamp;
+  writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
+}
+
+function stampTicketActionDifferences(beforeActions, afterActions, timestamp = Date.now()) {
+  const ticketNumbers = new Set([
+    ...Object.keys(beforeActions || {}),
+    ...Object.keys(afterActions || {}),
+  ]);
+  for (const ticketNumber of ticketNumbers) {
+    if (actionListSignature(beforeActions?.[ticketNumber]) !== actionListSignature(afterActions?.[ticketNumber])) {
+      ticketActionUpdatedAt[String(ticketNumber)] = timestamp;
+    }
+  }
+  writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
+}
+
 function ticketDescription(ticketNumber) {
   return ticketDescriptions[ticketNumber] || "";
 }
 
 function saveTicketWorkflowState() {
   ticketActions = normalizeTicketActions(ticketActions);
+  ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(ticketActionUpdatedAt);
   ticketDescriptions = normalizeTicketDescriptions(ticketDescriptions);
   writeJsonStorage(STORAGE_KEYS.ticketActions, ticketActions);
+  writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
   writeJsonStorage(STORAGE_KEYS.ticketDescriptions, ticketDescriptions);
+  scheduleTicketWorkflowServerSave();
   scheduleDashboardStateSave();
   void saveDashboardState().catch((error) => {
     console.warn("Unable to save dashboard ticket workflow state", error);
@@ -2281,12 +2691,14 @@ function setTicketActions(ticketNumber, actionKeys) {
   const next = [...new Set((actionKeys || []).map(String).filter((key) => actionByKey(key)))];
   if (next.length) ticketActions[ticketNumber] = next;
   else delete ticketActions[ticketNumber];
+  stampTicketAction(ticketNumber);
   saveTicketWorkflowState();
 }
 
 function setAllTicketActions(ticketNumber, selected) {
   if (selected) ticketActions[ticketNumber] = TICKET_ACTIONS.map((action) => action.key);
   else delete ticketActions[ticketNumber];
+  stampTicketAction(ticketNumber);
   saveTicketWorkflowState();
 }
 
@@ -2297,10 +2709,17 @@ function sheetActionSummaryHtml(ticketNumber) {
     : '<span class="sheet-muted">Click row to mark</span>';
 }
 
+function sheetSubmitHtml(ticket, expanded) {
+  return expanded
+    ? `<button class="sheet-submit-action" type="button" data-ticket-action-submit="${escapeHtml(ticket.ticket_number)}">Submit</button>`
+    : '<button class="sheet-submit-action" type="button" disabled>Submit</button>';
+}
+
 function actionControlHtml(ticketNumber, compact = false, options = {}) {
   const selected = new Set(ticketSelectedActions(ticketNumber));
   const allChecked = TICKET_ACTIONS.every((action) => selected.has(action.key));
   const deferred = Boolean(options.deferred);
+  const externalSubmit = Boolean(options.externalSubmit);
   const allAttribute = deferred ? "data-ticket-action-stage-all" : "data-ticket-action-all";
   const actionAttribute = deferred ? "data-ticket-action-stage" : "data-ticket-action";
   const rows = [
@@ -2310,8 +2729,8 @@ function actionControlHtml(ticketNumber, compact = false, options = {}) {
     ),
   ].join("");
   const submit = deferred
-    ? `<div class="ticket-action-submit-row">
-        <button type="button" data-ticket-action-submit="${escapeHtml(ticketNumber)}">Submit</button>
+    ? `<div class="ticket-action-submit-row${externalSubmit ? " external-submit" : ""}">
+        ${externalSubmit ? "" : `<button type="button" data-ticket-action-submit="${escapeHtml(ticketNumber)}">Submit</button>`}
         <span data-ticket-action-pending="${escapeHtml(ticketNumber)}">Choose actions, then submit.</span>
       </div>`
     : "";
@@ -2380,7 +2799,8 @@ function attachmentUploadHtml(ticketNumber, compact = false) {
 }
 
 const SHEET_COLUMNS = [
-  ["Action", (ticket, expanded) => expanded ? actionControlHtml(ticket.ticket_number, true) : sheetActionSummaryHtml(ticket.ticket_number), "html"],
+  ["Submit", sheetSubmitHtml, "html"],
+  ["Action", (ticket, expanded) => expanded ? actionControlHtml(ticket.ticket_number, true, { deferred: true, externalSubmit: true }) : sheetActionSummaryHtml(ticket.ticket_number), "html"],
   ["Attachments", (ticket) => attachmentUploadHtml(ticket.ticket_number, true), "html"],
   ["Description", (ticket, expanded) => expanded ? `
     <textarea class="sheet-description" data-ticket-description="${escapeHtml(ticket.ticket_number)}" placeholder="Leave a description">${escapeHtml(ticketDescription(ticket.ticket_number))}</textarea>
@@ -3032,7 +3452,7 @@ function bindTicketActionControls(container) {
   }
   for (const button of container.querySelectorAll("[data-ticket-action-submit]")) {
     button.addEventListener("click", async () => {
-      const wrapper = button.closest(".ticket-action-checks");
+      const wrapper = button.closest(".ticket-action-checks") || button.closest("[data-sheet-ticket]")?.querySelector(".ticket-action-checks");
       if (!wrapper) return;
       const ticketNumber = button.dataset.ticketActionSubmit;
       const selected = stagedActionKeys(wrapper);
@@ -4480,28 +4900,48 @@ elements.countyClear.addEventListener("click", () => {
   render();
   scheduleEmployeeDashboardSync();
 });
-elements.locatorDefaultToggle.addEventListener("change", async () => {
-  try {
-    await saveLocatorDefault({ enabled: elements.locatorDefaultToggle.checked, includeState: elements.locatorDefaultToggle.checked });
-    if (locatorDefaultConfig.enabled && locatorDefaultConfig.state) {
-      applyDashboardState(locatorDefaultConfig.state);
-      render();
-      renderVetroLayer();
+if (elements.savedViewSelect) {
+  elements.savedViewSelect.addEventListener("change", async () => {
+    try {
+      selectedSavedViewId = elements.savedViewSelect.value;
+      localStorage.setItem(STORAGE_KEYS.savedViewSelected, selectedSavedViewId);
+      if (selectedSavedViewId === NEW_SAVED_VIEW_OPTION) {
+        updateSavedViewStatus("New view selected. Hit Save view to name it.");
+        return;
+      }
+      const preset = selectedSavedView();
+      updateSavedViewStatus(preset ? `Loading ${preset.name}...` : "");
+      if (preset) {
+        await applySavedViewState(preset.state);
+        updateSavedViewStatus(`${preset.name} loaded`);
+        showSavedToast(`${preset.name} loaded`);
+      } else {
+        updateSavedViewStatus();
+      }
+    } catch (error) {
+      updateSavedViewStatus("View load failed");
+      showSavedToast("View load failed");
+      console.error(error);
     }
-  } catch (error) {
-    elements.locatorDefaultStatus.textContent = "Default save failed";
-    console.error(error);
-  }
-});
-elements.saveLocatorDefault.addEventListener("click", async () => {
-  try {
-    elements.locatorDefaultToggle.checked = true;
-    await saveLocatorDefault({ enabled: true, includeState: true });
-  } catch (error) {
-    elements.locatorDefaultStatus.textContent = "Default save failed";
-    console.error(error);
-  }
-});
+  });
+}
+if (elements.saveView) {
+  elements.saveView.addEventListener("click", async () => {
+    try {
+      const current = selectedSavedView();
+      const name = window.prompt(
+        current ? `Save over "${current.name}" or type a new view name` : "New view name",
+        current?.name || "",
+      );
+      if (name === null) return;
+      await saveNamedView(name);
+    } catch (error) {
+      updateSavedViewStatus("View save failed");
+      showSavedToast("View save failed");
+      console.error(error);
+    }
+  });
+}
 if (elements.saveEmployeeDashboard) {
   elements.saveEmployeeDashboard.addEventListener("click", async () => {
     try {
@@ -4510,6 +4950,11 @@ if (elements.saveEmployeeDashboard) {
       showSavedToast("Employee save failed");
       console.error(error);
     }
+  });
+}
+if (elements.updateVetro) {
+  elements.updateVetro.addEventListener("click", () => {
+    void startVetroRefresh();
   });
 }
 elements.refresh.addEventListener("click", refreshServerData);
@@ -4546,6 +4991,18 @@ elements.mapStyle.addEventListener("change", () => {
   void setMapTileStyle(elements.mapStyle.value).catch((error) => console.error(error));
 });
 elements.vetroLayerFilter.addEventListener("input", (event) => {
+  if (event.target.matches(".layer-color")) {
+    rememberUndoState();
+    const layerId = event.target.dataset.layerColor;
+    const value = event.target.value;
+    if (isHexColor(value)) vetroLayerColorOverrides[layerId] = value;
+    else delete vetroLayerColorOverrides[layerId];
+    vetroLayerColorOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerColors, vetroLayerColorOverrides, (id, item) => isHexColor(item));
+    renderVetroLayer();
+    scheduleDashboardStateSave();
+    scheduleEmployeeDashboardSync();
+    return;
+  }
   if (event.target.matches(".layer-size")) {
     rememberUndoState();
     const range = vetroLayerSizeRange(event.target.dataset.layerSize);
@@ -4566,11 +5023,15 @@ elements.vetroLayerFilter.addEventListener("input", (event) => {
   }
 });
 elements.vetroLayerFilter.addEventListener("change", (event) => {
+  if (event.target.matches(".layer-color")) {
+    return;
+  }
   if (event.target.matches(".layer-style")) {
     rememberUndoState();
     vetroLayerStyleOverrides[event.target.dataset.layerStyle] = event.target.value;
     vetroLayerStyleOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerStyles, vetroLayerStyleOverrides, (layerId, value) => vetroLayerStyleValid(layerId, value));
     renderVetroLayer();
+    scheduleDashboardStateSave();
     scheduleEmployeeDashboardSync();
     return;
   }
@@ -4619,14 +5080,7 @@ elements.vetroLayerClear.addEventListener("click", () => {
 });
 [
   elements.vetroPlanFilter,
-  elements.vetroBuildFilter,
-  elements.vetroPlacementFilter,
-  elements.vetroStatusFilter,
-  elements.vetroGeometryFilter,
-  elements.vetroFiberFilter,
-  elements.vetroRouteFilter,
-  elements.vetroPointFilter,
-].forEach((container) => {
+].filter(Boolean).forEach((container) => {
   container.addEventListener("change", () => {
     rememberUndoState();
     syncVetroFacetSelection();
@@ -4636,14 +5090,7 @@ elements.vetroLayerClear.addEventListener("click", () => {
 });
 [
   [elements.vetroPlanAll, elements.vetroPlanClear, elements.vetroPlanFilter],
-  [elements.vetroStatusAll, elements.vetroStatusClear, elements.vetroStatusFilter],
-  [elements.vetroFiberAll, elements.vetroFiberClear, elements.vetroFiberFilter],
-  [elements.vetroPlacementAll, elements.vetroPlacementClear, elements.vetroPlacementFilter],
-  [elements.vetroRouteAll, elements.vetroRouteClear, elements.vetroRouteFilter],
-  [elements.vetroPointAll, elements.vetroPointClear, elements.vetroPointFilter],
-  [elements.vetroGeometryAll, elements.vetroGeometryClear, elements.vetroGeometryFilter],
-  [elements.vetroBuildAll, elements.vetroBuildClear, elements.vetroBuildFilter],
-].forEach(([allButton, clearButton, container]) => {
+].filter(([allButton, clearButton, container]) => allButton && clearButton && container).forEach(([allButton, clearButton, container]) => {
   allButton.addEventListener("click", () => setFilterChecked(container, true));
   clearButton.addEventListener("click", () => setFilterChecked(container, false));
 });
@@ -4653,63 +5100,78 @@ elements.vetroSearch.addEventListener("input", () => {
   renderVetroLayer();
   scheduleEmployeeDashboardSync();
 });
-elements.vetroSlToggle.addEventListener("change", () => {
-  rememberUndoState();
-  vetroSlVisible = elements.vetroSlToggle.checked;
-  writeBooleanStorage(STORAGE_KEYS.vetroSlVisible, vetroSlVisible);
-  renderVetroLayer();
-  scheduleEmployeeDashboardSync();
-});
-elements.vetroSlShape.addEventListener("change", () => {
-  rememberUndoState();
-  vetroSlShape = elements.vetroSlShape.value;
-  localStorage.setItem(STORAGE_KEYS.vetroSlShape, vetroSlShape);
-  renderVetroLayer();
-  scheduleEmployeeDashboardSync();
-});
-elements.vetroSlColor.addEventListener("change", () => {
-  rememberUndoState();
-  vetroSlColor = elements.vetroSlColor.value;
-  localStorage.setItem(STORAGE_KEYS.vetroSlColor, vetroSlColor);
-  renderVetroLayer();
-  scheduleDashboardStateSave();
-  scheduleEmployeeDashboardSync();
-});
-elements.vetroSlOutlineColor.addEventListener("change", () => {
-  rememberUndoState();
-  vetroSlOutlineColor = elements.vetroSlOutlineColor.value;
-  localStorage.setItem(STORAGE_KEYS.vetroSlOutlineColor, vetroSlOutlineColor);
-  renderVetroLayer();
-  scheduleDashboardStateSave();
-  scheduleEmployeeDashboardSync();
-});
-elements.vetroSlOpacity.addEventListener("input", () => {
-  rememberUndoState();
-  vetroSlOpacity = percentToOpacity(elements.vetroSlOpacity.value, vetroSlOpacity);
-  localStorage.setItem(STORAGE_KEYS.vetroSlOpacity, String(vetroSlOpacity));
-  renderVetroLayer();
-  scheduleDashboardStateSave();
-  scheduleEmployeeDashboardSync();
-});
-elements.vetroSlSize.addEventListener("input", () => {
-  rememberUndoState();
-  vetroSlSize = clampNumber(elements.vetroSlSize.value, 8, 22, vetroSlSize);
-  localStorage.setItem(STORAGE_KEYS.vetroSlSize, String(vetroSlSize));
-  renderVetroLayer();
-  scheduleDashboardStateSave();
-  scheduleEmployeeDashboardSync();
-});
-elements.vetroSlLabels.addEventListener("change", () => {
-  rememberUndoState();
-  vetroSlLabels = elements.vetroSlLabels.checked;
-  writeBooleanStorage(STORAGE_KEYS.vetroSlLabels, vetroSlLabels);
-  renderVetroLayer();
-  scheduleEmployeeDashboardSync();
-});
+if (elements.vetroSlToggle) {
+  elements.vetroSlToggle.addEventListener("change", () => {
+    rememberUndoState();
+    vetroSlVisible = elements.vetroSlToggle.checked;
+    writeBooleanStorage(STORAGE_KEYS.vetroSlVisible, vetroSlVisible);
+    renderVetroLayer();
+    scheduleEmployeeDashboardSync();
+  });
+}
+if (elements.vetroSlShape) {
+  elements.vetroSlShape.addEventListener("change", () => {
+    rememberUndoState();
+    vetroSlShape = elements.vetroSlShape.value;
+    localStorage.setItem(STORAGE_KEYS.vetroSlShape, vetroSlShape);
+    renderVetroLayer();
+    scheduleEmployeeDashboardSync();
+  });
+}
+if (elements.vetroSlColor) {
+  elements.vetroSlColor.addEventListener("change", () => {
+    rememberUndoState();
+    vetroSlColor = elements.vetroSlColor.value;
+    localStorage.setItem(STORAGE_KEYS.vetroSlColor, vetroSlColor);
+    renderVetroLayer();
+    scheduleDashboardStateSave();
+    scheduleEmployeeDashboardSync();
+  });
+}
+if (elements.vetroSlOutlineColor) {
+  elements.vetroSlOutlineColor.addEventListener("change", () => {
+    rememberUndoState();
+    vetroSlOutlineColor = elements.vetroSlOutlineColor.value;
+    localStorage.setItem(STORAGE_KEYS.vetroSlOutlineColor, vetroSlOutlineColor);
+    renderVetroLayer();
+    scheduleDashboardStateSave();
+    scheduleEmployeeDashboardSync();
+  });
+}
+if (elements.vetroSlOpacity) {
+  elements.vetroSlOpacity.addEventListener("input", () => {
+    rememberUndoState();
+    vetroSlOpacity = percentToOpacity(elements.vetroSlOpacity.value, vetroSlOpacity);
+    localStorage.setItem(STORAGE_KEYS.vetroSlOpacity, String(vetroSlOpacity));
+    renderVetroLayer();
+    scheduleDashboardStateSave();
+    scheduleEmployeeDashboardSync();
+  });
+}
+if (elements.vetroSlSize) {
+  elements.vetroSlSize.addEventListener("input", () => {
+    rememberUndoState();
+    vetroSlSize = clampNumber(elements.vetroSlSize.value, 8, 22, vetroSlSize);
+    localStorage.setItem(STORAGE_KEYS.vetroSlSize, String(vetroSlSize));
+    renderVetroLayer();
+    scheduleDashboardStateSave();
+    scheduleEmployeeDashboardSync();
+  });
+}
+if (elements.vetroSlLabels) {
+  elements.vetroSlLabels.addEventListener("change", () => {
+    rememberUndoState();
+    vetroSlLabels = elements.vetroSlLabels.checked;
+    writeBooleanStorage(STORAGE_KEYS.vetroSlLabels, vetroSlLabels);
+    renderVetroLayer();
+    scheduleEmployeeDashboardSync();
+  });
+}
 elements.vetroColor.addEventListener("change", () => {
   rememberUndoState();
   vetroColor = elements.vetroColor.value;
   localStorage.setItem("vetroColor", vetroColor);
+  if (vetroLoaded) populateVetroFilters();
   renderVetroLayer();
   scheduleDashboardStateSave();
   scheduleEmployeeDashboardSync();
@@ -4749,6 +5211,10 @@ if (moreMenu) {
     if (!moreMenu.contains(event.relatedTarget)) scheduleMoreMenuClose();
   });
 }
+window.addEventListener("pagehide", flushTicketWorkflowState);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushTicketWorkflowState();
+});
 
 async function bootstrap() {
   await loadMapConfig();

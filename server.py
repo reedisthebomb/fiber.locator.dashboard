@@ -42,6 +42,17 @@ REFRESH_STATE = {
     "exit_code": None,
     "logs": [],
 }
+VETRO_REFRESH_LOCK = threading.Lock()
+VETRO_REFRESH_STATE = {
+    "running": False,
+    "started": "",
+    "finished": "",
+    "success": None,
+    "message": "Idle",
+    "exit_code": None,
+    "percent": 0,
+    "logs": [],
+}
 ACTIVE_TICKET_COUNTIES = {"UNION", "COLUMBIA"}
 ACTIVE_TICKET_MIN_WORK_BEGIN = date(2026, 5, 8)
 AUTH_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
@@ -556,15 +567,185 @@ def get_employee_dashboard_state() -> dict:
         }
 
 
+VIEW_PRESET_STATE_KEYS = {
+    "vetroVisible",
+    "vetroLayerFilterSelected",
+    "vetroPlanFilterSelected",
+    "vetroBuildFilterSelected",
+    "vetroPlacementFilterSelected",
+    "vetroStatusFilterSelected",
+    "vetroGeometryFilterSelected",
+    "vetroFiberFilterSelected",
+    "vetroRouteFilterSelected",
+    "vetroPointFilterSelected",
+    "vetroLayerColorOverrides",
+    "vetroLayerStyleOverrides",
+    "vetroLayerNameOverrides",
+    "vetroLayerNoteOverrides",
+    "vetroLayerSizeOverrides",
+    "vetroLayerOpacityOverrides",
+    "vetroSlVisible",
+    "vetroSlShape",
+    "vetroSlColor",
+    "vetroSlOutlineColor",
+    "vetroSlOpacity",
+    "vetroSlSize",
+    "vetroSlLabels",
+    "vetroSearch",
+    "vetroColor",
+    "vetroOpacity",
+    "mapStyle",
+    "mapView",
+}
+
+
+def normalize_view_state(state: dict) -> dict:
+    if not isinstance(state, dict):
+        return {}
+    return {key: value for key, value in state.items() if key in VIEW_PRESET_STATE_KEYS}
+
+
+def normalize_view_preset(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    state = item.get("state", {})
+    name = str(item.get("name") or "").strip()[:80]
+    if not name:
+        return {}
+    preset_id = safe_file_component(str(item.get("id") or name), "view")
+    return {
+        "id": preset_id,
+        "name": name,
+        "state": normalize_view_state(state),
+        "saved_at": str(item.get("saved_at") or ""),
+        "saved_by": str(item.get("saved_by") or ""),
+    }
+
+
+def get_view_presets() -> list[dict]:
+    if not STATE_FILE:
+        return []
+    with STATE_LOCK:
+        payload = load_dashboard_state(STATE_FILE)
+        raw_presets = payload.get("view_presets", [])
+        presets: list[dict] = []
+        if isinstance(raw_presets, list):
+            for item in raw_presets:
+                preset = normalize_view_preset(item)
+                if preset:
+                    presets.append(preset)
+        default_state = payload.get("locator_default", {})
+        if isinstance(default_state, dict):
+            state = default_state.get("state", {})
+            if isinstance(state, dict) and state and not any(item["id"] == "current-default" for item in presets):
+                presets.insert(0, {
+                    "id": "current-default",
+                    "name": "Current default",
+                    "state": state,
+                    "saved_at": str(default_state.get("saved_at") or ""),
+                    "saved_by": str(default_state.get("saved_by") or ""),
+                })
+        return presets
+
+
 def set_dashboard_user_state(username: str, state: dict) -> dict:
     if not STATE_FILE:
         return {}
     with STATE_LOCK:
         payload = load_dashboard_state(STATE_FILE)
         users = payload.setdefault("users", {})
-        users[username] = state if isinstance(state, dict) else {}
+        existing = users.get(username, {})
+        users[username] = merge_dashboard_user_state(existing if isinstance(existing, dict) else {}, state if isinstance(state, dict) else {})
         save_dashboard_state(STATE_FILE, payload)
         return users[username]
+
+
+def normalize_ticket_actions_state(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    normalized = {}
+    for ticket_number, actions in value.items():
+        if isinstance(actions, list):
+            selected = [str(action) for action in actions if action]
+            if selected:
+                normalized[str(ticket_number)] = selected
+    return normalized
+
+
+def normalize_ticket_action_timestamps(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    normalized = {}
+    for ticket_number, updated_at in value.items():
+        try:
+            timestamp = float(updated_at)
+        except (TypeError, ValueError):
+            continue
+        if timestamp > 0:
+            normalized[str(ticket_number)] = timestamp
+    return normalized
+
+
+def merge_ticket_actions(existing: dict, incoming: dict) -> tuple[dict, dict]:
+    existing_actions = normalize_ticket_actions_state(existing.get("ticketActions"))
+    incoming_actions = normalize_ticket_actions_state(incoming.get("ticketActions"))
+    existing_timestamps = normalize_ticket_action_timestamps(existing.get("ticketActionUpdatedAt"))
+    incoming_timestamps = normalize_ticket_action_timestamps(incoming.get("ticketActionUpdatedAt"))
+    merged_actions = dict(existing_actions)
+    merged_timestamps = dict(existing_timestamps)
+    ticket_numbers = set(existing_actions) | set(incoming_actions) | set(existing_timestamps) | set(incoming_timestamps)
+    for ticket_number in ticket_numbers:
+        if ticket_number not in incoming_timestamps:
+            if ticket_number in existing_actions:
+                continue
+            if ticket_number in incoming_actions:
+                merged_actions[ticket_number] = incoming_actions[ticket_number]
+            continue
+        incoming_time = incoming_timestamps.get(ticket_number, 0)
+        existing_time = existing_timestamps.get(ticket_number, 0)
+        if incoming_time >= existing_time:
+            if ticket_number in incoming_actions:
+                merged_actions[ticket_number] = incoming_actions[ticket_number]
+            else:
+                merged_actions.pop(ticket_number, None)
+            merged_timestamps[ticket_number] = incoming_time
+    return merged_actions, merged_timestamps
+
+
+def merge_dashboard_user_state(existing: dict, incoming: dict) -> dict:
+    merged = dict(existing)
+    merged.update(incoming)
+    merged_actions, merged_timestamps = merge_ticket_actions(existing, incoming)
+    merged["ticketActions"] = merged_actions
+    merged["ticketActionUpdatedAt"] = merged_timestamps
+    return merged
+
+
+def set_view_preset(username: str, payload_update: dict) -> dict:
+    if not STATE_FILE:
+        return {}
+    with STATE_LOCK:
+        payload = load_dashboard_state(STATE_FILE)
+        raw_presets = payload.get("view_presets", [])
+        presets = []
+        if isinstance(raw_presets, list):
+            presets = [preset for preset in (normalize_view_preset(item) for item in raw_presets) if preset]
+        name = str(payload_update.get("name") or "").strip()[:80] or "Saved view"
+        state = payload_update.get("state", {})
+        state = normalize_view_state(state)
+        preset_id = safe_file_component(str(payload_update.get("id") or name), "view")
+        saved = {
+            "id": preset_id,
+            "name": name,
+            "state": state,
+            "saved_at": dashboard_now_iso(),
+            "saved_by": username,
+        }
+        presets = [preset for preset in presets if preset["id"] != preset_id and preset["name"].lower() != name.lower()]
+        presets.append(saved)
+        payload["view_presets"] = sorted(presets, key=lambda item: item["name"].lower())
+        save_dashboard_state(STATE_FILE, payload)
+        return saved
 
 
 def set_locator_default_state(username: str, payload_update: dict) -> dict:
@@ -927,6 +1108,11 @@ def get_vetro_response(paths: list[Path]) -> tuple[bytes, bytes]:
         gzip_body = gzip.compress(body, compresslevel=6)
         VETRO_RESPONSE_CACHE.update({"signature": signature, "body": body, "gzip_body": gzip_body})
         return body, gzip_body
+
+
+def clear_vetro_response_cache() -> None:
+    with VETRO_CACHE_LOCK:
+        VETRO_RESPONSE_CACHE.update({"signature": None, "body": b"", "gzip_body": b""})
 
 
 def text_from_email(path: Path) -> tuple[dict[str, str], str]:
@@ -1355,6 +1541,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     data_dir: Path
     inbox_dir: Path
     vetro_layers: list[Path]
+    layers_dir: Path
     auth_users: dict[str, dict[str, str]]
     state_file: Path | None
 
@@ -1380,6 +1567,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/state":
             self.send_state()
+            return
+        if parsed.path == "/api/view-presets":
+            self.send_view_presets()
             return
         if parsed.path == "/api/employee-dashboard":
             self.send_employee_dashboard()
@@ -1410,6 +1600,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/vetro":
             self.send_vetro()
             return
+        if parsed.path == "/api/vetro-refresh":
+            self.send_vetro_refresh_status()
+            return
         if parsed.path == "/api/portal-html":
             ticket_number = parse_qs(parsed.query).get("ticket", [""])[0]
             self.send_portal_html(ticket_number)
@@ -1433,11 +1626,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/state":
             self.update_state()
             return
+        if parsed.path == "/api/view-presets":
+            self.update_view_preset()
+            return
         if parsed.path == "/api/locator-default":
             self.update_locator_default()
             return
         if parsed.path == "/api/employee-dashboard":
             self.update_employee_dashboard()
+            return
+        if parsed.path == "/api/vetro-refresh":
+            self.start_vetro_refresh()
             return
         if parsed.path == "/api/attachments":
             self.upload_attachment()
@@ -1563,8 +1762,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "username": username,
             "state": state,
             "locatorDefault": get_locator_default_state(),
+            "viewPresets": get_view_presets(),
             "employeeDashboard": get_employee_dashboard_state(),
         })
+
+    def send_view_presets(self) -> None:
+        self.send_json({"ok": True, "viewPresets": get_view_presets()})
 
     def send_employee_dashboard(self) -> None:
         self.send_json({"ok": True, "employeeDashboard": get_employee_dashboard_state()})
@@ -1591,6 +1794,29 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             state = {}
         saved = set_dashboard_user_state(username, state)
         self.send_json({"ok": True, "username": username, "state": saved})
+
+    def update_view_preset(self) -> None:
+        username = self.current_username()
+        if not username:
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Login required"}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(payload) if payload else {}
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Invalid JSON"}).encode("utf-8"))
+            return
+        if not isinstance(data, dict):
+            data = {}
+        saved = set_view_preset(username, data)
+        self.send_json({"ok": True, "username": username, "savedView": saved, "viewPresets": get_view_presets()})
 
     def update_locator_default(self) -> None:
         username = self.current_username()
@@ -2060,6 +2286,94 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response_body)
 
+    def send_vetro_refresh_status(self) -> None:
+        self.send_json(VETRO_REFRESH_STATE)
+
+    def start_vetro_refresh(self) -> None:
+        if not VETRO_REFRESH_LOCK.acquire(blocking=False):
+            self.send_response(409)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "VETRO refresh already running"}).encode("utf-8"))
+            return
+        VETRO_REFRESH_STATE.update(
+            {
+                "running": True,
+                "started": dashboard_now_iso(),
+                "finished": "",
+                "success": None,
+                "message": "Starting VETRO export",
+                "exit_code": None,
+                "percent": 5,
+                "logs": [],
+            }
+        )
+        thread = threading.Thread(target=self._run_vetro_refresh_job, daemon=True)
+        thread.start()
+        self.send_json({"ok": True, "running": True, "message": "VETRO refresh started", "percent": 5})
+
+    def _run_vetro_refresh_job(self) -> None:
+        try:
+            root = Path(__file__).resolve().parent
+            command = [
+                sys.executable,
+                str(root / "tools" / "update_vetro_export.py"),
+                "--output-dir",
+                str(self.layers_dir / "vetro_geojson_layers"),
+                "--work-dir",
+                str(self.data_dir / "vetro_export_work"),
+            ]
+            env = os.environ.copy()
+            env.setdefault("VETRO_PLAN_ID", "462")
+            VETRO_REFRESH_STATE.update({"message": "Requesting VETRO export", "percent": 12})
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=str(root), env=env)
+            while process.poll() is None:
+                VETRO_REFRESH_STATE.update({"message": "VETRO export running", "percent": min(88, int(VETRO_REFRESH_STATE.get("percent") or 12) + 4)})
+                time.sleep(2)
+            stdout, stderr = process.communicate()
+            if stdout.strip():
+                VETRO_REFRESH_STATE["logs"].append({"stream": "stdout", "text": stdout[-4000:]})
+            if stderr.strip():
+                VETRO_REFRESH_STATE["logs"].append({"stream": "stderr", "text": stderr[-4000:]})
+            VETRO_REFRESH_STATE["logs"].append({"command": command[0], "exit_code": process.returncode})
+            if process.returncode == 0:
+                self.__class__.vetro_layers = find_vetro_layers(self.layers_dir, self.downloads_dir)
+                clear_vetro_response_cache()
+                VETRO_REFRESH_STATE.update(
+                    {
+                        "running": False,
+                        "finished": dashboard_now_iso(),
+                        "success": True,
+                        "message": "VETRO refresh completed",
+                        "exit_code": 0,
+                        "percent": 100,
+                        "layer_files": len(self.__class__.vetro_layers),
+                    }
+                )
+            else:
+                VETRO_REFRESH_STATE.update(
+                    {
+                        "running": False,
+                        "finished": dashboard_now_iso(),
+                        "success": False,
+                        "message": "VETRO refresh failed",
+                        "exit_code": process.returncode,
+                        "percent": 100,
+                    }
+                )
+        except Exception as exc:
+            VETRO_REFRESH_STATE.update(
+                {
+                    "running": False,
+                    "finished": dashboard_now_iso(),
+                    "success": False,
+                    "message": f"VETRO refresh failed: {exc}",
+                    "percent": 100,
+                }
+            )
+        finally:
+            VETRO_REFRESH_LOCK.release()
+
     def send_map_config(self) -> None:
         self.send_json({
             "googleMapsTileApiKey": os.environ.get("GOOGLE_MAPS_TILE_API_KEY", ""),
@@ -2146,6 +2460,7 @@ def run(
     DashboardHandler.downloads_dir = downloads_dir
     DashboardHandler.data_dir = data_dir
     DashboardHandler.inbox_dir = inbox_dir
+    DashboardHandler.layers_dir = layers_dir
     DashboardHandler.vetro_layers = find_vetro_layers(layers_dir, downloads_dir)
     DashboardHandler.auth_users = load_auth_users(auth_file)
     global STATE_FILE
