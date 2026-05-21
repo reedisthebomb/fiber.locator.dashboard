@@ -1769,26 +1769,6 @@ button {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
 }
 
-.map-view-toggle {
-  position: absolute;
-  left: 12px;
-  bottom: 48px;
-  z-index: 901;
-  width: 36px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid rgba(57, 71, 89, 0.72);
-  border-radius: 8px;
-  background: rgba(238, 242, 246, 0.36);
-  color: #17202b;
-  backdrop-filter: blur(4px);
-  font-size: 10px;
-  font-weight: 900;
-  line-height: 1;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
-}
-
-.map-view-toggle:hover,
 .legend-toggle:hover {
   background: rgba(238, 242, 246, 0.58);
 }
@@ -1905,33 +1885,45 @@ button {
 
 .sheet-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 420px) auto auto auto;
+  grid-template-columns: minmax(190px, 1fr) minmax(240px, 360px) minmax(280px, auto) auto auto auto;
   align-items: center;
   gap: 16px;
   padding: 14px 18px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.96);
+  border-bottom: 1px solid #9fb0c5;
+  background: linear-gradient(180deg, #ffffff 0%, #edf2f8 100%);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
 }
 
 .sheet-toolbar h2 {
   margin: 0;
-  font-size: 20px;
+  color: #0f172a;
+  font-size: 21px;
+  font-weight: 900;
 }
 
 .sheet-toolbar p {
-  margin: 2px 0 0;
-  color: var(--muted);
+  max-width: 520px;
+  margin: 3px 0 0;
+  color: #334155;
   font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
 }
 
 .sheet-toolbar button {
   height: 36px;
   padding: 0 14px;
-  border: 1px solid var(--line);
+  border: 1px solid #94a3b8;
   border-radius: 8px;
-  background: var(--panel-2);
-  color: var(--ink);
-  font-weight: 800;
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 900;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.sheet-toolbar button:hover {
+  background: #f8fafc;
+  border-color: #64748b;
 }
 
 .sheet-export-actions {
@@ -1949,7 +1941,7 @@ button {
   display: grid;
   gap: 6px;
   min-width: 0;
-  color: var(--muted);
+  color: #1e293b;
   font-size: 11px;
   font-weight: 900;
   letter-spacing: 0;
@@ -1961,12 +1953,18 @@ button {
   min-width: 0;
   height: 40px;
   padding: 0 12px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid #64748b;
   border-radius: 6px;
-  background: var(--panel-2);
-  color: var(--ink);
+  background: #ffffff;
+  color: #0f172a;
   font-size: 14px;
   font-weight: 800;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.sheet-search input::placeholder {
+  color: #64748b;
+  opacity: 1;
 }
 
 .sheet-table-wrap {
@@ -2060,7 +2058,7 @@ button {
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 12px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .sheet-table th,
@@ -2115,13 +2113,164 @@ button {
 .sheet-table th {
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 5;
   background: #e8eef7;
   color: #0d1723;
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+.sheet-filtered-column {
+  background: #dbeafe !important;
+}
+
+.sheet-filter-menu {
+  position: relative;
+}
+
+.sheet-filter-menu summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sheet-filter-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.sheet-filter-menu summary::after {
+  content: "v";
+  color: #2458c7;
+  font-size: 10px;
+}
+
+.sheet-filter-panel {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  width: 260px;
+  padding: 10px;
+  border: 1px solid #9fb0c5;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.24);
+  color: #17202b;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.sheet-filter-title {
+  color: #0d1723;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.sheet-filter-panel button,
+.sheet-filter-panel input[type="search"] {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid #c7d0db;
+  border-radius: 6px;
+  background: #f7f9fc;
+  color: #17202b;
+  font: 800 12px/1 Arial, Helvetica, sans-serif;
+}
+
+.sheet-filter-panel button {
+  cursor: pointer;
+}
+
+.sheet-filter-values {
+  display: grid;
+  gap: 5px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid #d8e0ea;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.sheet-filter-values label {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  color: #17202b;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.sheet-filter-values input {
+  margin: 0;
+}
+
+.sheet-filter-note {
+  color: #526173;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.sheet-filter-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.sheet-filter-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 210px) auto auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.sheet-filter-toolbar div,
+.sheet-filter-toolbar label {
+  display: grid;
+  gap: 3px;
+  color: #1e293b;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.sheet-filter-toolbar strong {
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.sheet-filter-toolbar select,
+.sheet-filter-toolbar button {
+  height: 34px;
+  border: 1px solid #94a3b8;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 900;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.sheet-filter-toolbar button {
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.sheet-filter-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .sheet-table td:nth-child(12) {
@@ -2202,6 +2351,64 @@ button {
   width: 14px;
   height: 14px;
   margin: 1px 0 0;
+}
+
+.ticket-action-checks.staged {
+  gap: 9px;
+}
+
+.ticket-action-submit-row {
+  display: grid;
+  grid-template-columns: minmax(94px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #d4dce7;
+}
+
+.ticket-action-submit-row button {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid #14532d;
+  border-radius: 7px;
+  background: #15803d;
+  color: #ffffff;
+  font: 800 12px/1 Arial, Helvetica, sans-serif;
+  cursor: pointer;
+}
+
+.ticket-action-submit-row button:hover {
+  background: #166534;
+}
+
+.ticket-action-submit-row span {
+  color: #52647c;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.map-data-overlay-status {
+  display: block;
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.address-number-label {
+  padding: 1px 4px;
+  border: 1px solid rgba(124, 45, 18, 0.5);
+  border-radius: 4px;
+  background: rgba(255, 247, 237, 0.96);
+  color: #7c2d12;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.28);
+  font: 900 11px/1.1 Arial, Helvetica, sans-serif;
+}
+
+.address-number-label::before {
+  display: none;
 }
 
 .sheet-row.ticket-tcw-dmi-work td:first-child {

@@ -60,6 +60,9 @@ const STORAGE_KEYS = {
   sidebarCollapsed: "sidebarCollapsed",
   ticketOpacity: "ticketOpacity",
   profile: "locatorProfile",
+  sheetSort: "sheetSort",
+  sheetColumnFilters: "sheetColumnFilters",
+  sheetSavedFilters: "sheetSavedFilters",
 };
 
 const ACTIVE_COUNTIES = new Set(["UNION", "COLUMBIA"]);
@@ -148,16 +151,18 @@ const TICKET_ACTIONS = [
 const ARCGIS_POINT_OVERLAYS = {
   addresses: {
     label: "address",
-    minZoom: 15,
+    minZoom: 16,
     url: "https://gis.arkansas.gov/arcgis/rest/services/FEATURESERVICES/Location/FeatureServer/14/query",
     color: "#f97316",
     radius: 4,
+    labelFields: ["adr_num_comp"],
     fields: [
+      "adr_label",
       "adr_num_comp",
       "pstr_fulnam",
       "adr_muni",
-      "county",
-      "zip",
+      "cnty_name",
+      "adr_zip5",
       "landmark_nam",
     ],
   },
@@ -818,8 +823,11 @@ let ticketOpacity = Number(localStorage.getItem(STORAGE_KEYS.ticketOpacity) || "
 let mapStyle = localStorage.getItem(STORAGE_KEYS.mapStyle) || "contrast";
 if (!MAP_TILE_STYLES[mapStyle]) mapStyle = "contrast";
 let lastStreetMapStyle = ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(mapStyle) ? "contrast" : mapStyle;
-let mapDataOverlay = localStorage.getItem(STORAGE_KEYS.mapDataOverlay) || "none";
+let mapDataOverlay = localStorage.getItem(STORAGE_KEYS.mapDataOverlay) || "addresses";
 if (!isValidMapDataOverlay(mapDataOverlay)) mapDataOverlay = "none";
+let sheetSort = readJsonStorage(STORAGE_KEYS.sheetSort, { column: "Due Date", direction: "desc" });
+let sheetColumnFilters = readObjectStorage(STORAGE_KEYS.sheetColumnFilters);
+let sheetSavedFilters = readJsonStorage(STORAGE_KEYS.sheetSavedFilters, []);
 let vetroLayerColors = JSON.parse(localStorage.getItem("vetroLayerColors") || "{}");
 let showHiddenTickets = readBooleanStorage(STORAGE_KEYS.showHidden, false);
 let vetroVisible = readBooleanStorage(STORAGE_KEYS.vetroVisible, false);
@@ -943,6 +951,7 @@ const elements = {
   showAdminView: document.querySelector("#showAdminView"),
   sheetBackToDashboard: document.querySelector("#sheetBackToDashboard"),
   sheetView: document.querySelector("#sheetView"),
+  sheetFilterToolbar: document.querySelector("#sheetFilterToolbar"),
   sheetTableWrap: document.querySelector("#sheetTableWrap"),
   mobileView: document.querySelector("#mobileView"),
   mobileSummary: document.querySelector("#mobileSummary"),
@@ -974,7 +983,6 @@ const elements = {
   mapLegend: document.querySelector("#mapLegend"),
   sheetLegend: document.querySelector("#sheetLegend"),
   legendToggle: document.querySelector("#legendToggle"),
-  mapViewToggle: document.querySelector("#mapViewToggle"),
   ticketList: document.querySelector("#ticketList"),
   detail: document.querySelector("#detail"),
   sidebarCollapse: document.querySelector("#sidebarCollapse"),
@@ -1544,6 +1552,14 @@ function overlayPopupRows(attributes, fields) {
     .join("");
 }
 
+function overlayLabelText(attributes, fields = []) {
+  return fields
+    .map((field) => attributes?.[field])
+    .filter((value) => value !== undefined && value !== null && String(value).trim())
+    .map((value) => String(value).trim())
+    .join(" ");
+}
+
 async function loadArcgisPointOverlay(config, requestId) {
   const bounds = map.getBounds();
   const geometry = [
@@ -1568,6 +1584,7 @@ async function loadArcgisPointOverlay(config, requestId) {
   for (const feature of payload.features || []) {
     const geometry = feature.geometry || {};
     if (!Number.isFinite(geometry.y) || !Number.isFinite(geometry.x)) continue;
+    const attributes = feature.attributes || {};
     const marker = L.circleMarker([geometry.y, geometry.x], {
       radius: config.radius,
       color: config.color,
@@ -1576,7 +1593,17 @@ async function loadArcgisPointOverlay(config, requestId) {
       fillOpacity: 0.82,
       opacity: 0.95,
     });
-    const rows = overlayPopupRows(feature.attributes || {}, config.fields);
+    const label = overlayLabelText(attributes, config.labelFields);
+    if (label) {
+      marker.bindTooltip(escapeHtml(label), {
+        permanent: true,
+        direction: "center",
+        className: "address-number-label",
+        opacity: 1,
+        interactive: false,
+      });
+    }
+    const rows = overlayPopupRows(attributes, config.fields);
     marker.bindPopup(`<strong>Arkansas ${escapeHtml(config.label)}</strong>${rows ? `<div class="popup-table">${rows}</div>` : ""}`);
     marker.addTo(mapDataOverlayLayer);
     added += 1;
@@ -1597,23 +1624,23 @@ async function refreshMapDataOverlay() {
   mapDataOverlayLayer.clearLayers();
   const configs = mapDataOverlayConfigs();
   if (!configs.length) {
-    setMapDataOverlayStatus("Address layer is off.");
+    setMapDataOverlayStatus("Arkansas address layer is off.");
     return;
   }
   const minZoom = Math.min(...configs.map((config) => config.minZoom));
   if (map.getZoom() < minZoom) {
-    setMapDataOverlayStatus(`Zoom to ${minZoom}+ to load address data.`);
+    setMapDataOverlayStatus(`Zoom to ${minZoom}+ to load Arkansas house numbers.`);
     return;
   }
-  setMapDataOverlayStatus("Loading address data...");
+  setMapDataOverlayStatus("Loading Arkansas house numbers...");
   try {
     const counts = await Promise.all(configs.map((config) => loadArcgisPointOverlay(config, requestId)));
     if (requestId !== mapDataOverlayAbort) return;
-    setMapDataOverlayStatus(`Loaded ${counts.reduce((sum, count) => sum + count, 0)} address/parcel point(s).`);
+    setMapDataOverlayStatus(`Loaded ${counts.reduce((sum, count) => sum + count, 0)} Arkansas address/parcel point(s).`);
   } catch (error) {
     if (requestId !== mapDataOverlayAbort) return;
     console.warn(error);
-    setMapDataOverlayStatus("Address layer failed to load for this map view.");
+    setMapDataOverlayStatus("Arkansas address layer failed to load for this map view.");
   }
 }
 
@@ -2170,6 +2197,11 @@ function setTicketAction(ticketNumber, actionKey, selected) {
   if (selected) current.add(actionKey);
   else current.delete(actionKey);
   const next = [...current].filter((key) => actionByKey(key));
+  setTicketActions(ticketNumber, next);
+}
+
+function setTicketActions(ticketNumber, actionKeys) {
+  const next = [...new Set((actionKeys || []).map(String).filter((key) => actionByKey(key)))];
   if (next.length) ticketActions[ticketNumber] = next;
   else delete ticketActions[ticketNumber];
   saveTicketWorkflowState();
@@ -2188,16 +2220,25 @@ function sheetActionSummaryHtml(ticketNumber) {
     : '<span class="sheet-muted">Click row to mark</span>';
 }
 
-function actionControlHtml(ticketNumber, compact = false) {
+function actionControlHtml(ticketNumber, compact = false, options = {}) {
   const selected = new Set(ticketSelectedActions(ticketNumber));
   const allChecked = TICKET_ACTIONS.every((action) => selected.has(action.key));
+  const deferred = Boolean(options.deferred);
+  const allAttribute = deferred ? "data-ticket-action-stage-all" : "data-ticket-action-all";
+  const actionAttribute = deferred ? "data-ticket-action-stage" : "data-ticket-action";
   const rows = [
-    `<label><input type="checkbox" data-ticket-action-all="${escapeHtml(ticketNumber)}" ${allChecked ? "checked" : ""}> Select all</label>`,
+    `<label><input type="checkbox" ${allAttribute}="${escapeHtml(ticketNumber)}" ${allChecked ? "checked" : ""}> Select all</label>`,
     ...TICKET_ACTIONS.map(
-      (action) => `<label><input type="checkbox" data-ticket-action="${escapeHtml(ticketNumber)}" data-action-key="${escapeHtml(action.key)}" ${selected.has(action.key) ? "checked" : ""}> ${escapeHtml(action.label)}</label>`,
+      (action) => `<label><input type="checkbox" ${actionAttribute}="${escapeHtml(ticketNumber)}" data-action-key="${escapeHtml(action.key)}" ${selected.has(action.key) ? "checked" : ""}> ${escapeHtml(action.label)}</label>`,
     ),
   ].join("");
-  return `<div class="ticket-action-checks${compact ? " compact" : ""}">${rows}</div>`;
+  const submit = deferred
+    ? `<div class="ticket-action-submit-row">
+        <button type="button" data-ticket-action-submit="${escapeHtml(ticketNumber)}">Submit</button>
+        <span data-ticket-action-pending="${escapeHtml(ticketNumber)}">Choose actions, then submit.</span>
+      </div>`
+    : "";
+  return `<div class="ticket-action-checks${compact ? " compact" : ""}${deferred ? " staged" : ""}" data-action-mode="${deferred ? "deferred" : "instant"}">${rows}${submit}</div>`;
 }
 
 function firstTicketValue(ticket, keys) {
@@ -2269,6 +2310,51 @@ const SHEET_COLUMNS = [
   ["Modified By", (ticket) => firstTicketValue(ticket, ["modified_by"])],
 ];
 
+function normalizeSheetSort(value) {
+  const label = String(value?.column || "Due Date");
+  return {
+    column: SHEET_COLUMNS.some(([columnLabel]) => columnLabel === label) ? label : "Due Date",
+    direction: value?.direction === "asc" ? "asc" : "desc",
+  };
+}
+
+function normalizeSheetColumnFilters(value) {
+  const validColumns = new Set(SHEET_COLUMNS.map(([label]) => label));
+  const normalized = {};
+  for (const [label, values] of Object.entries(value || {})) {
+    if (!validColumns.has(label) || !Array.isArray(values)) continue;
+    const selected = [...new Set(values.map(String))];
+    if (selected.length) normalized[label] = selected;
+  }
+  return normalized;
+}
+
+function normalizeSheetSavedFilters(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => ({
+      name: String(item?.name || "").trim().slice(0, 60),
+      search: String(item?.search || ""),
+      sort: normalizeSheetSort(item?.sort || {}),
+      columnFilters: normalizeSheetColumnFilters(item?.columnFilters || {}),
+      savedAt: String(item?.savedAt || ""),
+    }))
+    .filter((item) => item.name);
+}
+
+sheetSort = normalizeSheetSort(sheetSort);
+sheetColumnFilters = normalizeSheetColumnFilters(sheetColumnFilters);
+sheetSavedFilters = normalizeSheetSavedFilters(sheetSavedFilters);
+
+function saveSheetGridState() {
+  sheetSort = normalizeSheetSort(sheetSort);
+  sheetColumnFilters = normalizeSheetColumnFilters(sheetColumnFilters);
+  sheetSavedFilters = normalizeSheetSavedFilters(sheetSavedFilters);
+  writeJsonStorage(STORAGE_KEYS.sheetSort, sheetSort);
+  writeJsonStorage(STORAGE_KEYS.sheetColumnFilters, sheetColumnFilters);
+  writeJsonStorage(STORAGE_KEYS.sheetSavedFilters, sheetSavedFilters);
+}
+
 function plainTextFromHtml(html) {
   const element = document.createElement("div");
   element.innerHTML = String(html || "");
@@ -2281,6 +2367,122 @@ function sheetExportCell(ticket, column) {
   if (label === "Description") return ticketDescription(ticket.ticket_number) || workDescription(ticket);
   const value = getter(ticket, false) || "";
   return mode === "html" ? plainTextFromHtml(value) : String(value);
+}
+
+function sheetColumnByLabel(label) {
+  return SHEET_COLUMNS.find(([columnLabel]) => columnLabel === label) || SHEET_COLUMNS[0];
+}
+
+function sheetCellValue(ticket, label) {
+  return sheetExportCell(ticket, sheetColumnByLabel(label));
+}
+
+function sheetSearchValue(ticket) {
+  return SHEET_COLUMNS.map(([label]) => sheetCellValue(ticket, label)).join(" ").toLowerCase();
+}
+
+function sheetSortValue(ticket, label) {
+  const value = sheetCellValue(ticket, label);
+  if (label === "Due Date") {
+    const date = parseTicketDueDate(ticket);
+    return date ? date.getTime() : -Infinity;
+  }
+  if (label === "Latitude" || label === "Longitude") {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : -Infinity;
+  }
+  return String(value || "").toLowerCase();
+}
+
+function compareSheetTickets(a, b) {
+  const direction = sheetSort.direction === "asc" ? 1 : -1;
+  const aValue = sheetSortValue(a, sheetSort.column);
+  const bValue = sheetSortValue(b, sheetSort.column);
+  if (typeof aValue === "number" && typeof bValue === "number" && aValue !== bValue) return (aValue - bValue) * direction;
+  const compared = String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: "base" });
+  if (compared) return compared * direction;
+  return String(a.ticket_number || "").localeCompare(String(b.ticket_number || ""));
+}
+
+function sheetColumnFilteredTickets(excludedLabel = "") {
+  const query = ticketSearch.trim().toLowerCase();
+  return scopedTickets().filter((ticket) => {
+    if (query && !sheetSearchValue(ticket).includes(query)) return false;
+    for (const [label, values] of Object.entries(sheetColumnFilters)) {
+      if (label === excludedLabel || !Array.isArray(values) || !values.length) continue;
+      if (!values.includes(sheetCellValue(ticket, label))) return false;
+    }
+    return true;
+  });
+}
+
+function sheetColumnValues(label) {
+  return [...new Set(sheetColumnFilteredTickets(label).map((ticket) => sheetCellValue(ticket, label)))]
+    .sort((a, b) => String(a || "").localeCompare(String(b || ""), undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function sheetFilterActive(label) {
+  return Array.isArray(sheetColumnFilters[label]) && sheetColumnFilters[label].length > 0;
+}
+
+function sheetAnyFilterActive() {
+  return ticketSearch.trim().length > 0 || Object.values(sheetColumnFilters).some((values) => Array.isArray(values) && values.length);
+}
+
+function sheetHeaderHtml(label) {
+  const active = sheetFilterActive(label);
+  const sortMark = sheetSort.column === label ? (sheetSort.direction === "asc" ? " ↑" : " ↓") : "";
+  const values = sheetColumnValues(label);
+  const selected = new Set(sheetColumnFilters[label] || []);
+  const visibleValues = values.slice(0, 250);
+  const checkedAll = !active;
+  return `
+    <th class="${active ? "sheet-filtered-column" : ""}">
+      <details class="sheet-filter-menu" data-sheet-filter-menu="${escapeHtml(label)}">
+        <summary>${escapeHtml(label)}${sortMark}</summary>
+        <div class="sheet-filter-panel">
+          <div class="sheet-filter-title">${escapeHtml(label)}</div>
+          <button type="button" data-sheet-sort="${escapeHtml(label)}" data-sort-direction="asc">Sort A to Z</button>
+          <button type="button" data-sheet-sort="${escapeHtml(label)}" data-sort-direction="desc">Sort Z to A</button>
+          <button type="button" data-sheet-clear-column="${escapeHtml(label)}">Clear column filter</button>
+          <input type="search" data-sheet-filter-search="${escapeHtml(label)}" placeholder="Search this column">
+          <div class="sheet-filter-values" data-sheet-filter-values="${escapeHtml(label)}">
+            <label><input type="checkbox" data-sheet-filter-all="${escapeHtml(label)}" ${checkedAll ? "checked" : ""}> Select all visible</label>
+            ${visibleValues.map((value) => {
+              const checked = !active || selected.has(value);
+              const display = value || "(Blanks)";
+              return `<label data-sheet-filter-value-row="${escapeHtml(label)}"><input type="checkbox" data-sheet-filter-value="${escapeHtml(label)}" value="${escapeHtml(value)}" ${checked ? "checked" : ""}> ${escapeHtml(display)}</label>`;
+            }).join("")}
+          </div>
+          ${values.length > visibleValues.length ? `<div class="sheet-filter-note">Showing first ${visibleValues.length.toLocaleString()} of ${values.length.toLocaleString()} values. Use search to narrow.</div>` : ""}
+          <div class="sheet-filter-actions">
+            <button type="button" data-sheet-apply-filter="${escapeHtml(label)}">Apply</button>
+            <button type="button" data-sheet-close-filter>Close</button>
+          </div>
+        </div>
+      </details>
+    </th>
+  `;
+}
+
+function sheetFilterToolbarHtml(rows) {
+  return `
+    <div class="sheet-filter-toolbar">
+      <div>
+        <strong>${rows.length.toLocaleString()}</strong>
+        <span>active row${rows.length === 1 ? "" : "s"} shown</span>
+      </div>
+      <label>
+        Saved filter
+        <select id="sheetSavedFilterSelect">
+          <option value="">Choose saved filter</option>
+          ${sheetSavedFilters.map((filter) => `<option value="${escapeHtml(filter.name)}">${escapeHtml(filter.name)}</option>`).join("")}
+        </select>
+      </label>
+      <button type="button" id="sheetSaveFilter">Save current filter</button>
+      <button type="button" id="sheetClearFilters" ${sheetAnyFilterActive() ? "" : "disabled"}>Clear filters</button>
+    </div>
+  `;
 }
 
 function sheetExportRows() {
@@ -2466,22 +2668,16 @@ function renderHistoricalDigTickets() {
 }
 
 function sheetTickets() {
-  return scopedTickets()
+  return sheetColumnFilteredTickets()
     .slice()
-    .sort((a, b) => {
-      const dateA = parseTicketDueDate(a);
-      const dateB = parseTicketDueDate(b);
-      const timeA = dateA ? dateA.getTime() : -Infinity;
-      const timeB = dateB ? dateB.getTime() : -Infinity;
-      if (timeA !== timeB) return timeB - timeA;
-      return String(b.ticket_number || "").localeCompare(String(a.ticket_number || ""));
-    });
+    .sort(compareSheetTickets);
 }
 
 function renderSheetView() {
   if (!elements.sheetTableWrap) return;
   const rows = sheetTickets();
-  const head = SHEET_COLUMNS.map(([label]) => `<th>${escapeHtml(label)}</th>`).join("");
+  if (elements.sheetFilterToolbar) elements.sheetFilterToolbar.innerHTML = sheetFilterToolbarHtml(rows);
+  const head = SHEET_COLUMNS.map(([label]) => sheetHeaderHtml(label)).join("");
   const body = rows
     .map((ticket) => {
       const dueStatus = ticketDueStatus(ticket);
@@ -2504,6 +2700,7 @@ function renderSheetView() {
     </table>
     ${renderHistoricalDigTickets()}
   `;
+  bindSheetFilterControls();
   const historySearch = elements.sheetTableWrap.querySelector("#historySearch");
   if (historySearch) {
     historySearch.addEventListener("input", () => {
@@ -2553,7 +2750,168 @@ function renderSheetView() {
   }
 }
 
+function bindSheetFilterControls() {
+  if (!elements.sheetTableWrap) return;
+  for (const button of elements.sheetTableWrap.querySelectorAll("[data-sheet-sort]")) {
+    button.addEventListener("click", () => {
+      sheetSort = normalizeSheetSort({
+        column: button.dataset.sheetSort,
+        direction: button.dataset.sortDirection,
+      });
+      saveSheetGridState();
+      renderSheetView();
+    });
+  }
+  for (const button of elements.sheetTableWrap.querySelectorAll("[data-sheet-clear-column]")) {
+    button.addEventListener("click", () => {
+      delete sheetColumnFilters[button.dataset.sheetClearColumn];
+      saveSheetGridState();
+      renderSheetView();
+    });
+  }
+  for (const input of elements.sheetTableWrap.querySelectorAll("[data-sheet-filter-search]")) {
+    input.addEventListener("input", () => {
+      const query = input.value.trim().toLowerCase();
+      const panel = input.closest(".sheet-filter-panel");
+      if (!panel) return;
+      for (const row of panel.querySelectorAll("[data-sheet-filter-value-row]")) {
+        row.hidden = query && !row.textContent.toLowerCase().includes(query);
+      }
+    });
+  }
+  for (const input of elements.sheetTableWrap.querySelectorAll("[data-sheet-filter-all]")) {
+    input.addEventListener("change", () => {
+      const panel = input.closest(".sheet-filter-panel");
+      if (!panel) return;
+      for (const checkbox of panel.querySelectorAll("[data-sheet-filter-value]")) {
+        const row = checkbox.closest("[data-sheet-filter-value-row]");
+        if (row?.hidden) continue;
+        checkbox.checked = input.checked;
+      }
+    });
+  }
+  for (const button of elements.sheetTableWrap.querySelectorAll("[data-sheet-apply-filter]")) {
+    button.addEventListener("click", () => {
+      const label = button.dataset.sheetApplyFilter;
+      const panel = button.closest(".sheet-filter-panel");
+      if (!panel) return;
+      const allValues = sheetColumnValues(label);
+      const selected = [...panel.querySelectorAll("[data-sheet-filter-value]")]
+        .filter((input) => input.checked)
+        .map((input) => input.value);
+      if (selected.length === allValues.length) delete sheetColumnFilters[label];
+      else sheetColumnFilters[label] = selected;
+      saveSheetGridState();
+      renderSheetView();
+    });
+  }
+  for (const button of elements.sheetTableWrap.querySelectorAll("[data-sheet-close-filter]")) {
+    button.addEventListener("click", () => {
+      const details = button.closest("details");
+      if (details) details.open = false;
+    });
+  }
+  const saveButton = elements.sheetFilterToolbar?.querySelector("#sheetSaveFilter");
+  if (saveButton) {
+    saveButton.addEventListener("click", () => {
+      const name = window.prompt("Saved filter name");
+      const cleanName = String(name || "").trim();
+      if (!cleanName) return;
+      const nextFilter = {
+        name: cleanName.slice(0, 60),
+        search: ticketSearch,
+        sort: normalizeSheetSort(sheetSort),
+        columnFilters: normalizeSheetColumnFilters(sheetColumnFilters),
+        savedAt: new Date().toISOString(),
+      };
+      sheetSavedFilters = normalizeSheetSavedFilters([
+        ...sheetSavedFilters.filter((filter) => filter.name !== nextFilter.name),
+        nextFilter,
+      ]);
+      saveSheetGridState();
+      renderSheetView();
+    });
+  }
+  const savedSelect = elements.sheetFilterToolbar?.querySelector("#sheetSavedFilterSelect");
+  if (savedSelect) {
+    savedSelect.addEventListener("change", () => {
+      const saved = sheetSavedFilters.find((filter) => filter.name === savedSelect.value);
+      if (!saved) return;
+      ticketSearch = saved.search || "";
+      historicalDigTicketSearch = ticketSearch;
+      localStorage.setItem("ticketSearch", ticketSearch);
+      syncTicketSearchInputs();
+      sheetSort = normalizeSheetSort(saved.sort);
+      sheetColumnFilters = normalizeSheetColumnFilters(saved.columnFilters);
+      saveSheetGridState();
+      render();
+      renderSheetView();
+    });
+  }
+  const clearButton = elements.sheetFilterToolbar?.querySelector("#sheetClearFilters");
+  if (clearButton) {
+    clearButton.addEventListener("click", () => {
+      ticketSearch = "";
+      historicalDigTicketSearch = "";
+      localStorage.setItem("ticketSearch", ticketSearch);
+      syncTicketSearchInputs();
+      sheetColumnFilters = {};
+      sheetSort = normalizeSheetSort({ column: "Due Date", direction: "desc" });
+      saveSheetGridState();
+      render();
+      renderSheetView();
+    });
+  }
+}
+
 function bindTicketActionControls(container) {
+  function updateStagedActionStatus(wrapper, dirty = true) {
+    const allInput = wrapper.querySelector("[data-ticket-action-stage-all]");
+    const actionInputs = [...wrapper.querySelectorAll("[data-ticket-action-stage]")];
+    if (allInput) {
+      allInput.checked = actionInputs.length > 0 && actionInputs.every((input) => input.checked);
+      allInput.indeterminate = actionInputs.some((input) => input.checked) && !allInput.checked;
+    }
+    const status = wrapper.querySelector("[data-ticket-action-pending]");
+    if (status) {
+      const selectedCount = actionInputs.filter((input) => input.checked).length;
+      status.textContent = dirty
+        ? `${selectedCount} selected. Not submitted yet.`
+        : `${selectedCount} submitted.`;
+    }
+  }
+
+  for (const input of container.querySelectorAll("[data-ticket-action-stage-all]")) {
+    input.addEventListener("change", () => {
+      const wrapper = input.closest(".ticket-action-checks");
+      if (!wrapper) return;
+      for (const actionInput of wrapper.querySelectorAll("[data-ticket-action-stage]")) {
+        actionInput.checked = input.checked;
+      }
+      updateStagedActionStatus(wrapper);
+    });
+  }
+  for (const input of container.querySelectorAll("[data-ticket-action-stage]")) {
+    input.addEventListener("change", () => {
+      const wrapper = input.closest(".ticket-action-checks");
+      if (wrapper) updateStagedActionStatus(wrapper);
+    });
+  }
+  for (const button of container.querySelectorAll("[data-ticket-action-submit]")) {
+    button.addEventListener("click", () => {
+      const wrapper = button.closest(".ticket-action-checks");
+      if (!wrapper) return;
+      const ticketNumber = button.dataset.ticketActionSubmit;
+      const selected = [...wrapper.querySelectorAll("[data-ticket-action-stage]")]
+        .filter((input) => input.checked)
+        .map((input) => input.dataset.actionKey);
+      rememberUndoState();
+      setTicketActions(ticketNumber, selected);
+      updateStagedActionStatus(wrapper, false);
+      render();
+    });
+  }
+
   for (const input of container.querySelectorAll("[data-ticket-action-all]")) {
     input.addEventListener("change", () => {
       rememberUndoState();
@@ -3605,7 +3963,7 @@ function renderDetail() {
       ${portalActions(ticket)}
 
       <h3>Actions</h3>
-      ${actionControlHtml(ticket.ticket_number)}
+      ${actionControlHtml(ticket.ticket_number, false, { deferred: true })}
 
       <h3>Work Description</h3>
       <div class="description-box">${escapeHtml(workDescription(ticket))}</div>
@@ -3909,11 +4267,6 @@ if (elements.mapDataOverlay) {
     localStorage.setItem(STORAGE_KEYS.mapDataOverlay, mapDataOverlay);
     refreshMapDataOverlay();
     scheduleDashboardStateSave();
-  });
-}
-if (elements.mapViewToggle) {
-  elements.mapViewToggle.addEventListener("click", () => {
-    void toggleMapView().catch((error) => console.error(error));
   });
 }
 elements.vetroLayerFilter.addEventListener("input", (event) => {

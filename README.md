@@ -1,6 +1,6 @@
-# One Call Locator Dashboard
+# Fiber Locator Dashboard
 
-Local and home-server dashboard for Arkansas One Call ticket work.
+Cloud dashboard for Fiber Locator and Arkansas One Call ticket work.
 
 This project combines:
 
@@ -35,7 +35,7 @@ Dashboard login is enabled when `data/dashboard_auth.json` exists on the server.
 
 ## Live Target
 
-Latest known live cloud dashboard:
+Current live cloud dashboard:
 
 ```text
 http://5.78.214.184:8765/

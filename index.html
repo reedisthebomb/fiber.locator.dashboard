@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Fiber Locator</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260520181500">
+    <link rel="stylesheet" href="/static/styles.css?v=20260521041000">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
@@ -12,7 +12,7 @@
       <div class="brand">
         <img src="/static/assets/tcw-logo.png" alt="TCW">
         <div>
-          <h1>TCW Fiber Locating</h1>
+          <h1>Fiber Locator</h1>
         </div>
         <p id="sourcePath"></p>
       </div>
@@ -247,6 +247,16 @@
                   <option value="google-hybrid">Google satellite + roads</option>
                 </select>
               </label>
+              <label>
+                Address labels
+                <select id="mapDataOverlay">
+                  <option value="addresses">Arkansas house numbers</option>
+                  <option value="addresses-parcels">Arkansas house numbers + parcels</option>
+                  <option value="parcels">Arkansas parcels</option>
+                  <option value="none">Off</option>
+                </select>
+              </label>
+              <span id="mapDataOverlayStatus" class="map-data-overlay-status" role="status" aria-live="polite"></span>
             </div>
           </details>
         </div>
@@ -263,7 +273,6 @@
           <button type="submit">Go</button>
         </form>
         <div id="mapLegend" class="priority-legend map-legend" aria-label="Ticket priority legend"></div>
-        <button id="mapViewToggle" class="map-view-toggle" type="button" aria-label="Toggle map view" title="Toggle map view">Map</button>
         <button id="legendToggle" class="legend-toggle" type="button" aria-label="Show legend" title="Show legend">Legend</button>
         <aside id="detail" class="detail">
           <div class="empty">Select a ticket</div>
@@ -280,6 +289,7 @@
           <span>Search dig tickets</span>
           <input id="sheetSearch" type="search" placeholder="Search current and historical tickets, address, county, excavator">
         </label>
+        <div id="sheetFilterToolbar" class="sheet-filter-toolbar"></div>
         <div id="sheetLegend" class="priority-legend sheet-legend" aria-label="Ticket priority legend"></div>
         <div class="sheet-export-actions" aria-label="Export dig tickets">
           <button id="exportSheetPdf" type="button">PDF</button>

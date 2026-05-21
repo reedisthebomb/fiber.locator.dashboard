@@ -1,8 +1,8 @@
-# One Call Locator Dashboard Project Overview
+# Fiber Locator Dashboard Project Overview
 
 ## What This Project Is
 
-This project is the operator dashboard for Arkansas One Call work. It turns exported ticket emails, GeoCall printable pages, GeoCall polygons, and Vetro fiber layers into one working map and ticket review surface.
+This project is the Fiber Locator operator dashboard for Arkansas One Call work. It turns exported ticket emails, GeoCall printable pages, GeoCall polygons, and Vetro fiber layers into one working map and ticket review surface.
 
 The goal is practical, not decorative:
 
@@ -20,16 +20,16 @@ The goal is practical, not decorative:
 /mnt/c/Users/reedc/onecall-locator-dashboard
 ```
 
-Deployed home-server copy:
+Deployed cloud-server copy:
 
 ```text
 /opt/onecall-locator-dashboard
 ```
 
-Home server:
+Current live cloud server:
 
 ```text
-192.168.50.231
+http://5.78.214.184:8765/
 ```
 
 ## Runtime
@@ -41,7 +41,7 @@ cd /mnt/c/Users/reedc/onecall-locator-dashboard
 python3 server.py
 ```
 
-Home server service:
+Production service:
 
 ```text
 onecall-dashboard
@@ -202,7 +202,7 @@ Important files:
 
 ## Deployment Notes
 
-The home server deployment lives on the Kali machine at `192.168.50.231` under `/opt/onecall-locator-dashboard`.
+The live cloud deployment lives at `root@5.78.214.184:/opt/onecall-locator-dashboard`.
 
 The service is expected to run as:
 

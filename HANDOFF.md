@@ -1,6 +1,6 @@
-# One Call Locator Dashboard Handoff
+# Fiber Locator Dashboard Handoff
 
-Updated: 2026-05-20
+Updated: 2026-05-21
 
 Latest detailed continuation file:
 
@@ -10,7 +10,7 @@ PROJECT_HANDOFF_2026-05-13.md
 
 ## Purpose
 
-This project is the working dashboard for Arkansas One Call locating. It turns Outlook ticket exports, GeoCall pages and polygons, Vetro fiber layers, and public map overlays into one operational map and ticket workflow.
+This project is the Fiber Locator dashboard for Arkansas One Call locating. It turns Outlook ticket exports, GeoCall pages and polygons, Vetro fiber layers, and public map overlays into one operational map and ticket workflow.
 
 ## Project Roots
 
@@ -18,16 +18,16 @@ This project is the working dashboard for Arkansas One Call locating. It turns O
 /mnt/c/Users/reedc/onecall-locator-dashboard
 ```
 
-Deployed home server:
+Deployed cloud server:
 
 ```text
 /opt/onecall-locator-dashboard
 ```
 
-Home server address:
+Current live cloud address:
 
 ```text
-192.168.50.231
+http://5.78.214.184:8765/
 ```
 
 Current Home Assistant endpoint:
@@ -62,7 +62,7 @@ The refresh button on the page triggers the server-side Outlook export and reloa
 
 Dashboard login is enabled on the live cloud server when `data/dashboard_auth.json` exists. User records and password hashes stay only in that ignored runtime file.
 
-Home Assistant `dashboard-home` has a One Call Locator iframe pointed at:
+Home Assistant `dashboard-home` has historically used a Fiber Locator iframe pointed at the older LAN target:
 
 ```text
 http://192.168.50.231:8765/
@@ -182,7 +182,7 @@ The dashboard is reachable through:
 
 ## Known Current State
 
-The project is in a working state on the home server. The current outstanding gap is GitHub publishing access from this session, not the dashboard itself.
+The project is in a working state on the live cloud server. The GitHub repository is `reedisthebomb/fiber.locator.dashboard`.
 
 ## Important User Preferences
 

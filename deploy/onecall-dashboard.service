@@ -1,5 +1,5 @@
 [Unit]
-Description=One Call Locator Dashboard
+Description=Fiber Locator Dashboard
 After=network-online.target
 Wants=network-online.target
 

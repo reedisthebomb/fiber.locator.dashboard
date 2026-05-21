@@ -1,31 +1,31 @@
-# One Call Locator Dashboard Handoff - 2026-05-13
+# Fiber Locator Dashboard Handoff - 2026-05-13
 
-This file is the current project handoff for the Arkansas One Call / TCW Fiber locator dashboard.
+This file is the current project handoff for the Fiber Locator dashboard for Arkansas One Call / TCW fiber locating work.
 
 ## Current Deployment
 
 Update 2026-05-20: login is enabled again on the live cloud dashboard. Auth users and salted password hashes are loaded from `data/dashboard_auth.json`, which remains outside Git and runtime handoffs.
 
-- Primary server: `kali@192.168.50.231`
+- Primary live server: `root@5.78.214.184`
 - Deployed app path: `/opt/onecall-locator-dashboard`
 - Systemd service: `onecall-dashboard`
-- Dashboard URL on LAN: `http://192.168.50.231:8765/`
+- Dashboard URL: `http://5.78.214.184:8765/`
 - Service command:
   - `systemctl status onecall-dashboard`
   - `systemctl restart onecall-dashboard`
 - The server currently runs plain HTTP on port `8765`.
-- Dashboard login is currently disabled by request. The page opens without username/password.
+- Dashboard login is enabled on the live cloud server when `data/dashboard_auth.json` exists.
 
 ## Current Verified State
 
 As of this handoff:
 
-- `onecall-dashboard` is active on the Kali machine.
-- The dashboard returns HTTP 200 at `http://192.168.50.231:8765/`.
-- `/api/state` returns user `default`.
+- `onecall-dashboard` is active on the cloud machine.
+- The dashboard returns HTTP 200/302 at `http://5.78.214.184:8765/` depending on auth state.
+- Unauthenticated `/api/state` returns `401 Login required` when auth is enabled.
 - `locatorDefault.enabled` is `true`.
 - The deployed server-side default view has state saved.
-- Home Assistant live Lovelace dashboard `dashboard-home` has a `One Call Locator` panel.
+- Home Assistant live Lovelace dashboard `dashboard-home` has historically had a `Fiber Locator` panel.
 - That panel iframe points to `http://192.168.50.231:8765/`.
 
 ## Important Files
@@ -36,7 +36,7 @@ As of this handoff:
   - Refresh endpoint
   - Dashboard state persistence
   - Vetro and Vitruvi API endpoints
-  - Auth is currently disabled in `run()` by setting `DashboardHandler.auth_users = {}`
+  - Auth users are loaded from the ignored runtime `data/dashboard_auth.json` file when present
 - `index.html`
   - Main UI
   - Locator Default View controls
@@ -178,7 +178,7 @@ Current One Call panel entry:
 
 ```json
 {
-  "title": "One Call Locator",
+  "title": "Fiber Locator",
   "path": "one-call",
   "icon": "mdi:map",
   "type": "panel",

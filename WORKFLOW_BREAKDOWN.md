@@ -1,6 +1,6 @@
-# One Call Dashboard Workflow Breakdown
+# Fiber Locator Dashboard Workflow Breakdown
 
-This document maps the moving parts of the One Call / Fiber Locator dashboard: what each script does, where runtime data lives, and how a ticket gets from Outlook into the browser map.
+This document maps the moving parts of the Fiber Locator dashboard: what each script does, where runtime data lives, and how a ticket gets from Outlook into the browser map.
 
 ## High-Level Flow
 
@@ -312,4 +312,3 @@ Do not track:
 - dashboard auth files
 - TLS private keys
 - raw ticket/customer payloads
-

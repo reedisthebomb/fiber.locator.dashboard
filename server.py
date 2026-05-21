@@ -341,7 +341,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>One Call Dashboard Login</title>
+  <title>Fiber Locator Login</title>
   <style>
     body {{
       margin: 0;
@@ -411,7 +411,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
 </head>
 <body>
   <form class="login" method="post" action="/login">
-    <h1>One Call Dashboard</h1>
+    <h1>Fiber Locator</h1>
     <p>Sign in to view tickets, Vetro layers, and refresh data.</p>
     {message_html}
     <input type="hidden" name="next" value="{html.escape(next_path)}">
@@ -424,7 +424,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       <input name="password" type="password" autocomplete="current-password" required>
     </label>
     <button type="submit">Log in</button>
-    <div class="hint">Use the dashboard address on the home server after signing in.</div>
+    <div class="hint">Use the Fiber Locator dashboard address after signing in.</div>
   </form>
 </body>
 </html>"""
