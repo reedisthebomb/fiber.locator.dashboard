@@ -143,6 +143,7 @@ const TICKET_ACTIONS = [
   { key: "located", label: "Located", hidesFromDashboard: true },
   { key: "locate-delayed", label: "Locate delayed", hidesFromDashboard: false },
   { key: "clear", label: "Clear", hidesFromDashboard: true },
+  { key: "ticket-canceled-by-customer", label: "TICKET CANCELED BY customer", hidesFromDashboard: true },
   { key: "in-conflict", label: "In conflict", hidesFromDashboard: true },
   { key: "cannot-locate", label: "Cannot locate", hidesFromDashboard: true },
   { key: "partially-located-large-project", label: "Partially located/large project", hidesFromDashboard: false },
