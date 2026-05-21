@@ -418,7 +418,6 @@ function employeeWritableStatePayload() {
     vetroOpacity,
     ticketOpacity,
     mapStyle,
-    mapDataOverlay,
   };
 }
 
@@ -430,7 +429,6 @@ function employeeDashboardStateFromAdminFilters() {
     vetroOpacity: typeof current.vetroOpacity === "number" ? current.vetroOpacity : state.vetroOpacity,
     ticketOpacity: typeof current.ticketOpacity === "number" ? current.ticketOpacity : state.ticketOpacity,
     mapStyle: typeof current.mapStyle === "string" && MAP_TILE_STYLES[current.mapStyle] ? current.mapStyle : state.mapStyle,
-    mapDataOverlay: typeof current.mapDataOverlay === "string" && isValidMapDataOverlay(current.mapDataOverlay) ? current.mapDataOverlay : state.mapDataOverlay,
   };
 }
 
@@ -457,7 +455,6 @@ function applyEmployeeDashboardState() {
   }
   render();
   renderVetroLayer();
-  refreshMapDataOverlay();
 }
 
 function updateDashboardMenuLabel() {
@@ -487,7 +484,6 @@ function setProfileMode(mode) {
       adminPreviewState = null;
       render();
       renderVetroLayer();
-      refreshMapDataOverlay();
     }
   }
   renderProfile();
@@ -579,7 +575,6 @@ function dashboardStatePayload() {
     polygonOpacity,
     ticketOpacity,
     mapStyle,
-    mapDataOverlay,
     sidebarCollapsed,
     locatorProfile,
     selectedTicketNumber: selectedTicket?.ticket_number || pendingSelectedTicketNumber || "",
@@ -771,11 +766,8 @@ function applyDashboardState(state) {
       localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
       elements.mapStyle.value = mapStyle;
     }
-    if (typeof state.mapDataOverlay === "string" && isValidMapDataOverlay(state.mapDataOverlay)) {
-      mapDataOverlay = state.mapDataOverlay;
-      localStorage.setItem(STORAGE_KEYS.mapDataOverlay, mapDataOverlay);
-      if (elements.mapDataOverlay) elements.mapDataOverlay.value = mapDataOverlay;
-    }
+    mapDataOverlay = "none";
+    localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
     if (typeof state.sidebarCollapsed === "boolean") {
       sidebarCollapsed = state.sidebarCollapsed;
       writeBooleanStorage(STORAGE_KEYS.sidebarCollapsed, sidebarCollapsed);
@@ -909,8 +901,8 @@ let ticketOpacity = Number(localStorage.getItem(STORAGE_KEYS.ticketOpacity) || "
 let mapStyle = localStorage.getItem(STORAGE_KEYS.mapStyle) || "contrast";
 if (!MAP_TILE_STYLES[mapStyle]) mapStyle = "contrast";
 let lastStreetMapStyle = ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(mapStyle) ? "contrast" : mapStyle;
-let mapDataOverlay = localStorage.getItem(STORAGE_KEYS.mapDataOverlay) || "addresses";
-if (!isValidMapDataOverlay(mapDataOverlay)) mapDataOverlay = "none";
+let mapDataOverlay = "none";
+localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
 let sheetSort = readJsonStorage(STORAGE_KEYS.sheetSort, { column: "Due Date", direction: "desc" });
 let sheetColumnFilters = readObjectStorage(STORAGE_KEYS.sheetColumnFilters);
 let sheetSavedFilters = readJsonStorage(STORAGE_KEYS.sheetSavedFilters, []);
@@ -1095,7 +1087,6 @@ elements.vetroSlLabels.checked = vetroSlLabels;
 elements.vetroSearch.value = vetroSearch;
 syncTicketSearchInputs();
 elements.mapStyle.value = mapStyle;
-if (elements.mapDataOverlay) elements.mapDataOverlay.value = mapDataOverlay;
 elements.showHiddenToggle.checked = showHiddenTickets;
 elements.vetroToggle.checked = vetroVisible;
 updateDashboardMenuLabel();
@@ -1705,35 +1696,16 @@ async function loadArcgisPointOverlay(config, requestId) {
 
 let mapDataOverlayTimer = null;
 function scheduleMapDataOverlayRefresh() {
-  if (mapDataOverlayTimer) window.clearTimeout(mapDataOverlayTimer);
-  mapDataOverlayTimer = window.setTimeout(refreshMapDataOverlay, 350);
+  void refreshMapDataOverlay();
 }
 
 async function refreshMapDataOverlay() {
   if (!map || !mapDataOverlayLayer) return;
   mapDataOverlayAbort += 1;
-  const requestId = mapDataOverlayAbort;
+  mapDataOverlay = "none";
   mapDataOverlayLayer.clearLayers();
-  const configs = mapDataOverlayConfigs();
-  if (!configs.length) {
-    setMapDataOverlayStatus("Arkansas address layer is off.");
-    return;
-  }
-  const minZoom = Math.min(...configs.map((config) => config.minZoom));
-  if (map.getZoom() < minZoom) {
-    setMapDataOverlayStatus(`Zoom to ${minZoom}+ to load Arkansas house numbers.`);
-    return;
-  }
-  setMapDataOverlayStatus("Loading Arkansas house numbers...");
-  try {
-    const counts = await Promise.all(configs.map((config) => loadArcgisPointOverlay(config, requestId)));
-    if (requestId !== mapDataOverlayAbort) return;
-    setMapDataOverlayStatus(`Loaded ${counts.reduce((sum, count) => sum + count, 0)} Arkansas address/parcel point(s).`);
-  } catch (error) {
-    if (requestId !== mapDataOverlayAbort) return;
-    console.warn(error);
-    setMapDataOverlayStatus("Arkansas address layer failed to load for this map view.");
-  }
+  localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
+  setMapDataOverlayStatus("");
 }
 
 function colorForVetroLayer(layerId) {
@@ -4555,15 +4527,6 @@ elements.mapStyle.addEventListener("change", () => {
   rememberUndoState();
   void setMapTileStyle(elements.mapStyle.value).catch((error) => console.error(error));
 });
-if (elements.mapDataOverlay) {
-  elements.mapDataOverlay.addEventListener("change", () => {
-    rememberUndoState();
-    mapDataOverlay = isValidMapDataOverlay(elements.mapDataOverlay.value) ? elements.mapDataOverlay.value : "none";
-    localStorage.setItem(STORAGE_KEYS.mapDataOverlay, mapDataOverlay);
-    refreshMapDataOverlay();
-    scheduleDashboardStateSave();
-  });
-}
 elements.vetroLayerFilter.addEventListener("input", (event) => {
   if (event.target.matches(".layer-color")) {
     rememberUndoState();

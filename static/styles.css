@@ -2519,29 +2519,6 @@ button {
   transition: width 0.18s ease;
 }
 
-.map-data-overlay-status {
-  display: block;
-  max-width: 260px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1.25;
-}
-
-.address-number-label {
-  padding: 1px 4px;
-  border: 1px solid rgba(124, 45, 18, 0.5);
-  border-radius: 4px;
-  background: rgba(255, 247, 237, 0.96);
-  color: #7c2d12;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.28);
-  font: 900 11px/1.1 Arial, Helvetica, sans-serif;
-}
-
-.address-number-label::before {
-  display: none;
-}
-
 .sheet-row.ticket-tcw-dmi-work td:first-child {
   border-left: 5px solid #ff6a00;
 }
