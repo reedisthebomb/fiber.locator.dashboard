@@ -21,3 +21,13 @@ OUTLOOK_GRAPH_TOKEN_CACHE=/opt/onecall-locator-dashboard/data/private/outlook_gr
 # Enable the Map Tiles API in Google Cloud and restrict this browser key to the
 # dashboard origins that serve the app.
 GOOGLE_MAPS_TILE_API_KEY=
+
+# OneDrive attachment uploads.
+# Create a Microsoft public-client app and grant delegated Files.ReadWrite and User.Read.
+# The dashboard stores the refresh token in data/private, not in Git.
+ONEDRIVE_GRAPH_CLIENT_ID=
+ONEDRIVE_GRAPH_TENANT=consumers
+ONEDRIVE_GRAPH_SCOPE=offline_access Files.ReadWrite User.Read
+ONEDRIVE_GRAPH_TOKEN_CACHE=/opt/onecall-locator-dashboard/data/private/onedrive_graph_token.json
+ONEDRIVE_ATTACHMENTS_ROOT=Fiber Locator Attachments
+ONEDRIVE_LINK_SCOPE=anonymous

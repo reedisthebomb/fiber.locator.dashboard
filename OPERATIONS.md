@@ -96,6 +96,23 @@ The Excel source link points at:
 
 Keep those files on the live server, not in Git.
 
+## OneDrive Attachments
+
+The right-side ticket Actions panel includes attachment upload for the selected ticket. The flow accepts up to `80` files, asks for confirmation in the web app, uploads through the dashboard server to OneDrive, and stores the returned folder/file links in `data/attachments/attachments.json`.
+
+OneDrive setup lives in `/opt/onecall-locator-dashboard/.env`:
+
+```text
+ONEDRIVE_GRAPH_CLIENT_ID=
+ONEDRIVE_GRAPH_TENANT=consumers
+ONEDRIVE_GRAPH_SCOPE=offline_access Files.ReadWrite User.Read
+ONEDRIVE_GRAPH_TOKEN_CACHE=/opt/onecall-locator-dashboard/data/private/onedrive_graph_token.json
+ONEDRIVE_ATTACHMENTS_ROOT=Fiber Locator Attachments
+ONEDRIVE_LINK_SCOPE=anonymous
+```
+
+The web app Settings panel starts Microsoft device-code sign-in and stores the refresh token only in the ignored private token cache. The dashboard creates a OneDrive folder named with the ticket number under the configured root folder, then shows the folder link on the ticket detail and Dig Tickets page.
+
 ## Refresh Flow
 
 The page Refresh button calls `/api/refresh`.

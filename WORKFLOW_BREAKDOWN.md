@@ -42,6 +42,7 @@ Core responsibilities:
 - accepts and returns server-backed dashboard state through `/api/state`
 - saves Locator Default View and Employee Dashboard snapshots inside the state file
 - handles login when `data/dashboard_auth.json` is present
+- connects OneDrive through Microsoft Graph device-code auth for ticket attachments
 - runs `/api/refresh`, which starts the configured Outlook/Graph refresh workflow
 - stores ticket attachments and attachment index data under `data/attachments/`
 
@@ -67,6 +68,7 @@ It handles:
 - Dig Tickets sheet and historical ticket search/export tools
 - admin profile and employee profile behavior
 - server-backed state save/restore
+- right-side ticket attachment upload, OneDrive progress feedback, and folder links
 - Locator Default View and Employee Dashboard save confirmation
 - mobile layout controls
 
@@ -147,6 +149,29 @@ Important env/config:
 - `OUTLOOK_GRAPH_TOKEN_CACHE`
 
 Token caches must stay under `data/private/` or another ignored private path.
+
+## OneDrive Attachment Uploads
+
+The dashboard uses Microsoft Graph for OneDrive ticket attachments:
+
+1. `Settings -> Connect / change OneDrive` starts device-code login.
+2. The server stores the Microsoft refresh token in `data/private/onedrive_graph_token.json`.
+3. The ticket Actions panel can select up to `80` files.
+4. The server creates or reuses `Fiber Locator Attachments/<ticket-number>/`.
+5. Files upload through Graph upload sessions.
+6. The returned folder/file links are written to `data/attachments/attachments.json`.
+7. The ticket detail panel and Dig Tickets sheet show a clickable OneDrive folder link.
+
+Important env/config:
+
+- `ONEDRIVE_GRAPH_CLIENT_ID`
+- `ONEDRIVE_GRAPH_TENANT`
+- `ONEDRIVE_GRAPH_SCOPE`
+- `ONEDRIVE_GRAPH_TOKEN_CACHE`
+- `ONEDRIVE_ATTACHMENTS_ROOT`
+- `ONEDRIVE_LINK_SCOPE`
+
+Do not commit the OneDrive token cache or uploaded customer files.
 
 ## Server Refresh Helper
 

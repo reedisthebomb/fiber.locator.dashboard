@@ -15,6 +15,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 import threading
 import secrets
+import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from email import policy
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Iterable
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 
 TICKET_RE = re.compile(r"\b\d{6}-\d{4}\b")
@@ -47,8 +48,15 @@ AUTH_SESSIONS: dict[str, dict[str, str]] = {}
 STATE_LOCK = threading.Lock()
 STATE_FILE: Path | None = None
 ATTACHMENT_LOCK = threading.Lock()
+ONEDRIVE_AUTH_LOCK = threading.Lock()
+ONEDRIVE_PENDING_AUTH: dict[str, object] = {}
 VETRO_CACHE_LOCK = threading.Lock()
 VETRO_RESPONSE_CACHE: dict[str, object] = {"signature": None, "body": b"", "gzip_body": b""}
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+MICROSOFT_AUTH_BASE = "https://login.microsoftonline.com"
+ONEDRIVE_DEFAULT_SCOPE = "offline_access Files.ReadWrite User.Read"
+ONEDRIVE_DEFAULT_ROOT = "Fiber Locator Attachments"
+ONEDRIVE_MAX_ATTACHMENTS = 80
 
 
 @dataclass
@@ -227,6 +235,265 @@ def save_attachments_index(data_dir: Path, payload: dict) -> None:
 
 def ticket_attachment_dir(data_dir: Path, ticket_number: str) -> Path:
     return attachments_root(data_dir) / safe_file_component(ticket_number, "ticket")
+
+
+class GraphRequestError(RuntimeError):
+    def __init__(self, message: str, status: int = 0, payload: dict | None = None):
+        super().__init__(message)
+        self.status = status
+        self.payload = payload or {}
+
+
+def private_json_path(data_dir: Path, filename: str) -> Path:
+    return data_dir / "private" / filename
+
+
+def load_private_json(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_private_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def onedrive_client_id() -> str:
+    return os.environ.get("ONEDRIVE_GRAPH_CLIENT_ID") or os.environ.get("OUTLOOK_GRAPH_CLIENT_ID", "")
+
+
+def onedrive_tenant() -> str:
+    return os.environ.get("ONEDRIVE_GRAPH_TENANT") or os.environ.get("OUTLOOK_GRAPH_TENANT", "consumers")
+
+
+def onedrive_scope() -> str:
+    return os.environ.get("ONEDRIVE_GRAPH_SCOPE", ONEDRIVE_DEFAULT_SCOPE)
+
+
+def onedrive_token_cache_path(data_dir: Path) -> Path:
+    return Path(os.environ.get("ONEDRIVE_GRAPH_TOKEN_CACHE") or private_json_path(data_dir, "onedrive_graph_token.json"))
+
+
+def onedrive_root_folder_name() -> str:
+    return os.environ.get("ONEDRIVE_ATTACHMENTS_ROOT", ONEDRIVE_DEFAULT_ROOT).strip() or ONEDRIVE_DEFAULT_ROOT
+
+
+def onedrive_link_scope() -> str:
+    return os.environ.get("ONEDRIVE_LINK_SCOPE", "anonymous").strip() or "anonymous"
+
+
+def microsoft_token_url() -> str:
+    return f"{MICROSOFT_AUTH_BASE}/{onedrive_tenant()}/oauth2/v2.0/token"
+
+
+def graph_request_json(
+    method: str,
+    url: str,
+    *,
+    token: str = "",
+    payload: dict | None = None,
+    form: dict[str, str] | None = None,
+    timeout: int = 45,
+) -> dict:
+    body = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if form is not None:
+        body = urlencode(form).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib_request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib_request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            detail = {"error": {"message": raw}}
+        message = detail.get("error", {}).get("message") if isinstance(detail.get("error"), dict) else raw
+        code = detail.get("error", {}).get("code") if isinstance(detail.get("error"), dict) else ""
+        raise GraphRequestError(f"{method} {url} failed: HTTP {exc.code}: {code} {message}".strip(), exc.code, detail) from exc
+    except URLError as exc:
+        raise GraphRequestError(f"{method} {url} failed: {exc}") from exc
+
+
+def onedrive_refresh_access_token(data_dir: Path) -> str | None:
+    cache_path = onedrive_token_cache_path(data_dir)
+    cache = load_private_json(cache_path)
+    refresh_token = str(cache.get("refresh_token") or "")
+    if not refresh_token:
+        return None
+    client_id = onedrive_client_id()
+    if not client_id:
+        return None
+    payload = graph_request_json(
+        "POST",
+        microsoft_token_url(),
+        form={
+            "client_id": client_id,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": onedrive_scope(),
+        },
+    )
+    payload["saved_at"] = datetime.now().isoformat(timespec="seconds")
+    save_private_json(cache_path, payload)
+    return str(payload.get("access_token") or "")
+
+
+def onedrive_access_token(data_dir: Path) -> str:
+    token = onedrive_refresh_access_token(data_dir)
+    if token:
+        return token
+    raise GraphRequestError("OneDrive is not connected. Connect an account from Settings first.", 401)
+
+
+def onedrive_me(token: str) -> dict:
+    return graph_request_json("GET", f"{GRAPH_BASE}/me", token=token)
+
+
+def onedrive_path_url(path_parts: list[str]) -> str:
+    encoded = quote("/".join(path_parts), safe="/")
+    return f"{GRAPH_BASE}/me/drive/root:/{encoded}:"
+
+
+def onedrive_get_path(token: str, path_parts: list[str]) -> dict | None:
+    try:
+        return graph_request_json("GET", onedrive_path_url(path_parts), token=token)
+    except GraphRequestError as exc:
+        if exc.status == 404:
+            return None
+        raise
+
+
+def onedrive_create_child_folder(token: str, parent_id: str, name: str) -> dict:
+    return graph_request_json(
+        "POST",
+        f"{GRAPH_BASE}/me/drive/items/{quote(parent_id)}/children",
+        token=token,
+        payload={
+            "name": name,
+            "folder": {},
+            "@microsoft.graph.conflictBehavior": "fail",
+        },
+    )
+
+
+def onedrive_ensure_folder_path(token: str, path_parts: list[str]) -> dict:
+    parent = graph_request_json("GET", f"{GRAPH_BASE}/me/drive/root", token=token)
+    current_path: list[str] = []
+    for part in path_parts:
+        clean = str(part or "").strip()
+        if not clean:
+            continue
+        current_path.append(clean)
+        existing = onedrive_get_path(token, current_path)
+        if existing:
+            parent = existing
+            continue
+        try:
+            parent = onedrive_create_child_folder(token, str(parent["id"]), clean)
+        except GraphRequestError as exc:
+            if exc.status != 409:
+                raise
+            existing = onedrive_get_path(token, current_path)
+            if not existing:
+                raise
+            parent = existing
+    return parent
+
+
+def onedrive_create_folder_link(token: str, folder_id: str, fallback_url: str = "") -> str:
+    try:
+        payload = graph_request_json(
+            "POST",
+            f"{GRAPH_BASE}/me/drive/items/{quote(folder_id)}/createLink",
+            token=token,
+            payload={
+                "type": "view",
+                "scope": onedrive_link_scope(),
+            },
+        )
+        link = payload.get("link") if isinstance(payload, dict) else {}
+        return str(link.get("webUrl") or fallback_url or "")
+    except GraphRequestError:
+        return fallback_url
+
+
+def onedrive_upload_bytes(token: str, folder_id: str, filename: str, file_body: bytes) -> dict:
+    safe_name = safe_file_component(filename, "attachment")
+    session = graph_request_json(
+        "POST",
+        f"{GRAPH_BASE}/me/drive/items/{quote(folder_id)}:/{quote(safe_name)}:/createUploadSession",
+        token=token,
+        payload={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
+    )
+    upload_url = str(session.get("uploadUrl") or "")
+    if not upload_url:
+        raise GraphRequestError("OneDrive did not return an upload session URL.")
+    total = len(file_body)
+    chunk_size = 320 * 1024 * 10
+    offset = 0
+    result: dict = {}
+    while offset < total or (total == 0 and offset == 0):
+        end = min(offset + chunk_size, total) - 1
+        chunk = file_body[offset : end + 1] if total else b""
+        headers = {
+            "Content-Length": str(len(chunk)),
+            "Content-Range": f"bytes {offset}-{end}/{total}" if total else "bytes 0-0/0",
+        }
+        req = urllib_request.Request(upload_url, data=chunk, headers=headers, method="PUT")
+        try:
+            with urllib_request.urlopen(req, timeout=120) as response:
+                raw = response.read().decode("utf-8")
+                result = json.loads(raw) if raw else {}
+                status = response.status
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise GraphRequestError(f"OneDrive upload failed: HTTP {exc.code}: {raw}", exc.code) from exc
+        if status in {200, 201}:
+            return result
+        offset = end + 1
+        if total == 0:
+            break
+    return result
+
+
+def summarize_ticket_attachments(index: dict, ticket_number: str) -> dict:
+    items = index.get("tickets", {}).get(ticket_number, [])
+    if not isinstance(items, list):
+        items = []
+    folder_url = ""
+    folder_name = ticket_number
+    for item in reversed(items):
+        if not isinstance(item, dict):
+            continue
+        folder_url = str(item.get("folder_url") or folder_url)
+        folder_name = str(item.get("folder_name") or folder_name)
+        if folder_url:
+            break
+    return {
+        "count": len(items),
+        "folder_url": folder_url,
+        "folder_name": folder_name,
+    }
 
 
 def get_dashboard_user_state(username: str) -> dict:
@@ -1091,6 +1358,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             ticket_number = parse_qs(parsed.query).get("ticket", [""])[0]
             self.send_attachments(ticket_number)
             return
+        if parsed.path == "/api/onedrive/status":
+            self.send_onedrive_status()
+            return
         if parsed.path == "/api/attachments/file":
             query = parse_qs(parsed.query)
             ticket_number = query.get("ticket", [""])[0]
@@ -1134,6 +1404,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/attachments":
             self.upload_attachment()
+            return
+        if parsed.path == "/api/onedrive/device-code":
+            self.start_onedrive_device_code()
+            return
+        if parsed.path == "/api/onedrive/complete-device-code":
+            self.complete_onedrive_device_code()
             return
         self.send_error(404, "Unknown endpoint")
 
@@ -1213,7 +1489,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return f"onecall_auth={token}; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age={max_age}"
 
     def send_tickets(self) -> None:
-        tickets = [asdict(ticket) for ticket in load_tickets(self.downloads_dir, self.data_dir, self.inbox_dir)]
+        with ATTACHMENT_LOCK:
+            attachment_index = load_attachments_index(self.data_dir)
+        tickets = []
+        for ticket in load_tickets(self.downloads_dir, self.data_dir, self.inbox_dir):
+            item = asdict(ticket)
+            item["attachment_summary"] = summarize_ticket_attachments(attachment_index, ticket.ticket_number)
+            tickets.append(item)
         self.send_json({"tickets": tickets, "downloads_dir": str(self.downloads_dir), "inbox_dir": str(self.inbox_dir)})
 
     def send_refresh_status(self) -> None:
@@ -1317,6 +1599,130 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 items = []
         self.send_json({"ok": True, "ticket": ticket_number, "attachments": items})
 
+    def send_onedrive_status(self) -> None:
+        client_id = onedrive_client_id()
+        payload = {
+            "ok": True,
+            "configured": bool(client_id),
+            "connected": False,
+            "account": None,
+            "rootFolder": onedrive_root_folder_name(),
+            "message": "",
+        }
+        if not client_id:
+            payload["message"] = "Set ONEDRIVE_GRAPH_CLIENT_ID in the server .env file."
+            self.send_json(payload)
+            return
+        try:
+            token = onedrive_refresh_access_token(self.data_dir)
+            if token:
+                me = onedrive_me(token)
+                payload["connected"] = True
+                payload["account"] = {
+                    "displayName": str(me.get("displayName") or ""),
+                    "userPrincipalName": str(me.get("userPrincipalName") or me.get("mail") or ""),
+                    "id": str(me.get("id") or ""),
+                }
+                payload["message"] = "OneDrive is connected."
+            else:
+                payload["message"] = "OneDrive is configured but not connected."
+        except GraphRequestError as exc:
+            payload["message"] = str(exc)
+        self.send_json(payload)
+
+    def start_onedrive_device_code(self) -> None:
+        client_id = onedrive_client_id()
+        if not client_id:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Set ONEDRIVE_GRAPH_CLIENT_ID in the server .env file first."}).encode("utf-8"))
+            return
+        try:
+            device = graph_request_json(
+                "POST",
+                f"{MICROSOFT_AUTH_BASE}/{onedrive_tenant()}/oauth2/v2.0/devicecode",
+                form={"client_id": client_id, "scope": onedrive_scope()},
+            )
+        except GraphRequestError as exc:
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
+            return
+        with ONEDRIVE_AUTH_LOCK:
+            ONEDRIVE_PENDING_AUTH.clear()
+            ONEDRIVE_PENDING_AUTH.update({
+                "device_code": device.get("device_code"),
+                "expires_at": time.time() + int(device.get("expires_in") or 900),
+            })
+        self.send_json({
+            "ok": True,
+            "message": device.get("message") or "",
+            "verificationUri": device.get("verification_uri") or device.get("verification_uri_complete") or "",
+            "userCode": device.get("user_code") or "",
+            "expiresIn": int(device.get("expires_in") or 900),
+            "interval": int(device.get("interval") or 5),
+        })
+
+    def complete_onedrive_device_code(self) -> None:
+        with ONEDRIVE_AUTH_LOCK:
+            device_code = str(ONEDRIVE_PENDING_AUTH.get("device_code") or "")
+            expires_at = float(ONEDRIVE_PENDING_AUTH.get("expires_at") or 0)
+        if not device_code or time.time() > expires_at:
+            self.send_response(410)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "OneDrive sign-in expired. Start again from Settings."}).encode("utf-8"))
+            return
+        try:
+            payload = graph_request_json(
+                "POST",
+                microsoft_token_url(),
+                form={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "client_id": onedrive_client_id(),
+                    "device_code": device_code,
+                },
+            )
+        except GraphRequestError as exc:
+            error = exc.payload.get("error")
+            code = str(error.get("code") or "") if isinstance(error, dict) else ""
+            if "authorization_pending" in str(exc) or code == "authorization_pending":
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "pending": True, "message": "Waiting for Microsoft sign-in approval."}).encode("utf-8"))
+                return
+            if "slow_down" in str(exc) or code == "slow_down":
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "pending": True, "message": "Microsoft asked us to poll more slowly."}).encode("utf-8"))
+                return
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
+            return
+        payload["saved_at"] = datetime.now().isoformat(timespec="seconds")
+        save_private_json(onedrive_token_cache_path(self.data_dir), payload)
+        with ONEDRIVE_AUTH_LOCK:
+            ONEDRIVE_PENDING_AUTH.clear()
+        account = {}
+        try:
+            account = onedrive_me(str(payload.get("access_token") or ""))
+        except GraphRequestError:
+            pass
+        self.send_json({
+            "ok": True,
+            "connected": True,
+            "account": {
+                "displayName": str(account.get("displayName") or ""),
+                "userPrincipalName": str(account.get("userPrincipalName") or account.get("mail") or ""),
+            },
+        })
+
     def send_attachment_file(self, ticket_number: str, attachment_id: str) -> None:
         ticket_number = str(ticket_number or "").strip()
         attachment_id = safe_file_component(attachment_id, "")
@@ -1329,6 +1735,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             item = next((entry for entry in items if isinstance(entry, dict) and entry.get("id") == attachment_id), None)
         if not item:
             self.send_error(404, "Attachment not found")
+            return
+        if item.get("provider") == "onedrive" and item.get("url"):
+            self.redirect(str(item.get("url")))
             return
         filename = safe_file_component(str(item.get("stored_name") or ""), "")
         path = ticket_attachment_dir(self.data_dir, ticket_number) / filename
@@ -1408,9 +1817,24 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"ok": False, "message": "Valid ticket number required"}).encode("utf-8"))
             return
+        if len(file_parts) > ONEDRIVE_MAX_ATTACHMENTS:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": f"Select {ONEDRIVE_MAX_ATTACHMENTS} attachments or fewer."}).encode("utf-8"))
+            return
+        try:
+            token = onedrive_access_token(self.data_dir)
+            folder = onedrive_ensure_folder_path(token, [onedrive_root_folder_name(), ticket_number])
+            folder_id = str(folder.get("id") or "")
+            folder_url = onedrive_create_folder_link(token, folder_id, str(folder.get("webUrl") or ""))
+        except GraphRequestError as exc:
+            self.send_response(409 if exc.status == 401 else 502)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
+            return
         saved_items = []
-        target_dir = ticket_attachment_dir(self.data_dir, ticket_number)
-        target_dir.mkdir(parents=True, exist_ok=True)
         with ATTACHMENT_LOCK:
             index = load_attachments_index(self.data_dir)
             tickets = index.setdefault("tickets", {})
@@ -1423,28 +1847,39 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if not original_name:
                     continue
                 attachment_id = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
-                stored_name = f"{attachment_id}_{original_name}"
-                path = target_dir / stored_name
                 file_body = part.get_payload(decode=True) or b""
-                path.write_bytes(file_body)
                 size = len(file_body)
                 content_type = str(part.get_content_type() or mimetypes.guess_type(original_name)[0] or "application/octet-stream")
+                try:
+                    drive_item = onedrive_upload_bytes(token, folder_id, original_name, file_body)
+                except GraphRequestError as exc:
+                    self.send_response(502)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"ok": False, "message": str(exc), "uploaded": saved_items}).encode("utf-8"))
+                    return
                 item = {
                     "id": attachment_id,
                     "ticket": ticket_number,
+                    "provider": "onedrive",
                     "original_name": original_name,
-                    "stored_name": stored_name,
+                    "stored_name": "",
+                    "drive_item_id": str(drive_item.get("id") or ""),
                     "content_type": content_type,
                     "size": size,
                     "note": note,
                     "uploaded_at": datetime.now().isoformat(timespec="seconds"),
                     "uploaded_by": self.current_username() or "default",
-                    "url": f"/api/attachments/file?ticket={quote(ticket_number)}&id={quote(attachment_id)}",
+                    "url": str(drive_item.get("webUrl") or f"/api/attachments/file?ticket={quote(ticket_number)}&id={quote(attachment_id)}"),
+                    "folder_url": folder_url,
+                    "folder_name": ticket_number,
+                    "folder_id": folder_id,
                 }
                 items.append(item)
                 saved_items.append(item)
             save_attachments_index(self.data_dir, index)
-        self.send_json({"ok": True, "ticket": ticket_number, "attachments": saved_items})
+            summary = summarize_ticket_attachments(index, ticket_number)
+        self.send_json({"ok": True, "ticket": ticket_number, "attachments": saved_items, "attachment_summary": summary})
 
     def start_refresh(self) -> None:
         if not REFRESH_LOCK.acquire(blocking=False):

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Fiber Locator</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260521041000">
+    <link rel="stylesheet" href="/static/styles.css?v=20260521102500">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
@@ -32,6 +32,15 @@
             <button id="showDashboardView" type="button">Dashboard</button>
             <button id="showEmployeeView" type="button">Employee Profile</button>
             <button id="showAdminView" type="button">Admin Profile</button>
+            <div class="settings-flyout" id="settingsFlyout">
+              <button id="showSettingsMenu" type="button" aria-expanded="false">Settings</button>
+              <div id="settingsPanel" class="settings-panel" hidden>
+                <strong>Settings</strong>
+                <button id="refreshOneDriveStatus" type="button">Check OneDrive</button>
+                <button id="connectOneDrive" type="button">Connect / change OneDrive</button>
+                <div id="oneDriveStatus" class="settings-status">OneDrive status not checked.</div>
+              </div>
+            </div>
             <div class="profile-menu">
               <button id="openProfileEditor" class="profile-summary" type="button">
                 <img id="profileAvatar" alt="" hidden>

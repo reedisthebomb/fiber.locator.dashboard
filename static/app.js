@@ -19,6 +19,7 @@ let historicalDigTicketError = "";
 let historicalDigTicketSearch = "";
 let attachmentCache = {};
 let attachmentLoadingTickets = new Set();
+let settingsCloseTimer = null;
 let mapConfig = { googleMapsTileApiKey: "" };
 const googleTileSessions = {};
 const undoStack = [];
@@ -311,6 +312,91 @@ function cancelMoreMenuClose() {
   if (!moreMenuCloseTimer) return;
   window.clearTimeout(moreMenuCloseTimer);
   moreMenuCloseTimer = null;
+}
+
+function showSettingsPanel() {
+  if (!elements.settingsPanel) return;
+  elements.settingsPanel.hidden = false;
+  if (elements.showSettingsMenu) elements.showSettingsMenu.setAttribute("aria-expanded", "true");
+  cancelSettingsPanelClose();
+  void refreshOneDriveStatus();
+}
+
+function hideSettingsPanel() {
+  if (!elements.settingsPanel) return;
+  elements.settingsPanel.hidden = true;
+  if (elements.showSettingsMenu) elements.showSettingsMenu.setAttribute("aria-expanded", "false");
+}
+
+function scheduleSettingsPanelClose() {
+  if (settingsCloseTimer) window.clearTimeout(settingsCloseTimer);
+  settingsCloseTimer = window.setTimeout(() => {
+    settingsCloseTimer = null;
+    hideSettingsPanel();
+  }, 2000);
+}
+
+function cancelSettingsPanelClose() {
+  if (!settingsCloseTimer) return;
+  window.clearTimeout(settingsCloseTimer);
+  settingsCloseTimer = null;
+}
+
+function setOneDriveStatus(message) {
+  if (elements.oneDriveStatus) elements.oneDriveStatus.textContent = message;
+}
+
+async function refreshOneDriveStatus() {
+  if (!elements.oneDriveStatus) return null;
+  setOneDriveStatus("Checking OneDrive...");
+  try {
+    const response = await fetch("/api/onedrive/status");
+    const payload = await response.json();
+    if (!payload.configured) {
+      setOneDriveStatus(payload.message || "OneDrive is not configured.");
+    } else if (payload.connected) {
+      const account = payload.account || {};
+      setOneDriveStatus(`Connected: ${account.displayName || account.userPrincipalName || "OneDrive account"} · Folder: ${payload.rootFolder || "Fiber Locator Attachments"}`);
+    } else {
+      setOneDriveStatus(payload.message || "OneDrive is ready to connect.");
+    }
+    return payload;
+  } catch (error) {
+    setOneDriveStatus(error.message || "Unable to check OneDrive.");
+    return null;
+  }
+}
+
+async function connectOneDrive() {
+  setOneDriveStatus("Starting Microsoft sign-in...");
+  const start = await fetch("/api/onedrive/device-code", { method: "POST" });
+  const device = await start.json();
+  if (!start.ok || device.ok === false) {
+    setOneDriveStatus(device.message || `Unable to start OneDrive sign-in: ${start.status}`);
+    return;
+  }
+  const message = device.message || `Go to ${device.verificationUri} and enter code ${device.userCode}`;
+  setOneDriveStatus(message);
+  if (device.verificationUri) window.open(device.verificationUri, "_blank", "noopener,noreferrer");
+  const interval = Math.max(5, Number(device.interval) || 5) * 1000;
+  const expiresAt = Date.now() + Math.max(60, Number(device.expiresIn) || 900) * 1000;
+  while (Date.now() < expiresAt) {
+    await new Promise((resolve) => window.setTimeout(resolve, interval));
+    const complete = await fetch("/api/onedrive/complete-device-code", { method: "POST" });
+    const payload = await complete.json();
+    if (complete.status === 202 || payload.pending) {
+      setOneDriveStatus(payload.message || "Waiting for Microsoft sign-in approval.");
+      continue;
+    }
+    if (!complete.ok || payload.ok === false) {
+      setOneDriveStatus(payload.message || `OneDrive sign-in failed: ${complete.status}`);
+      return;
+    }
+    const account = payload.account || {};
+    setOneDriveStatus(`Connected: ${account.displayName || account.userPrincipalName || "OneDrive account"}`);
+    return;
+  }
+  setOneDriveStatus("OneDrive sign-in expired. Start again.");
 }
 
 function employeeDashboardState() {
@@ -949,6 +1035,12 @@ const elements = {
   showDashboardView: document.querySelector("#showDashboardView"),
   showEmployeeView: document.querySelector("#showEmployeeView"),
   showAdminView: document.querySelector("#showAdminView"),
+  settingsFlyout: document.querySelector("#settingsFlyout"),
+  showSettingsMenu: document.querySelector("#showSettingsMenu"),
+  settingsPanel: document.querySelector("#settingsPanel"),
+  oneDriveStatus: document.querySelector("#oneDriveStatus"),
+  refreshOneDriveStatus: document.querySelector("#refreshOneDriveStatus"),
+  connectOneDrive: document.querySelector("#connectOneDrive"),
   sheetBackToDashboard: document.querySelector("#sheetBackToDashboard"),
   sheetView: document.querySelector("#sheetView"),
   sheetFilterToolbar: document.querySelector("#sheetFilterToolbar"),
@@ -2238,7 +2330,8 @@ function actionControlHtml(ticketNumber, compact = false, options = {}) {
         <span data-ticket-action-pending="${escapeHtml(ticketNumber)}">Choose actions, then submit.</span>
       </div>`
     : "";
-  return `<div class="ticket-action-checks${compact ? " compact" : ""}${deferred ? " staged" : ""}" data-action-mode="${deferred ? "deferred" : "instant"}">${rows}${submit}</div>`;
+  const upload = deferred ? attachmentUploadHtml(ticketNumber) : "";
+  return `<div class="ticket-action-checks${compact ? " compact" : ""}${deferred ? " staged" : ""}" data-action-mode="${deferred ? "deferred" : "instant"}">${rows}${upload}${submit}</div>`;
 }
 
 function firstTicketValue(ticket, keys) {
@@ -2265,8 +2358,45 @@ function formatTicketDate(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
+function ticketAttachmentSummary(ticketNumber) {
+  const ticket = tickets.find((item) => item.ticket_number === ticketNumber);
+  const summary = ticket?.attachment_summary;
+  return summary && typeof summary === "object" ? summary : { count: 0, folder_url: "", folder_name: ticketNumber };
+}
+
+function attachmentFolderLinkHtml(ticketNumber) {
+  const summary = ticketAttachmentSummary(ticketNumber);
+  if (!summary.folder_url) {
+    return summary.count ? `<span>${Number(summary.count).toLocaleString()} attachment${Number(summary.count) === 1 ? "" : "s"}</span>` : '<span>No attachments</span>';
+  }
+  const count = Number(summary.count) || 0;
+  const label = count ? `${count.toLocaleString()} attachment${count === 1 ? "" : "s"}` : "Open OneDrive folder";
+  return `<a href="${escapeHtml(summary.folder_url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`;
+}
+
+function attachmentUploadHtml(ticketNumber) {
+  return `
+    <div class="ticket-attachment-upload" data-ticket-upload="${escapeHtml(ticketNumber)}">
+      <div class="ticket-attachment-head">
+        <strong>Attachments</strong>
+        <span data-ticket-attachment-folder="${escapeHtml(ticketNumber)}">${attachmentFolderLinkHtml(ticketNumber)}</span>
+      </div>
+      <input type="file" multiple hidden data-ticket-file-input="${escapeHtml(ticketNumber)}">
+      <div class="ticket-attachment-actions">
+        <button type="button" data-ticket-file-button="${escapeHtml(ticketNumber)}">Choose attachments</button>
+        <button type="button" data-ticket-upload-button="${escapeHtml(ticketNumber)}" disabled>Upload attachments</button>
+      </div>
+      <div class="ticket-attachment-selected" data-ticket-file-status="${escapeHtml(ticketNumber)}">Select up to 80 files.</div>
+      <div class="ticket-upload-progress" hidden>
+        <div data-ticket-upload-bar="${escapeHtml(ticketNumber)}"></div>
+      </div>
+    </div>
+  `;
+}
+
 const SHEET_COLUMNS = [
   ["Action", (ticket, expanded) => expanded ? actionControlHtml(ticket.ticket_number, true) : sheetActionSummaryHtml(ticket.ticket_number), "html"],
+  ["Attachments", (ticket) => attachmentFolderLinkHtml(ticket.ticket_number), "html"],
   ["Description", (ticket, expanded) => expanded ? `
     <textarea class="sheet-description" data-ticket-description="${escapeHtml(ticket.ticket_number)}" placeholder="Leave a description">${escapeHtml(ticketDescription(ticket.ticket_number))}</textarea>
   ` : escapeHtml(ticketDescription(ticket.ticket_number) || workDescription(ticket)), "html"],
@@ -2865,6 +2995,19 @@ function bindSheetFilterControls() {
 }
 
 function bindTicketActionControls(container) {
+  function stagedActionKeys(wrapper) {
+    return [...wrapper.querySelectorAll("[data-ticket-action-stage]")]
+      .filter((input) => input.checked)
+      .map((input) => input.dataset.actionKey);
+  }
+
+  function submitStagedActions(wrapper, ticketNumber, selected) {
+    rememberUndoState();
+    setTicketActions(ticketNumber, selected);
+    updateStagedActionStatus(wrapper, false);
+    render();
+  }
+
   function updateStagedActionStatus(wrapper, dirty = true) {
     const allInput = wrapper.querySelector("[data-ticket-action-stage-all]");
     const actionInputs = [...wrapper.querySelectorAll("[data-ticket-action-stage]")];
@@ -2898,17 +3041,83 @@ function bindTicketActionControls(container) {
     });
   }
   for (const button of container.querySelectorAll("[data-ticket-action-submit]")) {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const wrapper = button.closest(".ticket-action-checks");
       if (!wrapper) return;
       const ticketNumber = button.dataset.ticketActionSubmit;
-      const selected = [...wrapper.querySelectorAll("[data-ticket-action-stage]")]
-        .filter((input) => input.checked)
-        .map((input) => input.dataset.actionKey);
-      rememberUndoState();
-      setTicketActions(ticketNumber, selected);
-      updateStagedActionStatus(wrapper, false);
-      render();
+      const selected = stagedActionKeys(wrapper);
+      const uploader = wrapper.querySelector("[data-ticket-upload]");
+      if (uploader && window.confirm(`Do you want to upload attachments to ticket ${ticketNumber} before submitting these actions?`)) {
+        const fileInput = uploader.querySelector("[data-ticket-file-input]");
+        if (fileInput?.files?.length) {
+          try {
+            await uploadTicketAttachments(ticketNumber, fileInput.files, uploader);
+            submitStagedActions(wrapper, ticketNumber, selected);
+          } catch (error) {
+            window.alert(error.message || "Attachment upload failed.");
+          }
+        } else if (fileInput) {
+          fileInput.dataset.submitAfterUpload = "1";
+          fileInput.click();
+        }
+        return;
+      }
+      submitStagedActions(wrapper, ticketNumber, selected);
+    });
+  }
+
+  for (const button of container.querySelectorAll("[data-ticket-file-button]")) {
+    button.addEventListener("click", () => {
+      const uploader = button.closest("[data-ticket-upload]");
+      const input = uploader?.querySelector("[data-ticket-file-input]");
+      if (input) input.click();
+    });
+  }
+
+  for (const input of container.querySelectorAll("[data-ticket-file-input]")) {
+    input.addEventListener("change", async () => {
+      const uploader = input.closest("[data-ticket-upload]");
+      if (!uploader) return;
+      const ticketNumber = input.dataset.ticketFileInput;
+      const files = [...(input.files || [])];
+      const status = uploader.querySelector("[data-ticket-file-status]");
+      const uploadButton = uploader.querySelector("[data-ticket-upload-button]");
+      if (files.length > 80) {
+        input.value = "";
+        if (status) status.textContent = "Select 80 attachments or fewer.";
+        if (uploadButton) uploadButton.disabled = true;
+        window.alert("Select 80 attachments or fewer.");
+        return;
+      }
+      if (status) status.textContent = files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected.` : "Select up to 80 files.";
+      if (uploadButton) uploadButton.disabled = files.length === 0;
+      if (input.dataset.submitAfterUpload === "1") {
+        delete input.dataset.submitAfterUpload;
+        if (!files.length) return;
+        try {
+          await uploadTicketAttachments(ticketNumber, input.files, uploader);
+          const wrapper = input.closest(".ticket-action-checks");
+          if (wrapper) submitStagedActions(wrapper, ticketNumber, stagedActionKeys(wrapper));
+        } catch (error) {
+          window.alert(error.message || "Attachment upload failed.");
+        }
+      }
+    });
+  }
+
+  for (const button of container.querySelectorAll("[data-ticket-upload-button]")) {
+    button.addEventListener("click", async () => {
+      const uploader = button.closest("[data-ticket-upload]");
+      if (!uploader) return;
+      const ticketNumber = button.dataset.ticketUploadButton;
+      const input = uploader.querySelector("[data-ticket-file-input]");
+      if (!input?.files?.length) return;
+      if (!window.confirm(`Upload ${input.files.length} attachment${input.files.length === 1 ? "" : "s"} to ticket ${ticketNumber}?`)) return;
+      try {
+        await uploadTicketAttachments(ticketNumber, input.files, uploader);
+      } catch (error) {
+        window.alert(error.message || "Attachment upload failed.");
+      }
     });
   }
 
@@ -3748,12 +3957,79 @@ async function loadTicketAttachments(ticketNumber, force = false) {
   }
 }
 
+function updateTicketAttachmentSummary(ticketNumber, summary) {
+  if (!summary || typeof summary !== "object") return;
+  for (const ticket of tickets) {
+    if (ticket.ticket_number === ticketNumber) ticket.attachment_summary = summary;
+  }
+}
+
+function updateUploadProgress(uploader, percent, text = "") {
+  const progress = uploader?.querySelector(".ticket-upload-progress");
+  const bar = uploader?.querySelector("[data-ticket-upload-bar]");
+  const status = uploader?.querySelector("[data-ticket-file-status]");
+  if (progress) progress.hidden = false;
+  if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (status && text) status.textContent = text;
+}
+
+function uploadTicketAttachments(ticketNumber, fileList, uploader = null) {
+  const files = [...(fileList || [])];
+  if (!files.length) return Promise.resolve(null);
+  if (files.length > 80) return Promise.reject(new Error("Select 80 attachments or fewer."));
+  return new Promise((resolve, reject) => {
+    const data = new FormData();
+    data.set("ticket", ticketNumber);
+    for (const file of files) data.append("files", file, file.name);
+    const xhr = new XMLHttpRequest();
+    const uploadButton = uploader?.querySelector("[data-ticket-upload-button]");
+    const chooseButton = uploader?.querySelector("[data-ticket-file-button]");
+    if (uploadButton) uploadButton.disabled = true;
+    if (chooseButton) chooseButton.disabled = true;
+    updateUploadProgress(uploader, 2, `Preparing ${files.length} attachment${files.length === 1 ? "" : "s"}...`);
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) {
+        updateUploadProgress(uploader, 35, "Uploading attachments...");
+        return;
+      }
+      const percent = Math.min(90, Math.round((event.loaded / event.total) * 90));
+      updateUploadProgress(uploader, percent, `Uploading ${percent}%...`);
+    });
+    xhr.addEventListener("load", async () => {
+      try {
+        const payload = JSON.parse(xhr.responseText || "{}");
+        if (xhr.status < 200 || xhr.status >= 300 || payload.ok === false) {
+          throw new Error(payload.message || `Upload failed: ${xhr.status}`);
+        }
+        updateUploadProgress(uploader, 96, "Saving OneDrive folder link...");
+        updateTicketAttachmentSummary(ticketNumber, payload.attachment_summary);
+        await loadTicketAttachments(ticketNumber, true);
+        updateUploadProgress(uploader, 100, "Upload complete.");
+        const input = uploader?.querySelector("[data-ticket-file-input]");
+        if (input) input.value = "";
+        render();
+        resolve(payload);
+      } catch (error) {
+        reject(error);
+      } finally {
+        if (uploadButton) uploadButton.disabled = false;
+        if (chooseButton) chooseButton.disabled = false;
+      }
+    });
+    xhr.addEventListener("error", () => reject(new Error("Upload failed before reaching the server.")));
+    xhr.open("POST", "/api/attachments");
+    xhr.send(data);
+  });
+}
+
 function mobileAttachmentListHtml(ticketNumber) {
   const items = attachmentCache[ticketNumber];
   if (!Array.isArray(items)) return '<p class="mobile-muted">Loading attachments...</p>';
   if (!items.length) return '<p class="mobile-muted">No photos or videos attached yet.</p>';
+  const folder = ticketAttachmentSummary(ticketNumber).folder_url;
   return `
     <div class="mobile-attachments">
+      ${folder ? `<a href="${escapeHtml(folder)}" target="_blank" rel="noreferrer"><strong>Open OneDrive ticket folder</strong><span>${escapeHtml(ticketNumber)}</span></a>` : ""}
       ${items.map((item) => `
         <a href="${escapeHtml(item.url || "#")}" target="_blank" rel="noreferrer">
           <strong>${escapeHtml(item.original_name || "Attachment")}</strong>
@@ -3910,12 +4186,8 @@ function bindMobileDetailControls() {
         button.disabled = true;
         button.textContent = "Uploading...";
       }
-      const data = new FormData(form);
-      data.set("ticket", ticketNumber);
       try {
-        const response = await fetch("/api/attachments", { method: "POST", body: data });
-        if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
-        await loadTicketAttachments(ticketNumber, true);
+        await uploadTicketAttachments(ticketNumber, fileInput.files, form);
         form.reset();
       } catch (error) {
         alert(error.message || "Upload failed");
@@ -4100,6 +4372,23 @@ if (elements.showMobileView) elements.showMobileView.addEventListener("click", (
 elements.showDashboardView.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.showEmployeeView) elements.showEmployeeView.addEventListener("click", () => setProfileMode("employee"));
 if (elements.showAdminView) elements.showAdminView.addEventListener("click", () => setProfileMode("admin"));
+if (elements.showSettingsMenu) {
+  elements.showSettingsMenu.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (elements.settingsPanel?.hidden) showSettingsPanel();
+    else hideSettingsPanel();
+  });
+}
+if (elements.settingsFlyout) {
+  elements.settingsFlyout.addEventListener("mouseenter", cancelSettingsPanelClose);
+  elements.settingsFlyout.addEventListener("mouseleave", scheduleSettingsPanelClose);
+  elements.settingsFlyout.addEventListener("focusin", cancelSettingsPanelClose);
+  elements.settingsFlyout.addEventListener("focusout", (event) => {
+    if (!elements.settingsFlyout.contains(event.relatedTarget)) scheduleSettingsPanelClose();
+  });
+}
+if (elements.refreshOneDriveStatus) elements.refreshOneDriveStatus.addEventListener("click", () => void refreshOneDriveStatus());
+if (elements.connectOneDrive) elements.connectOneDrive.addEventListener("click", () => void connectOneDrive());
 elements.sheetBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.exportSheetPdf) elements.exportSheetPdf.addEventListener("click", exportSheetPdf);
 if (elements.exportSheetExcel) elements.exportSheetExcel.addEventListener("click", exportSheetExcel);

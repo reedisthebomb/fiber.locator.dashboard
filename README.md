@@ -121,6 +121,19 @@ export VETRO_TOKEN='your-token'
 python3 tools/update_vetro_export.py --plan-id 462
 ```
 
+## OneDrive Ticket Attachments
+
+Ticket attachments upload through Microsoft Graph into OneDrive. Configure the live server `.env` with:
+
+```text
+ONEDRIVE_GRAPH_CLIENT_ID=your-public-client-app-id
+ONEDRIVE_GRAPH_TENANT=consumers
+ONEDRIVE_GRAPH_SCOPE=offline_access Files.ReadWrite User.Read
+ONEDRIVE_ATTACHMENTS_ROOT=Fiber Locator Attachments
+```
+
+Then open the dashboard three-dot menu, choose `Settings`, and use `Connect / change OneDrive`. Uploaded files are stored under `Fiber Locator Attachments/<ticket-number>/`, and the ticket keeps a clickable OneDrive folder link.
+
 ## Notes
 
 - The app is designed to be usable from multiple devices with the same login.
