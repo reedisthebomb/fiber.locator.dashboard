@@ -560,7 +560,6 @@ function dashboardStatePayload() {
     vetroLayerNoteOverrides,
     vetroLayerSizeOverrides,
     vetroLayerOpacityOverrides,
-    vetroLayerColors,
     vetroSlVisible,
     vetroSlShape,
     vetroSlColor,
@@ -906,7 +905,7 @@ localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
 let sheetSort = readJsonStorage(STORAGE_KEYS.sheetSort, { column: "Due Date", direction: "desc" });
 let sheetColumnFilters = readObjectStorage(STORAGE_KEYS.sheetColumnFilters);
 let sheetSavedFilters = readJsonStorage(STORAGE_KEYS.sheetSavedFilters, []);
-let vetroLayerColors = JSON.parse(localStorage.getItem("vetroLayerColors") || "{}");
+localStorage.removeItem("vetroLayerColors");
 let showHiddenTickets = readBooleanStorage(STORAGE_KEYS.showHidden, false);
 let vetroVisible = readBooleanStorage(STORAGE_KEYS.vetroVisible, false);
 let vetroSelectedLayers = new Set(readJsonStorage(STORAGE_KEYS.vetroLayers, []));
@@ -1709,7 +1708,7 @@ async function refreshMapDataOverlay() {
 }
 
 function colorForVetroLayer(layerId) {
-  return vetroLayerColors[String(layerId)] || vetroColor;
+  return vetroColor;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -1805,10 +1804,6 @@ function renderVetroLayerList(container, values, selected, counts = {}) {
               <span>${escapeHtml(vetroLayerLabel(layerId, count))}</span>
             </label>
             <div class="vetro-layer-appearance">
-              <label class="layer-swatch">
-                <span>Color</span>
-                <input class="layer-color" type="color" data-layer-color="${escapeHtml(layerId)}" value="${escapeHtml(colorForVetroLayer(layerId))}">
-              </label>
               <label class="layer-swatch">
                 <span>Opacity %</span>
                 <input class="layer-opacity" type="number" min="0" max="100" step="1" data-layer-opacity="${escapeHtml(layerId)}" value="${escapeHtml(opacityToPercent(vetroLayerOpacity(layerId)))}">
@@ -4303,7 +4298,12 @@ async function loadTickets() {
   tickets = Array.isArray(payload.tickets)
     ? payload.tickets.filter((ticket) => ACTIVE_COUNTIES.has(String(ticket.county || "").toUpperCase()))
     : [];
-  elements.sourcePath.textContent = `Reading ${tickets.length} exported ticket(s) from ${payload.inbox_dir || payload.downloads_dir}`;
+  const scopedPolygonCount = tickets.filter((ticket) => ticket.polygon).length;
+  const scopedMissingPolygonCount = tickets.length - scopedPolygonCount;
+  const polygonStatus = scopedMissingPolygonCount
+    ? `${scopedPolygonCount} polygon(s) loaded, ${scopedMissingPolygonCount} waiting on GeoCall cache`
+    : `${scopedPolygonCount} polygon(s) loaded`;
+  elements.sourcePath.textContent = `Reading ${tickets.length} exported ticket(s) from ${payload.inbox_dir || payload.downloads_dir} - ${polygonStatus}`;
   if (pendingSelectedTicketNumber) {
     selectedTicket = tickets.find((ticket) => ticket.ticket_number === pendingSelectedTicketNumber) || null;
   }
@@ -4528,15 +4528,6 @@ elements.mapStyle.addEventListener("change", () => {
   void setMapTileStyle(elements.mapStyle.value).catch((error) => console.error(error));
 });
 elements.vetroLayerFilter.addEventListener("input", (event) => {
-  if (event.target.matches(".layer-color")) {
-    rememberUndoState();
-    vetroLayerColors[event.target.dataset.layerColor] = event.target.value;
-    localStorage.setItem("vetroLayerColors", JSON.stringify(vetroLayerColors));
-    renderVetroLayer();
-    scheduleDashboardStateSave();
-    scheduleEmployeeDashboardSync();
-    return;
-  }
   if (event.target.matches(".layer-size")) {
     rememberUndoState();
     const range = vetroLayerSizeRange(event.target.dataset.layerSize);

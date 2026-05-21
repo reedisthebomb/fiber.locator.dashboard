@@ -1027,13 +1027,9 @@ def extract_utilities(text: str) -> list[str]:
     return utilities
 
 
-def polygon_wkt_to_geojson(wkt: str) -> dict | None:
-    match = re.search(r"POLYGON\s*\(\((.*?)\)\)", wkt or "", re.I | re.S)
-    if not match:
-        return None
-
+def polygon_ring_to_coordinates(value: str) -> list[list[float]]:
     ring = []
-    for pair in match.group(1).split(","):
+    for pair in value.split(","):
         parts = pair.strip().split()
         if len(parts) < 2:
             continue
@@ -1043,11 +1039,40 @@ def polygon_wkt_to_geojson(wkt: str) -> dict | None:
         except ValueError:
             continue
         ring.append([lon, lat])
-
     if len(ring) < 3:
-        return None
+        return []
     if ring[0] != ring[-1]:
         ring.append(ring[0])
+    return ring
+
+
+def polygon_wkt_to_geojson(wkt: str) -> dict | None:
+    value = html.unescape(wkt or "").strip()
+    match = re.search(r"^POLYGON\s*\(\((.*?)\)\)\s*$", value, re.I | re.S)
+    if match:
+        ring = polygon_ring_to_coordinates(match.group(1))
+        if not ring:
+            return None
+        return {"type": "Polygon", "coordinates": [ring]}
+
+    match = re.search(r"^MULTIPOLYGON\s*\(\s*(.*?)\s*\)\s*$", value, re.I | re.S)
+    if match:
+        rings = re.findall(r"\(\((.*?)\)\)", match.group(1), re.S)
+        polygons = []
+        for ring_text in rings:
+            ring = polygon_ring_to_coordinates(ring_text)
+            if ring:
+                polygons.append([ring])
+        if not polygons:
+            return None
+        return {"type": "MultiPolygon", "coordinates": polygons}
+
+    match = re.search(r"POLYGON\s*\(\((.*?)\)\)", value, re.I | re.S)
+    if not match:
+        return None
+    ring = polygon_ring_to_coordinates(match.group(1))
+    if not ring:
+        return None
     return {"type": "Polygon", "coordinates": [ring]}
 
 
@@ -1492,11 +1517,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         with ATTACHMENT_LOCK:
             attachment_index = load_attachments_index(self.data_dir)
         tickets = []
+        polygon_count = 0
+        missing_polygon_count = 0
         for ticket in load_tickets(self.downloads_dir, self.data_dir, self.inbox_dir):
             item = asdict(ticket)
+            if ticket.polygon:
+                polygon_count += 1
+                item["polygon_status"] = "loaded"
+            else:
+                missing_polygon_count += 1
+                item["polygon_status"] = "missing_geocall_cache"
             item["attachment_summary"] = summarize_ticket_attachments(attachment_index, ticket.ticket_number)
             tickets.append(item)
-        self.send_json({"tickets": tickets, "downloads_dir": str(self.downloads_dir), "inbox_dir": str(self.inbox_dir)})
+        self.send_json({
+            "tickets": tickets,
+            "downloads_dir": str(self.downloads_dir),
+            "inbox_dir": str(self.inbox_dir),
+            "polygon_summary": {
+                "loaded": polygon_count,
+                "missing": missing_polygon_count,
+                "total": len(tickets),
+            },
+        })
 
     def send_refresh_status(self) -> None:
         self.send_json(REFRESH_STATE)
