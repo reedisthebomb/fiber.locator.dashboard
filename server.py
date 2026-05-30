@@ -8,8 +8,10 @@ import hashlib
 import mimetypes
 import os
 import platform
+import shutil
 import ssl
 import re
+import shlex
 import sys
 import subprocess
 import xml.etree.ElementTree as ET
@@ -17,7 +19,7 @@ import threading
 import secrets
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from email import policy
 from email.parser import BytesParser
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -59,17 +61,28 @@ AUTH_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
 AUTH_SESSIONS: dict[str, dict[str, str]] = {}
 STATE_LOCK = threading.Lock()
 STATE_FILE: Path | None = None
+AUTH_FILE: Path | None = None
+AUDIT_LOCK = threading.Lock()
 ATTACHMENT_LOCK = threading.Lock()
 ONEDRIVE_AUTH_LOCK = threading.Lock()
 ONEDRIVE_PENDING_AUTH: dict[str, object] = {}
 VETRO_CACHE_LOCK = threading.Lock()
 VETRO_RESPONSE_CACHE: dict[str, object] = {"signature": None, "body": b"", "gzip_body": b""}
+VITRUVI_CACHE_LOCK = threading.Lock()
+VITRUVI_RESPONSE_CACHE: dict[str, object] = {"signature": None, "body": b"", "gzip_body": b""}
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 MICROSOFT_AUTH_BASE = "https://login.microsoftonline.com"
 ONEDRIVE_DEFAULT_SCOPE = "offline_access Files.ReadWrite User.Read"
 ONEDRIVE_DEFAULT_ROOT = "Fiber Locator Attachments"
 ONEDRIVE_MAX_ATTACHMENTS = 80
 DASHBOARD_TIME_ZONE = ZoneInfo(os.getenv("DASHBOARD_TIME_ZONE", "America/Chicago"))
+AUDIT_VIEW_USERS = {item.strip() for item in os.getenv("AUDIT_VIEW_USERS", "site_owner").split(",") if item.strip()}
+SHARED_DASHBOARD_WRITE_USERS = {
+    item.strip()
+    for item in os.getenv("SHARED_DASHBOARD_WRITE_USERS", "administrator,site_owner").split(",")
+    if item.strip()
+}
+VETRO_LOGIN_URL = os.getenv("VETRO_LOGIN_URL", "https://auth.vetro.io/login?redirect=https://app.vetro.io/fibermap/map")
 
 
 @dataclass
@@ -126,15 +139,30 @@ class GeoCallDetail:
     portal_html: str
 
 
-def load_auth_users(path: Path) -> dict[str, dict[str, str]]:
+def load_auth_payload(path: Path) -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {}
+        return {"users": []}
     except Exception as exc:
         print(f"Skipping auth file {path}: {exc}")
-        return {}
+        return {"users": []}
+    return payload if isinstance(payload, dict) else {"users": []}
 
+
+def save_auth_payload(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def load_auth_users(path: Path) -> dict[str, dict[str, str]]:
+    payload = load_auth_payload(path)
     users: dict[str, dict[str, str]] = {}
     for item in payload.get("users", []):
         if not isinstance(item, dict):
@@ -143,7 +171,12 @@ def load_auth_users(path: Path) -> dict[str, dict[str, str]]:
         salt = str(item.get("salt") or "").strip()
         password_hash = str(item.get("password_sha256") or "").strip()
         if username and salt and password_hash:
-            users[username] = {"salt": salt, "password_sha256": password_hash}
+            users[username] = {
+                "salt": salt,
+                "password_sha256": password_hash,
+                "role": str(item.get("role") or "admin").strip() or "admin",
+                "display_name": str(item.get("display_name") or username).strip() or username,
+            }
     return users
 
 
@@ -157,6 +190,140 @@ def verify_credentials(username: str, password: str, users: dict[str, dict[str, 
     if not record:
         return False
     return auth_password_hash(username, password, record["salt"]) == record["password_sha256"]
+
+
+def auth_user_role(username: str, users: dict[str, dict[str, str]]) -> str:
+    role = str((users.get(username) or {}).get("role") or "admin").strip().lower()
+    return "employee" if role == "employee" else "admin"
+
+
+def auth_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def find_employee_invite(token: str) -> dict | None:
+    if not AUTH_FILE or not token:
+        return None
+    payload = load_auth_payload(AUTH_FILE)
+    token_hash = auth_token_hash(token)
+    for invite in payload.get("employee_invites", []):
+        if not isinstance(invite, dict):
+            continue
+        if invite.get("token_sha256") == token_hash and not invite.get("used_at"):
+            return invite
+    return None
+
+
+def complete_employee_invite(token: str, password: str) -> tuple[bool, str, str]:
+    if not AUTH_FILE:
+        return False, "", "Employee setup is not available."
+    password = str(password or "")
+    if len(password) < 8:
+        return False, "", "Password must be at least 8 characters."
+    with STATE_LOCK:
+        payload = load_auth_payload(AUTH_FILE)
+        token_hash = auth_token_hash(token)
+        invite = None
+        for item in payload.get("employee_invites", []):
+            if isinstance(item, dict) and item.get("token_sha256") == token_hash and not item.get("used_at"):
+                invite = item
+                break
+        if not invite:
+            return False, "", "This setup link is invalid or has already been used."
+        username = str(invite.get("username") or "").strip()
+        if not username:
+            return False, "", "This setup link is missing an employee username."
+        users = payload.setdefault("users", [])
+        if not isinstance(users, list):
+            users = []
+            payload["users"] = users
+        salt = secrets.token_hex(16)
+        record = {
+            "username": username,
+            "display_name": str(invite.get("display_name") or username).strip() or username,
+            "role": "employee",
+            "salt": salt,
+            "password_sha256": auth_password_hash(username, password, salt),
+            "created_at": str(invite.get("created_at") or dashboard_now_iso()),
+            "password_set_at": dashboard_now_iso(),
+        }
+        users[:] = [item for item in users if not (isinstance(item, dict) and item.get("username") == username)]
+        users.append(record)
+        invite["used_at"] = dashboard_now_iso()
+        save_auth_payload(AUTH_FILE, payload)
+    return True, username, ""
+
+
+def employee_access_payload(path: Path) -> dict:
+    payload = load_auth_payload(path)
+    users = []
+    for item in payload.get("users", []):
+      if not isinstance(item, dict):
+        continue
+      username = str(item.get("username") or "").strip()
+      if not username:
+        continue
+      users.append({
+        "username": username,
+        "display_name": str(item.get("display_name") or username).strip() or username,
+        "role": str(item.get("role") or "admin").strip() or "admin",
+        "created_at": str(item.get("created_at") or ""),
+        "password_set_at": str(item.get("password_set_at") or ""),
+      })
+    invites = []
+    for item in payload.get("employee_invites", []):
+      if not isinstance(item, dict):
+        continue
+      username = str(item.get("username") or "").strip()
+      if not username:
+        continue
+      invites.append({
+        "username": username,
+        "display_name": str(item.get("display_name") or username).strip() or username,
+        "created_at": str(item.get("created_at") or ""),
+        "created_by": str(item.get("created_by") or ""),
+        "used_at": str(item.get("used_at") or ""),
+      })
+    users.sort(key=lambda item: (item.get("role") != "admin", item.get("display_name", "").lower()))
+    invites.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return {"users": users, "invites": invites}
+
+
+def create_employee_invite(path: Path, username: str, display_name: str, created_by: str) -> tuple[dict | None, str]:
+    username = re.sub(r"[^a-zA-Z0-9_.@-]+", "", str(username or "").strip())
+    display_name = str(display_name or username).strip() or username
+    if not username:
+        return None, "Employee username is required."
+    if len(username) > 80:
+        return None, "Employee username is too long."
+    with STATE_LOCK:
+        payload = load_auth_payload(path)
+        users = payload.setdefault("users", [])
+        if any(isinstance(item, dict) and str(item.get("username") or "") == username for item in users):
+            return None, "That username already has an account."
+        token = secrets.token_urlsafe(32)
+        invite = {
+            "username": username,
+            "display_name": display_name[:120],
+            "role": "employee",
+            "token_sha256": auth_token_hash(token),
+            "created_at": dashboard_now_iso(),
+            "created_by": created_by,
+            "used_at": "",
+        }
+        invites = payload.setdefault("employee_invites", [])
+        if not isinstance(invites, list):
+            invites = []
+            payload["employee_invites"] = invites
+        invites[:] = [
+            item for item in invites
+            if not (isinstance(item, dict) and str(item.get("username") or "") == username and not item.get("used_at"))
+        ]
+        invites.append(invite)
+        save_auth_payload(path, payload)
+    public_invite = {key: invite[key] for key in ("username", "display_name", "role", "created_at", "created_by", "used_at")}
+    public_invite["token"] = token
+    return public_invite, ""
 
 
 def dashboard_now() -> datetime:
@@ -193,6 +360,81 @@ def valid_auth_session(token: str) -> bool:
 def auth_session_username(token: str) -> str:
     record = AUTH_SESSIONS.get(token)
     return str(record.get("username") or "") if record else ""
+
+def audit_log_path(data_dir: Path) -> Path:
+    return data_dir / "audit_log.jsonl"
+
+
+def safe_audit_details(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key)[:80]: safe_audit_details(item) for key, item in list(value.items())[:80]}
+    if isinstance(value, list):
+        return [safe_audit_details(item) for item in value[:120]]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        text = str(value) if isinstance(value, str) else value
+        return text[:500] if isinstance(text, str) else text
+    return str(value)[:500]
+
+
+def write_audit_event(data_dir: Path, event: str, username: str = "", ip: str = "", details: object | None = None) -> None:
+    record = {
+        "time": dashboard_now_iso(),
+        "event": str(event or "event")[:80],
+        "username": str(username or "anonymous")[:80],
+        "ip": str(ip or "")[:80],
+        "details": safe_audit_details(details or {}),
+    }
+    path = audit_log_path(data_dir)
+    with AUDIT_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n")
+
+
+def read_audit_events(data_dir: Path, limit: int = 300) -> list[dict]:
+    path = audit_log_path(data_dir)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    events = []
+    for line in lines[-max(1, min(1000, limit)):]:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            events.append(item)
+    return list(reversed(events))
+
+
+def summarize_state_change(existing: dict, incoming: dict) -> dict:
+    details: dict[str, object] = {}
+    for key in ("hiddenTickets", "archivedTickets"):
+        if key not in incoming:
+            continue
+        before = set(map(str, existing.get(key) if isinstance(existing.get(key), list) else []))
+        after = set(map(str, incoming.get(key) if isinstance(incoming.get(key), list) else []))
+        added = sorted(after - before)
+        removed = sorted(before - after)
+        if added or removed:
+            details[key] = {"added": added[:60], "removed": removed[:60], "count": len(after)}
+    if "ticketActions" in incoming and isinstance(incoming.get("ticketActions"), dict):
+        before_actions = normalize_ticket_actions_state(existing.get("ticketActions"))
+        after_actions = normalize_ticket_actions_state(incoming.get("ticketActions"))
+        changed = sorted(ticket for ticket in (set(before_actions) | set(after_actions)) if before_actions.get(ticket) != after_actions.get(ticket))
+        if changed:
+            details["ticketActions"] = {
+                "changed": changed[:80],
+                "changed_count": len(changed),
+            }
+    for key in ("mapStyle", "ticketSearch", "showHiddenTickets", "countyFilterAll"):
+        if key in incoming and existing.get(key) != incoming.get(key):
+            details[key] = {"from": existing.get(key), "to": incoming.get(key)}
+    changed_keys = sorted(key for key in incoming if existing.get(key) != incoming.get(key))
+    if changed_keys:
+        details["changedKeys"] = changed_keys[:120]
+    return details
 
 
 def load_dashboard_state(path: Path) -> dict:
@@ -290,6 +532,152 @@ def save_private_json(path: Path, payload: dict) -> None:
         path.chmod(0o600)
     except OSError:
         pass
+
+
+def vetro_capture_dir(data_dir: Path) -> Path:
+    return data_dir / "private" / "vetro_captures"
+
+
+def vetro_capture_urls(content: str) -> list[str]:
+    urls = set(re.findall(r"https?://[^\s'\"<>]+", content or ""))
+    return sorted(url for url in urls if ".pbf" in url.lower() or "tile" in url.lower() or "vector" in url.lower())
+
+
+def analyze_vetro_capture(content: str) -> dict:
+    stats: dict[str, object] = {
+        "pbf_url_count": 0,
+        "vetro_tile_count": 0,
+        "mapbox_pbf_count": 0,
+        "embedded_body_count": 0,
+        "auth_header_count": 0,
+        "cookie_header_count": 0,
+        "status_counts": {},
+        "layer_counts": {},
+        "ready_for_import": False,
+        "capture_warning": "",
+    }
+
+    def add_status(status: object) -> None:
+        if status in (None, ""):
+            return
+        status_key = str(status)
+        status_counts = stats["status_counts"]
+        assert isinstance(status_counts, dict)
+        status_counts[status_key] = status_counts.get(status_key, 0) + 1
+
+    def add_layer(url: str) -> None:
+        match = re.search(r"[?&]layer_id=([^&]+)", url)
+        if not match:
+            return
+        layer_id = unquote(match.group(1))
+        layer_counts = stats["layer_counts"]
+        assert isinstance(layer_counts, dict)
+        layer_counts[layer_id] = layer_counts.get(layer_id, 0) + 1
+
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        payload = None
+
+    if isinstance(payload, dict) and isinstance(((payload.get("log") or {}).get("entries")), list):
+        for entry in (payload.get("log") or {}).get("entries", []):
+            request_data = entry.get("request") or {}
+            url = str(request_data.get("url") or "")
+            if ".pbf" not in url.lower():
+                continue
+            stats["pbf_url_count"] = int(stats["pbf_url_count"]) + 1
+            is_vetro_tile = "fibermap.vetro.io" in url and "/maps/" in url
+            if is_vetro_tile:
+                stats["vetro_tile_count"] = int(stats["vetro_tile_count"]) + 1
+                add_layer(url)
+            elif "api.mapbox.com" in url:
+                stats["mapbox_pbf_count"] = int(stats["mapbox_pbf_count"]) + 1
+            content_data = (entry.get("response") or {}).get("content") or {}
+            if content_data.get("text") and is_vetro_tile:
+                stats["embedded_body_count"] = int(stats["embedded_body_count"]) + 1
+            add_status((entry.get("response") or {}).get("status"))
+            for header in request_data.get("headers", []):
+                name = str(header.get("name") or "").lower()
+                if name == "authorization" and is_vetro_tile:
+                    stats["auth_header_count"] = int(stats["auth_header_count"]) + 1
+                elif name == "cookie" and is_vetro_tile:
+                    stats["cookie_header_count"] = int(stats["cookie_header_count"]) + 1
+    else:
+        curl_blocks = list(re.finditer(r"curl\s+((?:\\\n|.)*?)(?=\n\s*curl\s+|\Z)", content or "", re.S))
+        fallback_headers: dict[str, str] = {}
+        saw_vetro_curl = False
+        for match in curl_blocks:
+            block = "curl " + match.group(1).replace("\\\n", " ")
+            try:
+                tokens = shlex.split(block)
+            except ValueError:
+                continue
+            url = ""
+            headers: dict[str, str] = {}
+            index = 1
+            while index < len(tokens):
+                token = tokens[index]
+                if token in {"-H", "--header"} and index + 1 < len(tokens):
+                    raw = tokens[index + 1]
+                    if ":" in raw:
+                        key, value = raw.split(":", 1)
+                        headers[key.strip().lower()] = value.strip()
+                    index += 2
+                    continue
+                if token in {"-b", "--cookie"} and index + 1 < len(tokens):
+                    headers["cookie"] = tokens[index + 1]
+                    index += 2
+                    continue
+                if token.startswith("http"):
+                    url = token
+                index += 1
+            parsed = urlparse(url)
+            if parsed.netloc == "app.vetro.io":
+                for key in ("cookie", "authorization"):
+                    if headers.get(key):
+                        fallback_headers.setdefault(key, headers[key])
+            if ".pbf" not in url.lower():
+                continue
+            stats["pbf_url_count"] = int(stats["pbf_url_count"]) + 1
+            if "fibermap.vetro.io" in url and "/maps/" in url:
+                saw_vetro_curl = True
+                stats["vetro_tile_count"] = int(stats["vetro_tile_count"]) + 1
+                add_layer(url)
+                if headers.get("authorization") or fallback_headers.get("authorization"):
+                    stats["auth_header_count"] = int(stats["auth_header_count"]) + 1
+                if headers.get("cookie") or fallback_headers.get("cookie"):
+                    stats["cookie_header_count"] = int(stats["cookie_header_count"]) + 1
+            elif "api.mapbox.com" in url:
+                stats["mapbox_pbf_count"] = int(stats["mapbox_pbf_count"]) + 1
+        if not curl_blocks or not saw_vetro_curl:
+            for url in re.findall(r"https?://[^\s'\"<>]+\.pbf(?:\?[^\s'\"<>]+)?", content or "", re.I):
+                stats["pbf_url_count"] = int(stats["pbf_url_count"]) + 1
+                if "fibermap.vetro.io" in url and "/maps/" in url:
+                    stats["vetro_tile_count"] = int(stats["vetro_tile_count"]) + 1
+                    add_layer(url)
+                elif "api.mapbox.com" in url:
+                    stats["mapbox_pbf_count"] = int(stats["mapbox_pbf_count"]) + 1
+
+    ready = int(stats["vetro_tile_count"]) > 0 and (
+        int(stats["embedded_body_count"]) > 0
+        or int(stats["auth_header_count"]) > 0
+        or int(stats["cookie_header_count"]) > 0
+    )
+    stats["ready_for_import"] = ready
+    if int(stats["vetro_tile_count"]) <= 0:
+        stats["capture_warning"] = "No VETRO map tile requests were found. Filter Network for .pbf, pan the VETRO map, then export again."
+    elif not ready:
+        stats["capture_warning"] = (
+            "This capture has VETRO tile URLs, but no embedded tile bodies and no Cookie/Authorization headers. "
+            "Export HAR with content and sensitive data, or copy a VETRO .pbf request as cURL with cookies."
+        )
+    return stats
+
+
+def latest_vetro_capture_path(data_dir: Path) -> Path | None:
+    capture_dir = vetro_capture_dir(data_dir)
+    captures = sorted(capture_dir.glob("vetro_capture_*.txt"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return captures[0] if captures else None
 
 
 def onedrive_client_id() -> str:
@@ -533,6 +921,121 @@ def get_dashboard_user_state(username: str) -> dict:
         return state if isinstance(state, dict) else {}
 
 
+TICKET_WORKFLOW_KEYS = {
+    "ticketActions",
+    "ticketActionUpdatedAt",
+    "ticketDescriptions",
+}
+
+
+def ticket_workflow_from_state(state: dict) -> dict:
+    if not isinstance(state, dict):
+        return {}
+    workflow = {}
+    if "ticketActions" in state:
+        workflow["ticketActions"] = normalize_ticket_actions_state(state.get("ticketActions"))
+    if "ticketActionUpdatedAt" in state:
+        workflow["ticketActionUpdatedAt"] = normalize_ticket_action_timestamps(state.get("ticketActionUpdatedAt"))
+    if "ticketDescriptions" in state and isinstance(state.get("ticketDescriptions"), dict):
+        descriptions = {}
+        for ticket_number, description in state.get("ticketDescriptions", {}).items():
+            text = str(description or "").strip()
+            if text:
+                descriptions[str(ticket_number)] = text
+        workflow["ticketDescriptions"] = descriptions
+    return workflow
+
+
+def merge_ticket_workflow(existing: dict, incoming: dict) -> dict:
+    merged = dict(existing if isinstance(existing, dict) else {})
+    merged_actions, merged_timestamps = merge_ticket_actions(merged, incoming if isinstance(incoming, dict) else {})
+    merged["ticketActions"] = merged_actions
+    merged["ticketActionUpdatedAt"] = merged_timestamps
+    if isinstance(incoming, dict) and "ticketDescriptions" in incoming:
+        merged["ticketDescriptions"] = ticket_workflow_from_state(incoming).get("ticketDescriptions", {})
+    elif "ticketDescriptions" in merged:
+        merged["ticketDescriptions"] = ticket_workflow_from_state(merged).get("ticketDescriptions", {})
+    return merged
+
+
+def get_shared_ticket_workflow(payload: dict) -> dict:
+    shared = ticket_workflow_from_state(payload.get("ticket_workflow", {}))
+    users = payload.get("users", {})
+    if isinstance(users, dict):
+        for state in users.values():
+            shared = merge_ticket_workflow(shared, ticket_workflow_from_state(state if isinstance(state, dict) else {}))
+    employee_state = payload.get("employee_dashboard", {})
+    if isinstance(employee_state, dict):
+        shared = merge_ticket_workflow(shared, ticket_workflow_from_state(employee_state.get("state", {})))
+    return shared
+
+
+def overlay_shared_ticket_workflow(state: dict, payload: dict) -> dict:
+    merged = dict(state if isinstance(state, dict) else {})
+    merged.update(get_shared_ticket_workflow(payload))
+    return merged
+
+
+def get_effective_dashboard_state(username: str, role: str = "admin") -> dict:
+    if not STATE_FILE:
+        return {}
+    with STATE_LOCK:
+        payload = load_dashboard_state(STATE_FILE)
+        users = payload.setdefault("users", {})
+        user_state = users.get(username, {})
+        if not isinstance(user_state, dict) and username != "default":
+            user_state = users.get("default", {})
+        elif not user_state and username != "default":
+            user_state = users.get("default", {})
+        if not isinstance(user_state, dict):
+            user_state = {}
+        if role != "employee":
+            return overlay_shared_ticket_workflow(user_state, payload)
+        employee_state = payload.get("employee_dashboard", {})
+        base_state = employee_state.get("state", {}) if isinstance(employee_state, dict) and employee_state.get("enabled") else {}
+        if not isinstance(base_state, dict):
+            base_state = {}
+        employee_writable_keys = {
+            "hiddenTickets",
+            "archivedTickets",
+            "ticketListCheckpoint",
+            "showHiddenTickets",
+            "ticketSearch",
+            "vetroOpacity",
+            "ticketOpacity",
+            "mapStyle",
+            "baseMapStyle",
+            "baseMap",
+            "mapView",
+            "selectedTicketNumber",
+        }
+        writable_state = {key: value for key, value in user_state.items() if key in employee_writable_keys}
+        return overlay_shared_ticket_workflow(merge_dashboard_user_state(base_state, writable_state), payload)
+
+
+def filter_employee_user_state(state: dict) -> dict:
+    if not isinstance(state, dict):
+        return {}
+    employee_writable_keys = {
+        "hiddenTickets",
+        "archivedTickets",
+        "ticketActions",
+        "ticketActionUpdatedAt",
+        "ticketDescriptions",
+        "ticketListCheckpoint",
+        "showHiddenTickets",
+        "ticketSearch",
+        "vetroOpacity",
+        "ticketOpacity",
+        "mapStyle",
+        "baseMapStyle",
+        "baseMap",
+        "mapView",
+        "selectedTicketNumber",
+    }
+    return {key: value for key, value in state.items() if key in employee_writable_keys}
+
+
 def get_locator_default_state() -> dict:
     if not STATE_FILE:
         return {"enabled": False, "state": {}}
@@ -568,6 +1071,10 @@ def get_employee_dashboard_state() -> dict:
 
 
 VIEW_PRESET_STATE_KEYS = {
+    "showHiddenTickets",
+    "ticketSearch",
+    "countyFilterAll",
+    "countyFilterSelected",
     "vetroVisible",
     "vetroLayerFilterSelected",
     "vetroPlanFilterSelected",
@@ -594,7 +1101,11 @@ VIEW_PRESET_STATE_KEYS = {
     "vetroSearch",
     "vetroColor",
     "vetroOpacity",
+    "polygonOpacity",
+    "ticketOpacity",
     "mapStyle",
+    "baseMapStyle",
+    "baseMap",
     "mapView",
 }
 
@@ -655,9 +1166,17 @@ def set_dashboard_user_state(username: str, state: dict) -> dict:
         payload = load_dashboard_state(STATE_FILE)
         users = payload.setdefault("users", {})
         existing = users.get(username, {})
-        users[username] = merge_dashboard_user_state(existing if isinstance(existing, dict) else {}, state if isinstance(state, dict) else {})
+        incoming = state if isinstance(state, dict) else {}
+        workflow_update = ticket_workflow_from_state(incoming)
+        if workflow_update:
+            payload["ticket_workflow"] = merge_ticket_workflow(get_shared_ticket_workflow(payload), workflow_update)
+        user_update = {key: value for key, value in incoming.items() if key not in TICKET_WORKFLOW_KEYS}
+        users[username] = dict(existing if isinstance(existing, dict) else {})
+        users[username].update(user_update)
+        for key in TICKET_WORKFLOW_KEYS:
+            users[username].pop(key, None)
         save_dashboard_state(STATE_FILE, payload)
-        return users[username]
+        return overlay_shared_ticket_workflow(users[username], payload)
 
 
 def normalize_ticket_actions_state(value: object) -> dict:
@@ -802,6 +1321,159 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fiber Locator Login</title>
+  <link rel="icon" type="image/png" href="/favicon.ico?v=20260522170500">
+  <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260522170500">
+  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260522170500">
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: Arial, Helvetica, sans-serif;
+      background:
+        radial-gradient(circle at center, rgba(13, 17, 23, 0.08), #0d1117 76%),
+        url("/static/fiberlocatorfinal.png?v=20260522170500") center / min(92vmin, 820px) no-repeat,
+        #0d1117;
+      color: #f8fbff;
+    }}
+    .login-shell {{
+      display: grid;
+      gap: 12px;
+      justify-items: center;
+      width: min(420px, calc(100vw - 32px));
+    }}
+    .login-app-logo {{
+      display: none;
+      width: 150px;
+      height: 150px;
+      object-fit: contain;
+      border-radius: 30px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42);
+    }}
+    .login {{
+      position: relative;
+      overflow: hidden;
+      justify-self: center;
+      align-self: center;
+      transform: translate(-150px, 112px);
+      width: 100%;
+      padding: 24px;
+      border: 1px solid rgba(226, 239, 255, 0.18);
+      border-radius: 8px;
+      background: rgba(8, 13, 24, 0.24);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
+      backdrop-filter: blur(0.5px);
+    }}
+    @media (max-width: 560px) {{
+      body {{
+        background: #0d1117;
+      }}
+      .login-shell {{
+        align-self: center;
+      }}
+      .login-app-logo {{
+        display: block;
+      }}
+      .login {{
+        transform: none;
+      }}
+    }}
+    h1 {{
+      margin: 0 0 8px;
+      font-size: 22px;
+      color: #ffffff;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.65);
+    }}
+    p {{
+      margin: 0 0 14px;
+      color: #dcecff;
+      font-size: 13px;
+      line-height: 1.35;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.75);
+    }}
+    label {{
+      display: grid;
+      gap: 6px;
+      margin: 0 0 12px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #f8fbff;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.75);
+    }}
+    input {{
+      height: 36px;
+      padding: 0 10px;
+      border: 1px solid #31415a;
+      border-radius: 6px;
+      background: rgba(11, 18, 32, 0.94);
+      color: #f8fbff;
+      font: inherit;
+    }}
+    button {{
+      width: 100%;
+      height: 38px;
+      border: 1px solid #263244;
+      border-radius: 6px;
+      background: #1a7f49;
+      color: #f8fbff;
+      font: inherit;
+      font-weight: 700;
+    }}
+    .login-message {{
+      margin: 0 0 12px;
+      color: #b3261e;
+      font-size: 13px;
+      font-weight: 700;
+    }}
+    .hint {{
+      margin-top: 14px;
+      color: #dcecff;
+      font-size: 12px;
+      text-shadow: 0 1px 5px rgba(0, 0, 0, 0.75);
+    }}
+  </style>
+</head>
+<body>
+  <main class="login-shell">
+    <img class="login-app-logo" src="/static/fiberlocatorfinal.png?v=20260522170500" alt="Fiber Locator">
+    <form class="login" method="post" action="/login">
+      <h1>Fiber Locator</h1>
+      <p>Sign in to view tickets, Vetro layers, and refresh data.</p>
+      {message_html}
+      <input type="hidden" name="next" value="{html.escape(next_path)}">
+      <label>
+        Username
+        <input name="username" autocomplete="username" required>
+      </label>
+      <label>
+        Password
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">Log in</button>
+      <div class="hint">Use the Fiber Locator dashboard address after signing in.</div>
+    </form>
+  </main>
+</body>
+</html>"""
+
+
+def employee_setup_page_html(token: str, message: str = "", username: str = "") -> str:
+    invite = find_employee_invite(token)
+    display_name = username or str((invite or {}).get("display_name") or (invite or {}).get("username") or "employee")
+    message_html = f'<div class="login-message">{html.escape(message)}</div>' if message else ""
+    disabled = "" if invite else " disabled"
+    intro = "Create your password to open the Fiber Locator employee dashboard." if invite else "This employee setup link is invalid or has already been used."
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Employee Setup</title>
+  <link rel="icon" type="image/png" href="/favicon.ico?v=20260522170500">
+  <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260522170500">
+  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260522170500">
   <style>
     body {{
       margin: 0;
@@ -856,6 +1528,9 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       font: inherit;
       font-weight: 700;
     }}
+    button:disabled {{
+      opacity: 0.45;
+    }}
     .login-message {{
       margin: 0 0 12px;
       color: #b3261e;
@@ -870,21 +1545,25 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
   </style>
 </head>
 <body>
-  <form class="login" method="post" action="/login">
-    <h1>Fiber Locator</h1>
-    <p>Sign in to view tickets, Vetro layers, and refresh data.</p>
+  <form class="login" method="post" action="/employee-setup">
+    <h1>Employee Dashboard</h1>
+    <p>{html.escape(intro)}</p>
     {message_html}
-    <input type="hidden" name="next" value="{html.escape(next_path)}">
+    <input type="hidden" name="token" value="{html.escape(token)}">
     <label>
       Username
-      <input name="username" autocomplete="username" required>
+      <input name="username" value="{html.escape(display_name)}" readonly>
     </label>
     <label>
       Password
-      <input name="password" type="password" autocomplete="current-password" required>
+      <input name="password" type="password" autocomplete="new-password" minlength="8" required{disabled}>
     </label>
-    <button type="submit">Log in</button>
-    <div class="hint">Use the Fiber Locator dashboard address after signing in.</div>
+    <label>
+      Confirm password
+      <input name="confirm" type="password" autocomplete="new-password" minlength="8" required{disabled}>
+    </label>
+    <button type="submit"{disabled}>Create password</button>
+    <div class="hint">After setup, use this password on the normal Fiber Locator login page.</div>
   </form>
 </body>
 </html>"""
@@ -986,6 +1665,27 @@ def find_vetro_layers(*search_dirs: Path) -> list[Path]:
     return []
 
 
+def find_vitruvi_layers(*search_dirs: Path) -> list[Path]:
+    candidates = [
+        "vitruvi_site_owner.geojson",
+        "vitruvi_google_earth_combined.geojson",
+        "Vitruvi Export GIS_20250927-070959.geojson",
+        "vitruvi_layers_corrected.geojson",
+        "vitruvi.export.from.earth.kml",
+    ]
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        for name in candidates:
+            path = search_dir / name
+            if path.exists():
+                return [path]
+        matches = sorted(search_dir.glob("vitruvi*.geojson"), key=lambda item: item.stat().st_size if item.exists() else 0, reverse=True)
+        if matches:
+            return [matches[0]]
+    return []
+
+
 def read_geojson(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     if data.get("type") == "FeatureCollection":
@@ -1026,6 +1726,33 @@ def normalize_vetro_feature(feature: dict, source_file: str) -> dict:
         "vetro_id": ("vetro_id", "Vetro_ID"),
         "feature_id": ("ID", "id", "Name", "name", "TT_ID", "Global_ID_TT"),
         "street_address": ("Street_Address", "Street Address", "street_address"),
+    }.items():
+        value = first_prop(props, *aliases)
+        if value:
+            props[canonical] = value
+    feature["properties"] = props
+    return feature
+
+
+def normalize_vitruvi_feature(feature: dict, source_file: str) -> dict:
+    props = dict(feature.get("properties") or {})
+    props.setdefault("source_file", source_file)
+    category_name = first_prop(props, "category_name", "geojson_layer", "Category_Name", "Category name")
+    category = first_prop(props, "category", "Category", "category_id", "Category_ID")
+    status = first_prop(props, "status", "Status")
+    layer_id = category_name or category or first_prop(props, "Layer", "layer") or "Vitruvi"
+    props["vitruvi_layer"] = layer_id
+    props["vitruvi_layer_label"] = category_name or (f"Category {category}" if category else layer_id)
+    if category:
+        props["vitruvi_category"] = category
+    if status:
+        props["vitruvi_status"] = status
+    for canonical, aliases in {
+        "vitruvi_id": ("vitruvi_id", "ID", "id"),
+        "feature_id": ("uid", "vetro_id", "label", "name", "Name"),
+        "region_name": ("region_name", "Region"),
+        "full_address": ("full_address", "address", "Address"),
+        "planned_length": ("planned_length", "total_length", "shape__len"),
     }.items():
         value = first_prop(props, *aliases)
         if value:
@@ -1107,6 +1834,74 @@ def get_vetro_response(paths: list[Path]) -> tuple[bytes, bytes]:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         gzip_body = gzip.compress(body, compresslevel=6)
         VETRO_RESPONSE_CACHE.update({"signature": signature, "body": body, "gzip_body": gzip_body})
+        return body, gzip_body
+
+
+def vitruvi_metadata(features: list[dict], sources: list[str]) -> dict:
+    layers: dict[str, dict] = {}
+    statuses: dict[str, int] = {}
+    geometry_types: dict[str, int] = {}
+    for feature in features:
+        props = feature.get("properties") or {}
+        geometry_type = (feature.get("geometry") or {}).get("type") or "Unknown"
+        layer_id = str(props.get("vitruvi_layer") or "Vitruvi")
+        label = str(props.get("vitruvi_layer_label") or layer_id)
+        layer = layers.setdefault(layer_id, {"id": layer_id, "label": label, "feature_count": 0, "geometry_counts": {}})
+        layer["feature_count"] += 1
+        layer["geometry_counts"][geometry_type] = layer["geometry_counts"].get(geometry_type, 0) + 1
+        status = props.get("vitruvi_status")
+        if status not in (None, ""):
+            status = str(status)
+            statuses[status] = statuses.get(status, 0) + 1
+        geometry_types[geometry_type] = geometry_types.get(geometry_type, 0) + 1
+    return {
+        "sources": sources,
+        "feature_count": len(features),
+        "layers": sorted(layers.values(), key=lambda item: (-item["feature_count"], item["label"])),
+        "facets": {
+            "statuses": dict(sorted(statuses.items())),
+            "geometry_types": dict(sorted(geometry_types.items())),
+        },
+    }
+
+
+def build_vitruvi_payload(paths: list[Path]) -> dict:
+    features = []
+    sources = []
+    seen = set()
+    for path in paths:
+        if not path.exists():
+            continue
+        sources.append(str(path))
+        geojson = read_geojson(path) if path.suffix.lower() == ".geojson" else kml_to_geojson(path)
+        for feature in geojson["features"]:
+            if not feature.get("geometry"):
+                continue
+            normalized = normalize_vitruvi_feature(feature, path.name)
+            props = normalized.get("properties") or {}
+            geometry = normalized.get("geometry") or {}
+            stable_id = first_prop(props, "uid", "vetro_id", "vitruvi_id", "feature_id", "label", "ID", "id")
+            dedupe_key = (
+                str(props.get("vitruvi_layer") or ""),
+                stable_id,
+                json.dumps(geometry, sort_keys=True, separators=(",", ":")),
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            features.append(normalized)
+    return {"type": "FeatureCollection", "features": features, "metadata": vitruvi_metadata(features, sources)}
+
+
+def get_vitruvi_response(paths: list[Path]) -> tuple[bytes, bytes]:
+    signature = vetro_layer_signature(paths)
+    with VITRUVI_CACHE_LOCK:
+        if VITRUVI_RESPONSE_CACHE["signature"] == signature:
+            return VITRUVI_RESPONSE_CACHE["body"], VITRUVI_RESPONSE_CACHE["gzip_body"]
+        payload = build_vitruvi_payload(paths)
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        gzip_body = gzip.compress(body, compresslevel=6)
+        VITRUVI_RESPONSE_CACHE.update({"signature": signature, "body": body, "gzip_body": gzip_body})
         return body, gzip_body
 
 
@@ -1484,7 +2279,7 @@ def parse_ticket_date(value: str) -> date | None:
     value = (value or "").strip()
     if not value:
         return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%B %d, %Y %I:%M %p", "%b %d, %Y %I:%M %p", "%B %d, %Y", "%b %d, %Y"):
         try:
             return datetime.strptime(value, fmt).date()
         except ValueError:
@@ -1541,17 +2336,40 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     data_dir: Path
     inbox_dir: Path
     vetro_layers: list[Path]
+    vitruvi_layers: list[Path]
     layers_dir: Path
     auth_users: dict[str, dict[str, str]]
     state_file: Path | None
 
+    def do_HEAD(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/mobile":
+            if not self.is_authenticated():
+                self.redirect("/login?next=/mobile")
+                return
+            original_path = self.path
+            self.path = "/"
+            try:
+                super().do_HEAD()
+            finally:
+                self.path = original_path
+            return
+        super().do_HEAD()
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in {"/favicon.ico", "/manifest.webmanifest", "/static/service-worker.js", "/static/fiberlocatorfinal.png", "/static/fiberlocatorwhitebackgroud.png"}:
+            self.send_public_asset(parsed.path)
+            return
         if parsed.path == "/login":
             if self.is_authenticated():
                 self.redirect("/")
                 return
             self.send_login_page(parsed)
+            return
+        if parsed.path.startswith("/employee-setup/"):
+            token = parsed.path.rsplit("/", 1)[-1]
+            self.send_employee_setup_page(token)
             return
         if parsed.path == "/logout":
             self.logout()
@@ -1559,6 +2377,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not self.is_authenticated():
             self.unauthorized(parsed)
             return
+        if parsed.path in {"/", "/mobile"}:
+            self.audit_event("page_view", {"path": parsed.path})
+            if parsed.path == "/mobile":
+                original_path = self.path
+                self.path = "/"
+                try:
+                    super().do_GET()
+                finally:
+                    self.path = original_path
+                return
         if parsed.path == "/api/tickets":
             self.send_tickets()
             return
@@ -1573,6 +2401,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/employee-dashboard":
             self.send_employee_dashboard()
+            return
+        if parsed.path == "/api/audit":
+            self.send_audit_events()
+            return
+        if parsed.path == "/api/employees":
+            self.send_employee_access()
             return
         if parsed.path == "/api/map-config":
             self.send_map_config()
@@ -1600,6 +2434,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/vetro":
             self.send_vetro()
             return
+        if parsed.path == "/api/vitruvi":
+            self.send_vitruvi()
+            return
         if parsed.path == "/api/vetro-refresh":
             self.send_vetro_refresh_status()
             return
@@ -1612,10 +2449,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def send_public_asset(self, path: str) -> None:
+        original_path = self.path
+        self.path = "/static/fiberlocatorfinal.png" if path == "/favicon.ico" else path
+        try:
+            super().do_GET()
+        finally:
+            self.path = original_path
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/login":
             self.handle_login()
+            return
+        if parsed.path == "/employee-setup":
+            self.handle_employee_setup()
             return
         if not self.is_authenticated():
             self.unauthorized(parsed)
@@ -1635,8 +2483,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/employee-dashboard":
             self.update_employee_dashboard()
             return
+        if parsed.path == "/api/audit":
+            self.receive_audit_event()
+            return
+        if parsed.path == "/api/employees/invite":
+            self.create_employee_access_invite()
+            return
         if parsed.path == "/api/vetro-refresh":
             self.start_vetro_refresh()
+            return
+        if parsed.path == "/api/vetro-capture":
+            self.save_vetro_capture()
             return
         if parsed.path == "/api/attachments":
             self.upload_attachment()
@@ -1668,6 +2525,38 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return ""
         return auth_session_username(match.group(1).strip())
 
+    def current_user_role(self) -> str:
+        return auth_user_role(self.current_username(), self.auth_users)
+
+    def client_ip(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+        return str(self.client_address[0] if self.client_address else "")
+
+    def audit_event(self, event: str, details: object | None = None, username: str | None = None) -> None:
+        try:
+            write_audit_event(self.data_dir, event, username if username is not None else self.current_username(), self.client_ip(), details)
+        except Exception as exc:
+            print(f"Unable to write audit event: {exc}")
+
+    def can_write_shared_dashboard(self, username: str) -> bool:
+        if not self.auth_users:
+            return True
+        return username in SHARED_DASHBOARD_WRITE_USERS
+
+    def request_origin(self) -> str:
+        proto = self.headers.get("X-Forwarded-Proto", "http").split(",", 1)[0].strip() or "http"
+        host = self.headers.get("Host", "")
+        return f"{proto}://{host}" if host else ""
+
+    def shared_dashboard_write_denied(self, username: str, target: str) -> None:
+        self.audit_event("shared_dashboard_write_denied", {"target": target}, username=username)
+        self.send_response(403)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps({"ok": False, "message": "Shared dashboard write access denied"}).encode("utf-8"))
+
     def redirect(self, location: str) -> None:
         self.send_response(302)
         self.send_header("Location", location)
@@ -1691,6 +2580,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_employee_setup_page(self, token: str, message: str = "") -> None:
+        invite = find_employee_invite(token)
+        username = str((invite or {}).get("username") or "")
+        body = employee_setup_page_html(token, message, username).encode("utf-8")
+        self.send_response(200 if invite else 404)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def handle_login(self) -> None:
         content_length = int(self.headers.get("Content-Length", "0") or "0")
         payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
@@ -1702,11 +2601,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             next_path = "/"
         if verify_credentials(username, password, self.auth_users):
             token = create_auth_session(username)
+            self.audit_event("login_success", {"next": next_path}, username=username)
             self.send_response(302)
             self.send_header("Set-Cookie", self.auth_cookie(token, AUTH_SESSION_TTL_SECONDS))
             self.send_header("Location", next_path)
             self.end_headers()
             return
+        self.audit_event("login_failed", {"username": username, "next": next_path}, username=username or "unknown")
         body = login_page_html("Invalid username or password", next_path).encode("utf-8")
         self.send_response(401)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1714,7 +2615,42 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def handle_employee_setup(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        form = parse_qs(payload)
+        token = (form.get("token", [""])[0] or "").strip()
+        password = form.get("password", [""])[0] or ""
+        confirm = form.get("confirm", [""])[0] or ""
+        if password != confirm:
+            self.audit_event("employee_setup_failed", {"reason": "password_mismatch"}, username="employee_setup")
+            body = employee_setup_page_html(token, "Passwords do not match.").encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        ok, username, message = complete_employee_invite(token, password)
+        if not ok:
+            self.audit_event("employee_setup_failed", {"reason": message}, username="employee_setup")
+            body = employee_setup_page_html(token, message).encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.__class__.auth_users = load_auth_users(AUTH_FILE) if AUTH_FILE else self.auth_users
+        token_value = create_auth_session(username)
+        self.audit_event("employee_setup_completed", {}, username=username)
+        self.send_response(302)
+        self.send_header("Set-Cookie", self.auth_cookie(token_value, AUTH_SESSION_TTL_SECONDS))
+        self.send_header("Location", "/")
+        self.end_headers()
+
     def logout(self) -> None:
+        self.audit_event("logout", {})
         self.send_response(302)
         self.send_header("Set-Cookie", self.auth_cookie("", 0))
         self.send_header("Location", "/login")
@@ -1756,10 +2692,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def send_state(self) -> None:
         username = self.current_username()
-        state = get_dashboard_user_state(username) if username else {}
+        role = self.current_user_role() if username else "admin"
+        state = get_effective_dashboard_state(username, role) if username else {}
         self.send_json({
             "ok": True,
             "username": username,
+            "role": role,
+            "displayName": str((self.auth_users.get(username) or {}).get("display_name") or username),
             "state": state,
             "locatorDefault": get_locator_default_state(),
             "viewPresets": get_view_presets(),
@@ -1771,6 +2710,72 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def send_employee_dashboard(self) -> None:
         self.send_json({"ok": True, "employeeDashboard": get_employee_dashboard_state()})
+
+    def send_audit_events(self) -> None:
+        if self.current_username() not in AUDIT_VIEW_USERS:
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Activity access denied"}).encode("utf-8"))
+            return
+        raw_limit = parse_qs(urlparse(self.path).query).get("limit", ["300"])[0]
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            limit = 300
+        self.send_json({"ok": True, "events": read_audit_events(self.data_dir, limit)})
+
+    def receive_audit_event(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(payload) if payload else {}
+        except json.JSONDecodeError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        event = str(data.get("event") or "client_event")
+        details = data.get("details") if isinstance(data.get("details"), dict) else {}
+        self.audit_event(event, details)
+        self.send_json({"ok": True})
+
+    def send_employee_access(self) -> None:
+        username = self.current_username()
+        if not username or not self.can_write_shared_dashboard(username) or not AUTH_FILE:
+            self.shared_dashboard_write_denied(username, "employees")
+            return
+        payload = employee_access_payload(AUTH_FILE)
+        self.send_json({"ok": True, **payload})
+
+    def create_employee_access_invite(self) -> None:
+        username = self.current_username()
+        if not username or not self.can_write_shared_dashboard(username) or not AUTH_FILE:
+            self.shared_dashboard_write_denied(username, "employees")
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(payload) if payload else {}
+        except json.JSONDecodeError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        invite, message = create_employee_invite(
+            AUTH_FILE,
+            str(data.get("username") or ""),
+            str(data.get("display_name") or ""),
+            username,
+        )
+        if not invite:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": message or "Unable to create invite"}).encode("utf-8"))
+            return
+        invite_url = f"{self.request_origin()}/employee-setup/{quote(str(invite.pop('token')), safe='')}"
+        self.__class__.auth_users = load_auth_users(AUTH_FILE)
+        self.audit_event("employee_invite_created", {"username": invite.get("username")}, username=username)
+        self.send_json({"ok": True, "invite": invite, "invite_url": invite_url, **employee_access_payload(AUTH_FILE)})
 
     def update_state(self) -> None:
         username = self.current_username()
@@ -1792,7 +2797,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if not isinstance(state, dict):
             state = {}
+        if self.current_user_role() == "employee":
+            state = filter_employee_user_state(state)
+        existing = get_dashboard_user_state(username)
+        change_details = summarize_state_change(existing if isinstance(existing, dict) else {}, state)
         saved = set_dashboard_user_state(username, state)
+        if change_details:
+            self.audit_event("dashboard_state_saved", change_details, username=username)
         self.send_json({"ok": True, "username": username, "state": saved})
 
     def update_view_preset(self) -> None:
@@ -1816,6 +2827,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not isinstance(data, dict):
             data = {}
         saved = set_view_preset(username, data)
+        self.audit_event("view_saved", {"name": saved.get("name"), "id": saved.get("id")}, username=username)
         self.send_json({"ok": True, "username": username, "savedView": saved, "viewPresets": get_view_presets()})
 
     def update_locator_default(self) -> None:
@@ -1825,6 +2837,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": False, "message": "Login required"}).encode("utf-8"))
+            return
+        if not self.can_write_shared_dashboard(username):
+            self.shared_dashboard_write_denied(username, "locator_default")
             return
         content_length = int(self.headers.get("Content-Length", "0") or "0")
         payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
@@ -1839,6 +2854,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not isinstance(data, dict):
             data = {}
         saved = set_locator_default_state(username, data)
+        self.audit_event("locator_default_saved", {"enabled": saved.get("enabled")}, username=username)
         self.send_json({"ok": True, "username": username, "locatorDefault": saved})
 
     def update_employee_dashboard(self) -> None:
@@ -1848,6 +2864,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
             self.wfile.write(json.dumps({"ok": False, "message": "Login required"}).encode("utf-8"))
+            return
+        if not self.can_write_shared_dashboard(username):
+            self.shared_dashboard_write_denied(username, "employee_dashboard")
             return
         content_length = int(self.headers.get("Content-Length", "0") or "0")
         payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
@@ -1862,6 +2881,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not isinstance(data, dict):
             data = {}
         saved = set_employee_dashboard_state(username, data)
+        self.audit_event("employee_dashboard_saved", {"enabled": saved.get("enabled")}, username=username)
         self.send_json({"ok": True, "username": username, "employeeDashboard": saved})
 
     def send_attachments(self, ticket_number: str) -> None:
@@ -2159,6 +3179,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 saved_items.append(item)
             save_attachments_index(self.data_dir, index)
             summary = summarize_ticket_attachments(index, ticket_number)
+        self.audit_event("attachments_uploaded", {"ticket": ticket_number, "count": len(saved_items), "note": bool(note)})
         self.send_json({"ok": True, "ticket": ticket_number, "attachments": saved_items, "attachment_summary": summary})
 
     def start_refresh(self) -> None:
@@ -2182,6 +3203,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         )
         thread = threading.Thread(target=self._run_refresh_job, daemon=True)
         thread.start()
+        self.audit_event("ticket_refresh_started", {})
         self.send_json({"ok": True, "running": True, "message": "Refresh started"})
 
     def _run_refresh_job(self) -> None:
@@ -2286,10 +3308,80 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response_body)
 
+    def send_vitruvi(self) -> None:
+        username = self.current_username()
+        if username != "site_owner":
+            self.audit_event("vitruvi_access_denied", {}, username=username)
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Vitruvi is only available to site_owner"}).encode("utf-8"))
+            return
+        if not self.vitruvi_layers:
+            self.send_error(404, "Vitruvi layers not found")
+            return
+        body, gzip_body = get_vitruvi_response(self.vitruvi_layers)
+        accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower()
+        response_body = gzip_body if accepts_gzip else body
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(response_body)))
+        if accepts_gzip:
+            self.send_header("Content-Encoding", "gzip")
+        self.end_headers()
+        self.wfile.write(response_body)
+
     def send_vetro_refresh_status(self) -> None:
         self.send_json(VETRO_REFRESH_STATE)
 
     def start_vetro_refresh(self) -> None:
+        refresh_mode = "api" if os.environ.get("VETRO_TOKEN", "").strip() else "capture"
+        capture_path = latest_vetro_capture_path(self.data_dir) if refresh_mode == "capture" else None
+        if refresh_mode == "capture" and not capture_path:
+            VETRO_REFRESH_STATE.update(
+                {
+                    "running": False,
+                    "started": dashboard_now_iso(),
+                    "finished": dashboard_now_iso(),
+                    "success": False,
+                    "message": "VETRO login required. Open VETRO, capture fresh tile traffic, then save the DevTools capture.",
+                    "exit_code": None,
+                    "percent": 100,
+                    "logs": [],
+                    "auth_required": True,
+                    "vetro_login_url": VETRO_LOGIN_URL,
+                }
+            )
+            self.audit_event("vetro_refresh_failed", {"message": VETRO_REFRESH_STATE["message"]})
+            self.send_response(409)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, **VETRO_REFRESH_STATE}).encode("utf-8"))
+            return
+        if refresh_mode == "capture" and capture_path:
+            capture_stats = analyze_vetro_capture(capture_path.read_text(encoding="utf-8", errors="replace"))
+            if not capture_stats.get("ready_for_import"):
+                message = str(capture_stats.get("capture_warning") or "The latest VETRO capture cannot be imported.")
+                VETRO_REFRESH_STATE.update(
+                    {
+                        "running": False,
+                        "started": dashboard_now_iso(),
+                        "finished": dashboard_now_iso(),
+                        "success": False,
+                        "message": message,
+                        "exit_code": None,
+                        "percent": 100,
+                        "logs": [{"capture": capture_path.name, "stats": capture_stats}],
+                        "auth_required": True,
+                        "vetro_login_url": VETRO_LOGIN_URL,
+                    }
+                )
+                self.audit_event("vetro_refresh_failed", {"message": message, "capture": capture_path.name, "stats": capture_stats})
+                self.send_response(409)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, **VETRO_REFRESH_STATE}).encode("utf-8"))
+                return
         if not VETRO_REFRESH_LOCK.acquire(blocking=False):
             self.send_response(409)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2302,39 +3394,132 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "started": dashboard_now_iso(),
                 "finished": "",
                 "success": None,
-                "message": "Starting VETRO export",
+                "message": "Starting VETRO capture import" if refresh_mode == "capture" else "Starting VETRO export",
                 "exit_code": None,
                 "percent": 5,
                 "logs": [],
+                "auth_required": False,
+                "vetro_login_url": "",
             }
         )
-        thread = threading.Thread(target=self._run_vetro_refresh_job, daemon=True)
+        thread = threading.Thread(target=self._run_vetro_refresh_job, args=(refresh_mode, capture_path), daemon=True)
         thread.start()
-        self.send_json({"ok": True, "running": True, "message": "VETRO refresh started", "percent": 5})
+        self.audit_event("vetro_refresh_started", {"mode": refresh_mode, "capture": capture_path.name if capture_path else ""})
+        self.send_json({"ok": True, "running": True, "message": VETRO_REFRESH_STATE["message"], "percent": 5})
 
-    def _run_vetro_refresh_job(self) -> None:
+    def save_vetro_capture(self) -> None:
+        username = self.current_username()
+        if username != "site_owner":
+            self.audit_event("vetro_capture_denied", {}, username=username)
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "VETRO capture access denied"}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        if content_length <= 0 or content_length > 8_000_000:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Capture must be between 1 byte and 8 MB"}).encode("utf-8"))
+            return
+        raw = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            payload = {"content": raw}
+        content = str(payload.get("content") or "")
+        if not content.strip():
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Capture content is required"}).encode("utf-8"))
+            return
+        capture_dir = vetro_capture_dir(self.data_dir)
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        content_path = capture_dir / f"vetro_capture_{stamp}.txt"
+        meta_path = capture_dir / f"vetro_capture_{stamp}.json"
+        urls = vetro_capture_urls(content)
+        capture_stats = analyze_vetro_capture(content)
+        content_path.write_text(content, encoding="utf-8")
+        meta = {
+            "saved_at": dashboard_now_iso(),
+            "saved_by": username,
+            "bytes": len(content.encode("utf-8")),
+            "pbf_url_count": sum(1 for url in urls if ".pbf" in url.lower()),
+            "candidate_url_count": len(urls),
+            "capture_file": content_path.name,
+            **capture_stats,
+        }
+        meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+        for path in (content_path, meta_path):
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+        self.audit_event("vetro_capture_saved", {key: meta[key] for key in ("bytes", "pbf_url_count", "candidate_url_count")}, username=username)
+        self.send_json({"ok": True, **meta})
+
+    def _run_vetro_refresh_job(self, refresh_mode: str = "api", capture_path: Path | None = None) -> None:
         try:
             root = Path(__file__).resolve().parent
-            command = [
-                sys.executable,
-                str(root / "tools" / "update_vetro_export.py"),
-                "--output-dir",
-                str(self.layers_dir / "vetro_geojson_layers"),
-                "--work-dir",
-                str(self.data_dir / "vetro_export_work"),
-            ]
+            if refresh_mode == "capture":
+                if not capture_path:
+                    raise RuntimeError("No VETRO capture file is available")
+                capture_python = self.data_dir / "vitruvi_refresh_venv" / "bin" / "python"
+                python_exe = str(capture_python if capture_python.exists() else Path(sys.executable))
+                command = [
+                    python_exe,
+                    str(root / "tools" / "import_vetro_tiles_from_capture.py"),
+                    "--capture-file",
+                    str(capture_path),
+                    "--output-dir",
+                    str(self.layers_dir / "vetro_geojson_layers"),
+                    "--backup-dir",
+                    str(self.layers_dir / "backups"),
+                ]
+                VETRO_REFRESH_STATE.update({"message": "Importing VETRO tiles from capture", "percent": 12})
+            else:
+                command = [
+                    sys.executable,
+                    str(root / "tools" / "update_vetro_export.py"),
+                    "--output-dir",
+                    str(self.layers_dir / "vetro_geojson_layers"),
+                    "--work-dir",
+                    str(self.data_dir / "vetro_export_work"),
+                ]
+                VETRO_REFRESH_STATE.update({"message": "Requesting VETRO export", "percent": 12})
             env = os.environ.copy()
             env.setdefault("VETRO_PLAN_ID", "462")
-            VETRO_REFRESH_STATE.update({"message": "Requesting VETRO export", "percent": 12})
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=str(root), env=env)
-            while process.poll() is None:
-                VETRO_REFRESH_STATE.update({"message": "VETRO export running", "percent": min(88, int(VETRO_REFRESH_STATE.get("percent") or 12) + 4)})
-                time.sleep(2)
-            stdout, stderr = process.communicate()
+            log_dir = self.data_dir / "private" / "vetro_refresh_logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stamp = dashboard_now().strftime("%Y%m%dT%H%M%SZ")
+            stdout_path = log_dir / f"vetro_refresh_{stamp}.stdout.log"
+            stderr_path = log_dir / f"vetro_refresh_{stamp}.stderr.log"
+
+            def tail_text(path: Path, limit: int = 4000) -> str:
+                try:
+                    with path.open("rb") as handle:
+                        size = path.stat().st_size
+                        handle.seek(max(0, size - limit))
+                        return handle.read().decode("utf-8", errors="replace")
+                except OSError:
+                    return ""
+
+            with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open("w", encoding="utf-8") as stderr_file:
+                process = subprocess.Popen(command, stdout=stdout_file, stderr=stderr_file, text=True, cwd=str(root), env=env)
+                while process.poll() is None:
+                    message = "VETRO capture import running" if refresh_mode == "capture" else "VETRO export running"
+                    VETRO_REFRESH_STATE.update({"message": message, "percent": min(88, int(VETRO_REFRESH_STATE.get("percent") or 12) + 4)})
+                    time.sleep(2)
+
+            stdout = tail_text(stdout_path)
+            stderr = tail_text(stderr_path)
             if stdout.strip():
-                VETRO_REFRESH_STATE["logs"].append({"stream": "stdout", "text": stdout[-4000:]})
+                VETRO_REFRESH_STATE["logs"].append({"stream": "stdout", "text": stdout})
             if stderr.strip():
-                VETRO_REFRESH_STATE["logs"].append({"stream": "stderr", "text": stderr[-4000:]})
+                VETRO_REFRESH_STATE["logs"].append({"stream": "stderr", "text": stderr})
             VETRO_REFRESH_STATE["logs"].append({"command": command[0], "exit_code": process.returncode})
             if process.returncode == 0:
                 self.__class__.vetro_layers = find_vetro_layers(self.layers_dir, self.downloads_dir)
@@ -2344,10 +3529,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "running": False,
                         "finished": dashboard_now_iso(),
                         "success": True,
-                        "message": "VETRO refresh completed",
+                        "message": "VETRO capture import completed" if refresh_mode == "capture" else "VETRO refresh completed",
                         "exit_code": 0,
                         "percent": 100,
                         "layer_files": len(self.__class__.vetro_layers),
+                        "auth_required": False,
+                        "vetro_login_url": "",
                     }
                 )
             else:
@@ -2356,9 +3543,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "running": False,
                         "finished": dashboard_now_iso(),
                         "success": False,
-                        "message": "VETRO refresh failed",
+                        "message": "VETRO capture import failed" if refresh_mode == "capture" else "VETRO refresh failed",
                         "exit_code": process.returncode,
                         "percent": 100,
+                        "auth_required": False,
+                        "vetro_login_url": "",
                     }
                 )
         except Exception as exc:
@@ -2369,6 +3558,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "success": False,
                     "message": f"VETRO refresh failed: {exc}",
                     "percent": 100,
+                    "auth_required": False,
+                    "vetro_login_url": "",
                 }
             )
         finally:
@@ -2377,6 +3568,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def send_map_config(self) -> None:
         self.send_json({
             "googleMapsTileApiKey": os.environ.get("GOOGLE_MAPS_TILE_API_KEY", ""),
+            "mapboxAccessToken": os.environ.get("MAPBOX_ACCESS_TOKEN", ""),
         })
 
     def send_map_search(self, query: str) -> None:
@@ -2462,9 +3654,11 @@ def run(
     DashboardHandler.inbox_dir = inbox_dir
     DashboardHandler.layers_dir = layers_dir
     DashboardHandler.vetro_layers = find_vetro_layers(layers_dir, downloads_dir)
+    DashboardHandler.vitruvi_layers = find_vitruvi_layers(layers_dir, downloads_dir)
     DashboardHandler.auth_users = load_auth_users(auth_file)
-    global STATE_FILE
+    global STATE_FILE, AUTH_FILE
     STATE_FILE = data_dir / "dashboard_state.json"
+    AUTH_FILE = auth_file
     DashboardHandler.state_file = STATE_FILE
     handler = lambda *args, **kwargs: DashboardHandler(*args, directory=str(root), **kwargs)
     server = ThreadingHTTPServer((host, port), handler)
@@ -2495,6 +3689,16 @@ def run(
         print(f"Reading Vetro layers ({len(DashboardHandler.vetro_layers)} file(s), {count_label})")
     else:
         print(f"No Vetro KML layers found in: {layers_dir} or {downloads_dir}")
+    if DashboardHandler.vitruvi_layers:
+        vitruvi_count = 0
+        for path in DashboardHandler.vitruvi_layers:
+            try:
+                vitruvi_count += len(read_geojson(path)["features"]) if path.suffix.lower() == ".geojson" else count_kml_placemarks(path)
+            except (OSError, json.JSONDecodeError):
+                pass
+        print(f"Reading Vitruvi owner layer ({len(DashboardHandler.vitruvi_layers)} file(s), {vitruvi_count} features)")
+    else:
+        print(f"No Vitruvi owner layer found in: {layers_dir} or {downloads_dir}")
     server.serve_forever()
 
 

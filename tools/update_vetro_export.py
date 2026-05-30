@@ -68,7 +68,74 @@ def layer_id_for(feature: dict, fallback: str) -> str:
     return str(value) if value not in (None, "") else fallback
 
 
-def split_feature_collections(extract_dir: Path, output_dir: Path) -> dict:
+def source_zoom(feature: dict) -> int:
+    source_tile = str((feature.get("properties") or {}).get("source_tile") or "")
+    try:
+        return int(source_tile.split("/", 1)[0])
+    except (TypeError, ValueError):
+        return -1
+
+
+def coordinate_score(coords) -> int:
+    if not isinstance(coords, list):
+        return 0
+    if len(coords) >= 2 and all(isinstance(value, (int, float)) for value in coords[:2]):
+        return 1
+    return sum(coordinate_score(item) for item in coords)
+
+
+def feature_detail_score(feature: dict) -> tuple[int, int, int]:
+    geometry = feature.get("geometry") or {}
+    geometry_bytes = len(json.dumps(geometry, separators=(",", ":")))
+    return (source_zoom(feature), coordinate_score(geometry.get("coordinates")), geometry_bytes)
+
+
+def feature_stable_key(feature: dict) -> str | None:
+    props = feature.get("properties") or {}
+    layer_id = layer_id_for(feature, "Unknown")
+    stable_id = props.get("vetro_id") or props.get("ID") or props.get("feature_id") or props.get("id")
+    if stable_id in (None, ""):
+        return None
+    return f"{layer_id}|{stable_id}"
+
+
+def feature_fallback_key(feature: dict) -> str:
+    props = feature.get("properties") or {}
+    layer_id = layer_id_for(feature, "Unknown")
+    geometry = json.dumps(feature.get("geometry") or {}, sort_keys=True, separators=(",", ":"))
+    return f"{layer_id}|{geometry}|{json.dumps(props, sort_keys=True, default=str, separators=(',', ':'))}"
+
+
+def dedupe_features(features: list[dict]) -> list[dict]:
+    keyed: dict[str, dict] = {}
+    unkeyed: dict[str, dict] = {}
+    for feature in features:
+        stable_key = feature_stable_key(feature)
+        if stable_key:
+            current = keyed.get(stable_key)
+            if current is None or feature_detail_score(feature) > feature_detail_score(current):
+                keyed[stable_key] = feature
+            continue
+        unkeyed.setdefault(feature_fallback_key(feature), feature)
+    return list(keyed.values()) + list(unkeyed.values())
+
+
+def read_existing_features(output_dir: Path) -> list[dict]:
+    if not output_dir.exists():
+        return []
+    features = []
+    for path in sorted(output_dir.glob("Layer_*.geojson")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("type") != "FeatureCollection" or not isinstance(data.get("features"), list):
+            continue
+        features.extend(feature for feature in data["features"] if isinstance(feature, dict))
+    return features
+
+
+def split_feature_collections(extract_dir: Path, output_dir: Path, replace: bool = False) -> dict:
     layer_features: dict[str, list[dict]] = {}
     source_files = []
     for path in sorted(extract_dir.rglob("*")):
@@ -84,11 +151,25 @@ def split_feature_collections(extract_dir: Path, output_dir: Path) -> dict:
     if not layer_features:
         raise RuntimeError("No GeoJSON FeatureCollection files found in the VETRO export archive")
 
+    incoming_features = [feature for features in layer_features.values() for feature in features]
+    existing = [] if replace else read_existing_features(output_dir)
+    merged_features = dedupe_features(existing + incoming_features)
+    layer_features = {}
+    for feature in merged_features:
+        layer_id = layer_id_for(feature, "Unknown")
+        layer_features.setdefault(layer_id, []).append(feature)
+
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest = {"source_files": source_files, "layers": {}}
+    manifest = {
+        "source_files": source_files,
+        "mode": "replace" if replace else "append_only_merge",
+        "existing_feature_count": len(existing),
+        "incoming_feature_count": len(incoming_features),
+        "layers": {},
+    }
     combined_features = []
     for layer_id, features in sorted(layer_features.items(), key=lambda item: (not item[0].isdigit(), int(item[0]) if item[0].isdigit() else item[0])):
         combined_features.extend(features)
@@ -121,6 +202,7 @@ def main() -> int:
     parser.add_argument("--work-dir", default="data/vetro_export_work")
     parser.add_argument("--timeout-seconds", type=int, default=900)
     parser.add_argument("--poll-seconds", type=int, default=2)
+    parser.add_argument("--replace", action="store_true", help="Replace existing VETRO layers instead of append-only merging. Default preserves existing features.")
     args = parser.parse_args()
 
     token = os.environ.get(args.token_env)
@@ -147,7 +229,7 @@ def main() -> int:
         extract_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive_path) as archive:
             archive.extractall(extract_dir)
-        manifest = split_feature_collections(extract_dir, output_dir)
+        manifest = split_feature_collections(extract_dir, output_dir, replace=args.replace)
     except (HTTPError, URLError, RuntimeError, TimeoutError, zipfile.BadZipFile) as error:
         print(f"VETRO export update failed: {error}", file=sys.stderr)
         return 1

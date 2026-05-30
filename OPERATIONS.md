@@ -165,6 +165,16 @@ GOOGLE_MAPS_TILE_API_KEY=your-key-here
 
 The live app reads that value from `/opt/onecall-locator-dashboard/.env` through `/api/map-config`. Do not commit the real key.
 
+## Mapbox Map Backgrounds
+
+The Base map menu also includes Mapbox streets, outdoors, light, dark, satellite, satellite streets, navigation day, and navigation night. These use Mapbox raster style tiles and require a public Mapbox access token:
+
+```text
+MAPBOX_ACCESS_TOKEN=your-token-here
+```
+
+The token is served to the browser through `/api/map-config`, so restrict it to the dashboard origins in Mapbox. Do not commit the real token.
+
 ## GitHub Rule
 
 After every substantial change:

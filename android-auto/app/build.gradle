@@ -1,0 +1,46 @@
+plugins {
+    id "com.android.application"
+}
+
+def localProps = new Properties()
+def localPropsFile = rootProject.file("local.properties")
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+
+android {
+    namespace "com.fiberlocator.auto"
+    compileSdk 36
+
+    signingConfigs {
+        release {
+            def storePath = localProps.getProperty("FIBER_LOCATOR_UPLOAD_STORE_FILE")
+            if (storePath) {
+                storeFile file(storePath)
+                storePassword localProps.getProperty("FIBER_LOCATOR_UPLOAD_STORE_PASSWORD")
+                keyAlias localProps.getProperty("FIBER_LOCATOR_UPLOAD_KEY_ALIAS")
+                keyPassword localProps.getProperty("FIBER_LOCATOR_UPLOAD_KEY_PASSWORD")
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.fiberlocator.auto"
+        minSdk 28
+        targetSdk 36
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.car.app:app:1.7.0"
+    implementation "androidx.car.app:app-projected:1.7.0"
+}

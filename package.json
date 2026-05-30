@@ -1,0 +1,24 @@
+{
+  "name": "fiber.locator.dashboard",
+  "version": "1.0.0",
+  "description": "Cloud dashboard for Fiber Locator and Arkansas One Call ticket work.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "playwright": "playwright"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reedisthebomb/fiber.locator.dashboard.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/reedisthebomb/fiber.locator.dashboard/issues"
+  },
+  "homepage": "https://github.com/reedisthebomb/fiber.locator.dashboard#readme",
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}

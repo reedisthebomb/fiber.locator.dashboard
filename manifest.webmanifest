@@ -1,0 +1,26 @@
+{
+  "id": "/mobile",
+  "name": "Fiber Locator Field",
+  "short_name": "Fiber Field",
+  "description": "Fiber Locator field app for tickets, maps, VETRO layers, notes, attachments, and completion updates.",
+  "start_url": "/mobile",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#07131f",
+  "theme_color": "#07131f",
+  "icons": [
+    {
+      "src": "/static/fiberlocatorfinal.png?v=20260522170500",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/fiberlocatorwhitebackgroud.png?v=20260522170500",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

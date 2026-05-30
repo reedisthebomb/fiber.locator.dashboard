@@ -1,0 +1,66 @@
+package com.fiberlocator.auto.car;
+
+import android.content.Intent;
+
+import androidx.annotation.NonNull;
+import androidx.car.app.CarContext;
+import androidx.car.app.CarToast;
+import androidx.car.app.Screen;
+import androidx.car.app.model.Action;
+import androidx.car.app.model.Pane;
+import androidx.car.app.model.PaneTemplate;
+import androidx.car.app.model.Row;
+import androidx.car.app.model.Template;
+
+import com.fiberlocator.auto.data.Ticket;
+
+public class TicketDetailScreen extends Screen {
+    private final Ticket ticket;
+
+    public TicketDetailScreen(@NonNull CarContext carContext, Ticket ticket) {
+        super(carContext);
+        this.ticket = ticket;
+    }
+
+    @NonNull
+    @Override
+    public Template onGetTemplate() {
+        Action navigate = new Action.Builder()
+            .setTitle("Navigate")
+            .setOnClickListener(this::navigate)
+            .build();
+
+        Pane.Builder pane = new Pane.Builder().addAction(navigate);
+        addRow(pane, "Location", ticket.locationLine());
+        addRow(pane, "County", ticket.county);
+        addRow(pane, "Due", ticket.dueLine());
+        addRow(pane, "Contractor", first(ticket.contractor, ticket.caller));
+        if (ticket.hasCoordinates) addRow(pane, "Coordinates", ticket.latitude + ", " + ticket.longitude);
+
+        return new PaneTemplate.Builder(pane.build())
+            .setTitle(ticket.title())
+            .setHeaderAction(Action.BACK)
+            .build();
+    }
+
+    private void navigate() {
+        try {
+            Intent intent = new Intent(CarContext.ACTION_NAVIGATE, ticket.navigationUri());
+            getCarContext().startCarApp(intent);
+        } catch (Exception ex) {
+            CarToast.makeText(getCarContext(), "Navigation is unavailable", CarToast.LENGTH_LONG).show();
+        }
+    }
+
+    private static void addRow(Pane.Builder pane, String title, String text) {
+        if (text == null || text.trim().isEmpty()) return;
+        pane.addRow(new Row.Builder().setTitle(title).addText(text.trim()).build());
+    }
+
+    private static String first(String... values) {
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) return value.trim();
+        }
+        return "";
+    }
+}

@@ -22,6 +22,19 @@ OUTLOOK_GRAPH_TOKEN_CACHE=/opt/onecall-locator-dashboard/data/private/outlook_gr
 # dashboard origins that serve the app.
 GOOGLE_MAPS_TILE_API_KEY=
 
+# Mapbox access token for Mapbox basemaps in the Base map menu.
+# Restrict this public token to the dashboard origins that serve the app.
+MAPBOX_ACCESS_TOKEN=
+
+# Private activity viewer and shared dashboard writer controls.
+AUDIT_VIEW_USERS=site_owner
+SHARED_DASHBOARD_WRITE_USERS=administrator,site_owner
+
+# VETRO export refresh. The Update VETRO button requires this API token.
+VETRO_PLAN_ID=462
+VETRO_TOKEN=
+VETRO_LOGIN_URL=https://auth.vetro.io/login?redirect=https://app.vetro.io/fibermap/map
+
 # OneDrive attachment uploads.
 # Create a Microsoft public-client app and grant delegated Files.ReadWrite and User.Read.
 # The dashboard stores the refresh token in data/private, not in Git.

@@ -6,12 +6,35 @@ let mapDataOverlayLayer;
 let mapDataOverlayAbort = 0;
 let markers;
 let polygons;
+let userLocationLayer;
+let userLocationMarker = null;
+let userLocationAccuracy = null;
+let mobileMap = null;
+let mobileMapMarkers = null;
+let mobileMapPolygons = null;
+let mobileMapVetroLayer = null;
+let mobileMapUserLayer = null;
+let mobileMapHasFit = false;
+let mobileUserLocationMarker = null;
+let mobileUserLocationAccuracy = null;
+let locationWatchId = null;
+let liveLocationEnabled = false;
+let mobilePanel = localStorage.getItem("mobilePanel") || "tickets";
+let measureTool = null;
+let mobileMeasureTool = null;
 let vetroGeojson = null;
 let vetroLayer = null;
 let vetroLoaded = false;
+let vitruviGeojson = null;
+let vitruviLayer = null;
+let vitruviLoaded = false;
+let vitruviLayerGeometryById = {};
 let initialTicketBoundsApplied = false;
 let currentView = "dashboard";
 let currentProfileMode = "admin";
+let currentUsername = "";
+let currentUserDisplayName = "";
+let currentUserRole = "admin";
 let adminPreviewState = null;
 let sheetExpandedTickets = new Set();
 let historicalDigTickets = null;
@@ -20,17 +43,24 @@ let historicalDigTicketSearch = "";
 let attachmentCache = {};
 let attachmentLoadingTickets = new Set();
 let settingsCloseTimer = null;
-let mapConfig = { googleMapsTileApiKey: "" };
+let mapConfig = { googleMapsTileApiKey: "", mapboxAccessToken: "" };
 const googleTileSessions = {};
+const maplibreStyleCache = {};
 const undoStack = [];
 const redoStack = [];
 const MAX_HISTORY = 40;
+const SELECTED_POLYGON_NEARBY_PIXELS = 96;
+const NEARBY_POLYGON_DIM_OPACITY = 0.035;
+const NEARBY_POLYGON_DIM_STROKE_OPACITY = 0.12;
+const DEFAULT_BRAND_LOGO = "/static/assets/tcw-logo.png?v=20260523093000";
+const JAMES_BRAND_LOGO = "/static/james-fiber-locator-logo.png?v=20260528190500";
 const STORAGE_KEYS = {
   hiddenTickets: "hiddenTickets",
   archivedTickets: "archivedTickets",
   ticketActions: "ticketActions",
   ticketActionUpdatedAt: "ticketActionUpdatedAt",
   ticketDescriptions: "ticketDescriptions",
+  ticketListCheckpoint: "ticketListCheckpoint",
   showHidden: "showHiddenTickets",
   countyFilterAll: "countyFilterAll",
   countyFilterSelected: "countyFilterSelected",
@@ -50,6 +80,16 @@ const STORAGE_KEYS = {
   vetroLayerNotes: "vetroLayerNoteOverrides",
   vetroLayerSizes: "vetroLayerSizeOverrides",
   vetroLayerOpacities: "vetroLayerOpacityOverrides",
+  vitruviVisible: "vitruviVisible",
+  vitruviLayers: "vitruviLayerFilterSelected",
+  vitruviSearch: "vitruviSearch",
+  vitruviOpacity: "vitruviOpacity",
+  vitruviLayerColors: "vitruviLayerColorOverrides",
+  vitruviLayerStyles: "vitruviLayerStyleOverrides",
+  vitruviLayerNames: "vitruviLayerNameOverrides",
+  vitruviLayerNotes: "vitruviLayerNoteOverrides",
+  vitruviLayerSizes: "vitruviLayerSizeOverrides",
+  vitruviLayerOpacities: "vitruviLayerOpacityOverrides",
   vetroSlVisible: "vetroSlVisible",
   vetroSlShape: "vetroSlShape",
   vetroSlColor: "vetroSlColor",
@@ -78,40 +118,64 @@ const VETRO_PREFIX_LAYERS = [
   { prefix: "SL-", id: "prefix:SL", name: "Customers", detail: "customer service-location points from VETRO layer 26" },
 ];
 const MAP_TILE_STYLES = {
+  "locator-dark-detail": {
+    label: "Dark locator detail + addresses",
+    group: "Recommended",
+    provider: "maplibre",
+    styleUrl: "https://tiles.openfreemap.org/styles/liberty",
+    customize: "locator-dark-detail",
+    mapDataOverlay: "addresses",
+  },
   standard: {
+    label: "Standard streets",
+    group: "Open maps",
     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     attribution: "&copy; OpenStreetMap contributors",
     subdomains: "abc",
   },
   contrast: {
+    label: "High contrast streets",
+    group: "Open maps",
     url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
     attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
     subdomains: "abcd",
   },
   detailed: {
+    label: "Detailed streets + buildings",
+    group: "Open maps",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles &copy; Esri",
   },
   light: {
+    label: "Light streets",
+    group: "Open maps",
     url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
     attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
     subdomains: "abcd",
   },
   dark: {
+    label: "Dark streets",
+    group: "Open maps",
     url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
     attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
     subdomains: "abcd",
   },
   terrain: {
+    label: "Terrain",
+    group: "Open maps",
     url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
     attribution: "&copy; OpenStreetMap contributors, &copy; OpenTopoMap",
     subdomains: "abc",
   },
   satellite: {
+    label: "Satellite",
+    group: "Open maps",
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles &copy; Esri",
   },
   hybrid: {
+    label: "Hybrid imagery + labels",
+    group: "Open maps",
     layers: [
       {
         url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -128,17 +192,111 @@ const MAP_TILE_STYLES = {
     ],
     attribution: "Tiles &copy; Esri",
   },
+  "openfree-bright": {
+    label: "OpenFreeMap bright",
+    group: "Free vector",
+    provider: "maplibre",
+    styleUrl: "https://tiles.openfreemap.org/styles/bright",
+  },
+  "openfree-liberty": {
+    label: "OpenFreeMap liberty",
+    group: "Free vector",
+    provider: "maplibre",
+    styleUrl: "https://tiles.openfreemap.org/styles/liberty",
+  },
+  "openfree-positron": {
+    label: "OpenFreeMap positron",
+    group: "Free vector",
+    provider: "maplibre",
+    styleUrl: "https://tiles.openfreemap.org/styles/positron",
+  },
+  "openfree-dark": {
+    label: "OpenFreeMap dark",
+    group: "Free vector",
+    provider: "maplibre",
+    styleUrl: "https://tiles.openfreemap.org/styles/dark",
+  },
+  "openfree-fiord": {
+    label: "OpenFreeMap fiord",
+    group: "Free vector",
+    provider: "maplibre",
+    styleUrl: "https://tiles.openfreemap.org/styles/fiord",
+  },
+  "mapbox-streets": {
+    label: "Mapbox streets",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "streets-v12",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-outdoors": {
+    label: "Mapbox outdoors",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "outdoors-v12",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-light": {
+    label: "Mapbox light",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "light-v11",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-dark": {
+    label: "Mapbox dark",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "dark-v11",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-satellite": {
+    label: "Mapbox satellite",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "satellite-v9",
+    imagery: true,
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-satellite-streets": {
+    label: "Mapbox satellite streets",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "satellite-streets-v12",
+    imagery: true,
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-navigation-day": {
+    label: "Mapbox navigation day",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "navigation-day-v1",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-navigation-night": {
+    label: "Mapbox navigation night",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "navigation-night-v1",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
   "google-roadmap": {
+    label: "Google roadmap",
+    group: "Google",
     provider: "google",
     mapType: "roadmap",
     attribution: "Map data &copy; Google",
   },
   "google-satellite": {
+    label: "Google satellite",
+    group: "Google",
     provider: "google",
     mapType: "satellite",
     attribution: "Map data &copy; Google",
   },
   "google-hybrid": {
+    label: "Google satellite + roads",
+    group: "Google",
     provider: "google",
     mapType: "satellite",
     layerTypes: ["layerRoadmap"],
@@ -146,6 +304,8 @@ const MAP_TILE_STYLES = {
     attribution: "Map data &copy; Google",
   },
 };
+
+const MAP_STYLE_GROUPS = ["Recommended", "Open maps", "Free vector", "Mapbox", "Google"];
 
 const TICKET_ACTIONS = [
   { key: "located", label: "Located", hidesFromDashboard: true },
@@ -233,6 +393,42 @@ function writeBooleanStorage(key, value) {
   localStorage.setItem(key, value ? "true" : "false");
 }
 
+function auditEvent(event, details = {}) {
+  if (!dashboardStateReady || dashboardStateHydrating) return;
+  void fetch("/api/audit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event, details }),
+    keepalive: true,
+  }).catch((error) => console.warn("Unable to write audit event", error));
+}
+
+function populateMapStyleSelect() {
+  if (!elements?.mapStyle) return;
+  elements.mapStyle.innerHTML = "";
+  for (const groupName of MAP_STYLE_GROUPS) {
+    const styles = Object.entries(MAP_TILE_STYLES).filter(([, tile]) => tile.group === groupName);
+    if (!styles.length) continue;
+    const group = document.createElement("optgroup");
+    group.label = groupName;
+    for (const [styleId, tile] of styles) {
+      const option = document.createElement("option");
+      option.value = styleId;
+      option.textContent = tile.label || styleId;
+      group.appendChild(option);
+    }
+    elements.mapStyle.appendChild(group);
+  }
+  const grouped = new Set(MAP_STYLE_GROUPS);
+  for (const [styleId, tile] of Object.entries(MAP_TILE_STYLES).filter(([, tile]) => !grouped.has(tile.group))) {
+    const option = document.createElement("option");
+    option.value = styleId;
+    option.textContent = tile.label || styleId;
+    elements.mapStyle.appendChild(option);
+  }
+  elements.mapStyle.value = MAP_TILE_STYLES[mapStyle] ? mapStyle : "contrast";
+}
+
 function syncTicketSearchInputs() {
   if (elements.search) elements.search.value = ticketSearch;
   if (elements.ticketQuickSearch) elements.ticketQuickSearch.value = ticketSearch;
@@ -257,10 +453,11 @@ async function loadMapConfig() {
     const payload = await response.json();
     mapConfig = {
       googleMapsTileApiKey: String(payload.googleMapsTileApiKey || ""),
+      mapboxAccessToken: String(payload.mapboxAccessToken || ""),
     };
   } catch (error) {
     console.warn("Unable to load map config", error);
-    mapConfig = { googleMapsTileApiKey: "" };
+    mapConfig = { googleMapsTileApiKey: "", mapboxAccessToken: "" };
   }
 }
 
@@ -282,12 +479,92 @@ function cloneState(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function rememberUndoState() {
+function rememberUndoState({ applyCheckpoint = true } = {}) {
   if (!dashboardStateReady || dashboardStateHydrating) return;
-  undoStack.push(cloneState(dashboardStatePayload()));
+  undoStack.push(cloneState(dashboardStatePayload({ applyCheckpoint })));
   if (undoStack.length > MAX_HISTORY) undoStack.shift();
   redoStack.length = 0;
   updateHistoryButtons();
+}
+
+function normalizeTicketListCheckpoint(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    enabled: value.enabled !== false,
+    hiddenTickets: Array.isArray(value.hiddenTickets) ? value.hiddenTickets.map(String) : [],
+    archivedTickets: Array.isArray(value.archivedTickets) ? value.archivedTickets.map(String) : [],
+    ticketActions: normalizeTicketActions(value.ticketActions),
+    ticketActionUpdatedAt: normalizeTicketActionUpdatedAt(value.ticketActionUpdatedAt),
+    savedAt: String(value.savedAt || ""),
+  };
+}
+
+function writeTicketListCheckpoint() {
+  if (ticketListCheckpoint?.enabled) writeJsonStorage(STORAGE_KEYS.ticketListCheckpoint, ticketListCheckpoint);
+  else localStorage.removeItem(STORAGE_KEYS.ticketListCheckpoint);
+}
+
+function protectedTicketNumbersFromCheckpoint() {
+  const checkpoint = normalizeTicketListCheckpoint(ticketListCheckpoint);
+  if (!checkpoint?.enabled) return new Set();
+  return new Set([
+    ...checkpoint.hiddenTickets,
+    ...checkpoint.archivedTickets,
+    ...Object.keys(checkpoint.ticketActions || {}).filter((ticketNumber) => {
+      return (checkpoint.ticketActions[ticketNumber] || []).some((key) => actionByKey(key)?.hidesFromDashboard);
+    }),
+  ]);
+}
+
+function applyTicketListCheckpoint() {
+  const checkpoint = normalizeTicketListCheckpoint(ticketListCheckpoint);
+  if (!checkpoint?.enabled) {
+    ticketListCheckpoint = null;
+    writeTicketListCheckpoint();
+    return;
+  }
+  ticketListCheckpoint = checkpoint;
+  for (const ticketNumber of checkpoint.hiddenTickets) hiddenTickets.add(ticketNumber);
+  for (const ticketNumber of checkpoint.archivedTickets) archivedTickets.add(ticketNumber);
+  for (const [ticketNumber, actions] of Object.entries(checkpoint.ticketActions || {})) {
+    if (Array.isArray(actions) && actions.length) ticketActions[ticketNumber] = actions;
+  }
+  ticketActionUpdatedAt = {
+    ...ticketActionUpdatedAt,
+    ...checkpoint.ticketActionUpdatedAt,
+  };
+  writeJsonStorage(STORAGE_KEYS.hiddenTickets, [...hiddenTickets]);
+  writeJsonStorage(STORAGE_KEYS.archivedTickets, [...archivedTickets]);
+  writeJsonStorage(STORAGE_KEYS.ticketActions, ticketActions);
+  writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
+  writeTicketListCheckpoint();
+}
+
+async function saveDashboardCheckpoint() {
+  rememberUndoState({ applyCheckpoint: false });
+  if (elements.saveDashboardState) elements.saveDashboardState.disabled = true;
+  showSavedToast("Saving dashboard...");
+  ticketListCheckpoint = {
+    enabled: true,
+    hiddenTickets: [...hiddenTickets],
+    archivedTickets: [...archivedTickets],
+    ticketActions: normalizeTicketActions(ticketActions),
+    ticketActionUpdatedAt: normalizeTicketActionUpdatedAt(ticketActionUpdatedAt),
+    savedAt: new Date().toISOString(),
+  };
+  writeTicketListCheckpoint();
+  try {
+    await saveDashboardState(dashboardStatePayload({ applyCheckpoint: false }), { force: true });
+    updateHistoryButtons();
+    showSavedToast("Dashboard saved");
+    auditEvent("dashboard_checkpoint_saved", {
+      hidden: ticketListCheckpoint.hiddenTickets.length,
+      archived: ticketListCheckpoint.archivedTickets.length,
+      actioned: Object.keys(ticketListCheckpoint.ticketActions).length,
+    });
+  } finally {
+    if (elements.saveDashboardState) elements.saveDashboardState.disabled = false;
+  }
 }
 
 function restoreDashboardStateSnapshot(state) {
@@ -297,6 +574,47 @@ function restoreDashboardStateSnapshot(state) {
   render();
   renderVetroLayer();
   scheduleDashboardStateSave();
+}
+
+function formatActivityTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleString(undefined, DASHBOARD_TIME_FORMAT);
+}
+
+function activityDetailsText(details) {
+  if (!details || typeof details !== "object") return "";
+  try {
+    return JSON.stringify(details);
+  } catch {
+    return String(details || "");
+  }
+}
+
+function renderActivity(events = []) {
+  if (!elements.activityList) return;
+  if (!events.length) {
+    elements.activityList.innerHTML = '<div class="detail-content">No activity recorded yet.</div>';
+    return;
+  }
+  elements.activityList.innerHTML = events
+    .map((item) => `
+      <div class="activity-item">
+        <span>${escapeHtml(formatActivityTime(item.time))}</span>
+        <strong>${escapeHtml(item.username || "anonymous")}</strong>
+        <span>${escapeHtml(item.event || "event")}</span>
+        <code>${escapeHtml(activityDetailsText(item.details))}${item.ip ? `\nIP ${escapeHtml(item.ip)}` : ""}</code>
+      </div>
+    `)
+    .join("");
+}
+
+async function loadActivity() {
+  if (!elements.activityList) return;
+  elements.activityList.innerHTML = '<div class="detail-content">Loading activity...</div>';
+  const response = await fetch("/api/audit?limit=300");
+  if (!response.ok) throw new Error(`Activity load failed: ${response.status}`);
+  const payload = await response.json();
+  renderActivity(Array.isArray(payload.events) ? payload.events : []);
 }
 
 function updateHistoryButtons() {
@@ -440,13 +758,14 @@ function employeeFallbackState() {
 }
 
 function employeeWritableStatePayload() {
-  const baseState = employeeDashboardState() || employeeFallbackState() || {};
   return {
-    ...cloneState(baseState),
     ...ticketWorkflowStatePayload(),
     vetroOpacity,
     ticketOpacity,
     mapStyle,
+    baseMapStyle: mapStyle,
+    baseMap: mapStyle,
+    mapDataOverlay: effectiveMapDataOverlay(),
   };
 }
 
@@ -455,9 +774,7 @@ function employeeDashboardStateFromAdminFilters() {
   const current = employeeDashboardState() || {};
   return {
     ...state,
-    vetroOpacity: typeof current.vetroOpacity === "number" ? current.vetroOpacity : state.vetroOpacity,
-    ticketOpacity: typeof current.ticketOpacity === "number" ? current.ticketOpacity : state.ticketOpacity,
-    mapStyle: typeof current.mapStyle === "string" && MAP_TILE_STYLES[current.mapStyle] ? current.mapStyle : state.mapStyle,
+    employeeViewMode: typeof current.employeeViewMode === "string" ? current.employeeViewMode : state.employeeViewMode,
   };
 }
 
@@ -467,11 +784,30 @@ function currentMapViewPayload() {
         center: [map.getCenter().lat, map.getCenter().lng],
         zoom: map.getZoom(),
       }
-    : pendingMapView;
+      : pendingMapView;
+}
+
+function savedBaseMapStyle(state) {
+  for (const key of ["baseMapStyle", "baseMap", "mapStyle"]) {
+    const value = state?.[key];
+    if (typeof value === "string" && MAP_TILE_STYLES[value]) return value;
+  }
+  return "";
 }
 
 function savedViewStatePayload() {
+  applyTicketListCheckpoint();
   return {
+    hiddenTickets: [...hiddenTickets],
+    archivedTickets: [...archivedTickets],
+    ticketActions,
+    ticketActionUpdatedAt,
+    ticketDescriptions,
+    ticketListCheckpoint,
+    showHiddenTickets,
+    ticketSearch,
+    countyFilterAll,
+    countyFilterSelected: [...selectedCounties],
     vetroVisible,
     vetroLayerFilterSelected: [...vetroSelectedLayers],
     vetroPlanFilterSelected: [...vetroSelectedPlans],
@@ -488,6 +824,16 @@ function savedViewStatePayload() {
     vetroLayerNoteOverrides,
     vetroLayerSizeOverrides,
     vetroLayerOpacityOverrides,
+    vitruviVisible: isSiteOwner() ? vitruviVisible : false,
+    vitruviLayerFilterSelected: isSiteOwner() ? [...vitruviSelectedLayers] : [],
+    vitruviSearch: isSiteOwner() ? vitruviSearch : "",
+    vitruviOpacity: isSiteOwner() ? vitruviOpacity : 0.82,
+    vitruviLayerColorOverrides: isSiteOwner() ? vitruviLayerColorOverrides : {},
+    vitruviLayerStyleOverrides: isSiteOwner() ? vitruviLayerStyleOverrides : {},
+    vitruviLayerNameOverrides: isSiteOwner() ? vitruviLayerNameOverrides : {},
+    vitruviLayerNoteOverrides: isSiteOwner() ? vitruviLayerNoteOverrides : {},
+    vitruviLayerSizeOverrides: isSiteOwner() ? vitruviLayerSizeOverrides : {},
+    vitruviLayerOpacityOverrides: isSiteOwner() ? vitruviLayerOpacityOverrides : {},
     vetroSlVisible,
     vetroSlShape,
     vetroSlColor,
@@ -498,7 +844,12 @@ function savedViewStatePayload() {
     vetroSearch,
     vetroColor,
     vetroOpacity,
+    polygonOpacity,
+    ticketOpacity,
     mapStyle,
+    baseMapStyle: mapStyle,
+    baseMap: mapStyle,
+    mapDataOverlay: effectiveMapDataOverlay(),
     mapView: currentMapViewPayload(),
   };
 }
@@ -555,6 +906,24 @@ async function applySavedViewState(state) {
   if (!state || typeof state !== "object") return;
   dashboardStateHydrating = true;
   try {
+    if (typeof state.showHiddenTickets === "boolean") {
+      showHiddenTickets = state.showHiddenTickets;
+      writeBooleanStorage(STORAGE_KEYS.showHidden, showHiddenTickets);
+    }
+    if (typeof state.ticketSearch === "string") {
+      ticketSearch = state.ticketSearch;
+      localStorage.setItem("ticketSearch", ticketSearch);
+      syncTicketSearchInputs();
+      historicalDigTicketSearch = ticketSearch;
+    }
+    if (typeof state.countyFilterAll === "boolean") {
+      countyFilterAll = state.countyFilterAll;
+      writeBooleanStorage(STORAGE_KEYS.countyFilterAll, countyFilterAll);
+    }
+    if (Array.isArray(state.countyFilterSelected)) {
+      selectedCounties = new Set(state.countyFilterSelected.map(String));
+      writeJsonStorage(STORAGE_KEYS.countyFilterSelected, [...selectedCounties]);
+    }
     if (typeof state.vetroVisible === "boolean") {
       vetroVisible = state.vetroVisible;
       writeBooleanStorage(STORAGE_KEYS.vetroVisible, vetroVisible);
@@ -620,6 +989,51 @@ async function applySavedViewState(state) {
       vetroLayerOpacityOverrides = state.vetroLayerOpacityOverrides;
       localStorage.setItem(STORAGE_KEYS.vetroLayerOpacities, JSON.stringify(vetroLayerOpacityOverrides));
     }
+    if (isSiteOwner()) {
+      if (typeof state.vitruviVisible === "boolean") {
+        vitruviVisible = state.vitruviVisible;
+        writeBooleanStorage(STORAGE_KEYS.vitruviVisible, vitruviVisible);
+        if (elements.vitruviToggle) elements.vitruviToggle.checked = vitruviVisible;
+      }
+      if (Array.isArray(state.vitruviLayerFilterSelected)) {
+        vitruviSelectedLayers = new Set(state.vitruviLayerFilterSelected.map(String));
+        writeJsonStorage(STORAGE_KEYS.vitruviLayers, [...vitruviSelectedLayers]);
+      }
+      if (typeof state.vitruviSearch === "string") {
+        vitruviSearch = state.vitruviSearch;
+        localStorage.setItem(STORAGE_KEYS.vitruviSearch, vitruviSearch);
+        if (elements.vitruviSearch) elements.vitruviSearch.value = vitruviSearch;
+      }
+      if (typeof state.vitruviOpacity === "number") {
+        vitruviOpacity = state.vitruviOpacity;
+        localStorage.setItem(STORAGE_KEYS.vitruviOpacity, String(vitruviOpacity));
+        if (elements.vitruviOpacity) elements.vitruviOpacity.value = String(opacityToPercent(vitruviOpacity));
+      }
+      if (state.vitruviLayerColorOverrides && typeof state.vitruviLayerColorOverrides === "object") {
+        vitruviLayerColorOverrides = state.vitruviLayerColorOverrides;
+        localStorage.setItem(STORAGE_KEYS.vitruviLayerColors, JSON.stringify(vitruviLayerColorOverrides));
+      }
+      if (state.vitruviLayerStyleOverrides && typeof state.vitruviLayerStyleOverrides === "object") {
+        vitruviLayerStyleOverrides = state.vitruviLayerStyleOverrides;
+        localStorage.setItem(STORAGE_KEYS.vitruviLayerStyles, JSON.stringify(vitruviLayerStyleOverrides));
+      }
+      if (state.vitruviLayerNameOverrides && typeof state.vitruviLayerNameOverrides === "object") {
+        vitruviLayerNameOverrides = state.vitruviLayerNameOverrides;
+        localStorage.setItem(STORAGE_KEYS.vitruviLayerNames, JSON.stringify(vitruviLayerNameOverrides));
+      }
+      if (state.vitruviLayerNoteOverrides && typeof state.vitruviLayerNoteOverrides === "object") {
+        vitruviLayerNoteOverrides = state.vitruviLayerNoteOverrides;
+        localStorage.setItem(STORAGE_KEYS.vitruviLayerNotes, JSON.stringify(vitruviLayerNoteOverrides));
+      }
+      if (state.vitruviLayerSizeOverrides && typeof state.vitruviLayerSizeOverrides === "object") {
+        vitruviLayerSizeOverrides = state.vitruviLayerSizeOverrides;
+        localStorage.setItem(STORAGE_KEYS.vitruviLayerSizes, JSON.stringify(vitruviLayerSizeOverrides));
+      }
+      if (state.vitruviLayerOpacityOverrides && typeof state.vitruviLayerOpacityOverrides === "object") {
+        vitruviLayerOpacityOverrides = state.vitruviLayerOpacityOverrides;
+        localStorage.setItem(STORAGE_KEYS.vitruviLayerOpacities, JSON.stringify(vitruviLayerOpacityOverrides));
+      }
+    }
     if (typeof state.vetroSlVisible === "boolean") {
       vetroSlVisible = state.vetroSlVisible;
       writeBooleanStorage(STORAGE_KEYS.vetroSlVisible, vetroSlVisible);
@@ -670,8 +1084,19 @@ async function applySavedViewState(state) {
       localStorage.setItem("vetroOpacity", String(vetroOpacity));
       elements.vetroOpacity.value = String(opacityToPercent(vetroOpacity));
     }
-    if (typeof state.mapStyle === "string" && MAP_TILE_STYLES[state.mapStyle]) {
-      mapStyle = state.mapStyle;
+    if (typeof state.polygonOpacity === "number") {
+      polygonOpacity = state.polygonOpacity;
+      localStorage.setItem("polygonOpacity", String(polygonOpacity));
+      elements.polygonOpacity.value = String(opacityToPercent(polygonOpacity));
+    }
+    if (typeof state.ticketOpacity === "number") {
+      ticketOpacity = state.ticketOpacity;
+      localStorage.setItem(STORAGE_KEYS.ticketOpacity, String(ticketOpacity));
+      elements.ticketOpacity.value = String(opacityToPercent(ticketOpacity));
+    }
+    const nextMapStyle = savedBaseMapStyle(state);
+    if (nextMapStyle) {
+      mapStyle = nextMapStyle;
       localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
       elements.mapStyle.value = mapStyle;
     }
@@ -693,7 +1118,7 @@ async function applySavedViewState(state) {
 }
 
 function scheduleEmployeeDashboardSync() {
-  if (!dashboardStateReady || dashboardStateHydrating || currentProfileMode !== "admin") return;
+  if (!dashboardStateReady || dashboardStateHydrating || currentProfileMode !== "admin" || !canWriteEmployeeDashboard()) return;
   if (employeeDashboardSyncTimer) window.clearTimeout(employeeDashboardSyncTimer);
   employeeDashboardSyncTimer = window.setTimeout(() => {
     employeeDashboardSyncTimer = null;
@@ -719,10 +1144,50 @@ function applyEmployeeDashboardState() {
 
 function updateDashboardMenuLabel() {
   if (!elements.showDashboardView) return;
-  elements.showDashboardView.textContent = currentProfileMode === "admin" ? "Admin Dashboard" : "Dashboard";
+  elements.showDashboardView.textContent = currentUserRole === "employee" || currentProfileMode === "employee" ? "Dashboard" : "Admin Dashboard";
+}
+
+function applyAuditAccess(username = "") {
+  if (elements.showActivityView) elements.showActivityView.hidden = username !== "site_owner";
+  if (elements.showMobileAdminView) elements.showMobileAdminView.hidden = !canWriteEmployeeDashboard();
+  if (elements.vetroCaptureTool) elements.vetroCaptureTool.hidden = username !== "site_owner";
+  if (elements.vitruviDrawer) elements.vitruviDrawer.hidden = username !== "site_owner";
+  if (username !== "site_owner") {
+    vitruviVisible = false;
+    if (elements.vitruviToggle) elements.vitruviToggle.checked = false;
+    renderVitruviLayer();
+  }
+}
+
+function canWriteEmployeeDashboard() {
+  return currentUserRole === "admin" && (currentUsername === "administrator" || currentUsername === "site_owner");
+}
+
+function isSiteOwner() {
+  return currentUsername === "site_owner";
+}
+
+function canEditVetroAppearance() {
+  return currentUserRole === "admin" && currentProfileMode === "admin";
+}
+
+function applySharedDashboardAccess() {
+  const canWrite = canWriteEmployeeDashboard();
+  if (elements.saveEmployeeDashboard) {
+    elements.saveEmployeeDashboard.hidden = true;
+    elements.saveEmployeeDashboard.disabled = !canWrite;
+  }
+  if (elements.showMobileAdminView) elements.showMobileAdminView.hidden = !canWrite;
+  if (elements.mobileSaveEmployeeDashboard) {
+    elements.mobileSaveEmployeeDashboard.hidden = !canWrite;
+    elements.mobileSaveEmployeeDashboard.disabled = !canWrite;
+  }
+  if (elements.showEmployeeView) elements.showEmployeeView.hidden = currentUserRole === "employee";
+  if (elements.showAdminView) elements.showAdminView.hidden = currentUserRole === "employee";
 }
 
 function setProfileMode(mode) {
+  if (currentUserRole === "employee") mode = "employee";
   const nextMode = mode === "employee" ? "employee" : "admin";
   if (nextMode === currentProfileMode) {
     updateDashboardMenuLabel();
@@ -731,10 +1196,15 @@ function setProfileMode(mode) {
   }
   if (nextMode === "employee") {
     adminPreviewState = dashboardStatePayload();
+    const targetEmployeeView = employeeDashboardState()?.employeeViewMode === "mobile" ? "mobile" : "dashboard";
     currentProfileMode = "employee";
     document.body.classList.add("employee-mode");
     if (elements.employeeBar) elements.employeeBar.hidden = false;
     applyEmployeeDashboardState();
+    renderProfile();
+    updateDashboardMenuLabel();
+    setCurrentView(targetEmployeeView);
+    return;
   } else {
     currentProfileMode = "admin";
     document.body.classList.remove("employee-mode");
@@ -752,18 +1222,35 @@ function setProfileMode(mode) {
 }
 
 function setCurrentView(view) {
-  currentView = view === "sheet" || view === "mobile" ? view : "dashboard";
+  currentView = view === "sheet" || view === "live-tickets" || view === "mobile" || view === "activity" || view === "mobile-admin" ? view : "dashboard";
   document.body.classList.toggle("sheet-mode", currentView === "sheet");
+  document.body.classList.toggle("live-tickets-mode", currentView === "live-tickets");
   document.body.classList.toggle("mobile-mode", currentView === "mobile");
+  document.body.classList.toggle("activity-mode", currentView === "activity");
+  document.body.classList.toggle("mobile-admin-mode", currentView === "mobile-admin");
+  document.body.classList.toggle("mobile-map-open", currentView === "mobile" && mobilePanel === "map");
   if (elements.sheetView) elements.sheetView.hidden = currentView !== "sheet";
+  if (elements.liveTicketsView) elements.liveTicketsView.hidden = currentView !== "live-tickets";
   if (elements.mobileView) elements.mobileView.hidden = currentView !== "mobile";
+  if (elements.activityView) elements.activityView.hidden = currentView !== "activity";
+  if (elements.mobileAdminView) elements.mobileAdminView.hidden = currentView !== "mobile-admin";
   if (currentView === "sheet") {
     if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
     historicalDigTicketSearch = ticketSearch;
     renderSheetView();
     void loadHistoricalDigTickets().then(renderSheetView);
+  } else if (currentView === "live-tickets") {
+    renderLiveTicketsView();
   } else if (currentView === "mobile") {
     renderMobileView();
+  } else if (currentView === "mobile-admin") {
+    renderMobileAdminConfig();
+    void loadEmployeeAccess();
+  } else if (currentView === "activity") {
+    void loadActivity().catch((error) => {
+      if (elements.activityList) elements.activityList.innerHTML = `<div class="detail-content">${escapeHtml(error.message)}</div>`;
+      console.error(error);
+    });
   } else if (map) {
     requestAnimationFrame(() => map.invalidateSize());
   }
@@ -795,13 +1282,29 @@ function restoreTicketListScroll() {
   });
 }
 
-function dashboardStatePayload() {
+function closeDashboardLayerDrawers() {
+  for (const drawer of elements.layerDrawers || []) {
+    drawer.open = false;
+  }
+}
+
+function applyTicketListScrolled() {
+  const scrolled = Boolean(elements.ticketList && elements.ticketList.scrollTop > 24);
+  if (scrolled === ticketListScrolled) return;
+  ticketListScrolled = scrolled;
+  document.body.classList.toggle("ticket-list-scrolled", ticketListScrolled);
+  if (map) requestAnimationFrame(() => map.invalidateSize());
+}
+
+function dashboardStatePayload({ employeeViewMode = currentView, applyCheckpoint = true } = {}) {
+  if (applyCheckpoint) applyTicketListCheckpoint();
   return {
     hiddenTickets: [...hiddenTickets],
     archivedTickets: [...archivedTickets],
     ticketActions,
     ticketActionUpdatedAt,
     ticketDescriptions,
+    ticketListCheckpoint,
     showHiddenTickets,
     ticketSearch,
     countyFilterAll,
@@ -822,6 +1325,16 @@ function dashboardStatePayload() {
     vetroLayerNoteOverrides,
     vetroLayerSizeOverrides,
     vetroLayerOpacityOverrides,
+    vitruviVisible: isSiteOwner() ? vitruviVisible : false,
+    vitruviLayerFilterSelected: isSiteOwner() ? [...vitruviSelectedLayers] : [],
+    vitruviSearch: isSiteOwner() ? vitruviSearch : "",
+    vitruviOpacity: isSiteOwner() ? vitruviOpacity : 0.82,
+    vitruviLayerColorOverrides: isSiteOwner() ? vitruviLayerColorOverrides : {},
+    vitruviLayerStyleOverrides: isSiteOwner() ? vitruviLayerStyleOverrides : {},
+    vitruviLayerNameOverrides: isSiteOwner() ? vitruviLayerNameOverrides : {},
+    vitruviLayerNoteOverrides: isSiteOwner() ? vitruviLayerNoteOverrides : {},
+    vitruviLayerSizeOverrides: isSiteOwner() ? vitruviLayerSizeOverrides : {},
+    vitruviLayerOpacityOverrides: isSiteOwner() ? vitruviLayerOpacityOverrides : {},
     vetroSlVisible,
     vetroSlShape,
     vetroSlColor,
@@ -836,18 +1349,26 @@ function dashboardStatePayload() {
     polygonOpacity,
     ticketOpacity,
     mapStyle,
+    baseMapStyle: mapStyle,
+    baseMap: mapStyle,
+    mapDataOverlay: effectiveMapDataOverlay(),
     sidebarCollapsed,
     locatorProfile,
+    employeeViewMode: employeeViewMode === "mobile" ? "mobile" : "dashboard",
     selectedTicketNumber: selectedTicket?.ticket_number || pendingSelectedTicketNumber || "",
     mapView: currentMapViewPayload(),
   };
 }
 
 function ticketWorkflowStatePayload() {
+  applyTicketListCheckpoint();
   return {
+    hiddenTickets: [...hiddenTickets],
+    archivedTickets: [...archivedTickets],
     ticketActions,
     ticketActionUpdatedAt,
     ticketDescriptions,
+    ticketListCheckpoint,
   };
 }
 
@@ -874,6 +1395,10 @@ function applyDashboardState(state) {
     if (state.ticketDescriptions && typeof state.ticketDescriptions === "object") {
       ticketDescriptions = normalizeTicketDescriptions(state.ticketDescriptions);
       writeJsonStorage(STORAGE_KEYS.ticketDescriptions, ticketDescriptions);
+    }
+    if ("ticketListCheckpoint" in state) {
+      ticketListCheckpoint = normalizeTicketListCheckpoint(state.ticketListCheckpoint);
+      writeTicketListCheckpoint();
     }
     if (typeof state.showHiddenTickets === "boolean") {
       showHiddenTickets = state.showHiddenTickets;
@@ -1033,13 +1558,19 @@ function applyDashboardState(state) {
       localStorage.setItem(STORAGE_KEYS.ticketOpacity, String(ticketOpacity));
       elements.ticketOpacity.value = String(opacityToPercent(ticketOpacity));
     }
-    if (typeof state.mapStyle === "string" && MAP_TILE_STYLES[state.mapStyle]) {
-      mapStyle = state.mapStyle;
+    const nextMapStyle = savedBaseMapStyle(state);
+    if (nextMapStyle) {
+      mapStyle = nextMapStyle;
       localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
       elements.mapStyle.value = mapStyle;
     }
-    mapDataOverlay = "none";
-    localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
+    if (isValidMapDataOverlay(state.mapDataOverlay)) {
+      mapDataOverlay = state.mapDataOverlay;
+      localStorage.setItem(STORAGE_KEYS.mapDataOverlay, mapDataOverlay);
+    } else {
+      mapDataOverlay = "none";
+      localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
+    }
     if (typeof state.sidebarCollapsed === "boolean") {
       sidebarCollapsed = state.sidebarCollapsed;
       writeBooleanStorage(STORAGE_KEYS.sidebarCollapsed, sidebarCollapsed);
@@ -1055,6 +1586,7 @@ function applyDashboardState(state) {
   } finally {
     dashboardStateHydrating = false;
   }
+  applyTicketListCheckpoint();
 }
 
 function scheduleDashboardStateSave() {
@@ -1066,19 +1598,36 @@ function scheduleDashboardStateSave() {
   }, 400);
 }
 
-async function saveDashboardState() {
-  if (!dashboardStateReady || dashboardStateHydrating) return;
+async function saveDashboardState(stateOverride = null, { force = false } = {}) {
+  if ((!dashboardStateReady || dashboardStateHydrating) && !force) return;
   if (currentProfileMode === "employee") {
-    await saveEmployeeDashboard({ enabled: true, state: employeeWritableStatePayload(), toast: false });
-    return;
+    if (canWriteEmployeeDashboard()) {
+      await saveEmployeeDashboard({ enabled: true, state: employeeWritableStatePayload(), toast: false });
+      return;
+    }
+    stateOverride = employeeWritableStatePayload();
   }
+  const state = stateOverride && typeof stateOverride === "object" ? stateOverride : dashboardStatePayload();
   const response = await fetch("/api/state", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(dashboardStatePayload()),
-    keepalive: true,
+    body: JSON.stringify(state),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to save dashboard state: ${response.status}`);
+  }
+}
+
+async function savePersonalDashboardState(stateOverride = null) {
+  const state = stateOverride && typeof stateOverride === "object" ? stateOverride : dashboardStatePayload();
+  const response = await fetch("/api/state", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(state),
   });
   if (!response.ok) {
     throw new Error(`Failed to save dashboard state: ${response.status}`);
@@ -1093,7 +1642,6 @@ async function saveTicketWorkflowStateToServer() {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(ticketWorkflowStatePayload()),
-    keepalive: true,
   });
   if (!response.ok) {
     throw new Error(`Failed to save ticket workflow state: ${response.status}`);
@@ -1135,6 +1683,10 @@ function flushTicketWorkflowState() {
 }
 
 async function saveEmployeeDashboard({ enabled = true, state = dashboardStatePayload(), toast = true } = {}) {
+  if (!canWriteEmployeeDashboard()) {
+    if (toast) showSavedToast("Shared dashboard access denied");
+    return employeeDashboardConfig;
+  }
   if (toast) showSavedToast("Saving employee dashboard...");
   const response = await fetch("/api/employee-dashboard", {
     method: "POST",
@@ -1149,7 +1701,144 @@ async function saveEmployeeDashboard({ enabled = true, state = dashboardStatePay
   const payload = await response.json();
   employeeDashboardConfig = payload.employeeDashboard || { enabled, state };
   if (toast) showSavedToast("Employee dashboard saved");
+  auditEvent("employee_dashboard_saved_client", { enabled });
   return employeeDashboardConfig;
+}
+
+function mobileAppUrl() {
+  return `${window.location.origin}/mobile`;
+}
+
+function renderMobileAdminConfig() {
+  if (!elements.mobileAdminView) return;
+  const openList = mobileOpenTickets();
+  const doneList = mobileDoneTickets();
+  const mappedCount = visibleTickets().filter((ticket) => ticket.polygon || (Number.isFinite(Number(ticket.latitude)) && Number.isFinite(Number(ticket.longitude)))).length;
+  if (elements.mobileConfigOpenCount) elements.mobileConfigOpenCount.textContent = openList.length.toLocaleString();
+  if (elements.mobileConfigDoneCount) elements.mobileConfigDoneCount.textContent = doneList.length.toLocaleString();
+  if (elements.mobileConfigMapCount) elements.mobileConfigMapCount.textContent = mappedCount.toLocaleString();
+  if (elements.mobileConfigStartMode) elements.mobileConfigStartMode.textContent = employeeDashboardConfig?.state?.employeeViewMode === "mobile" ? "Mobile field app" : "Tickets";
+  if (elements.mobileConfigSavedAt) {
+    const savedAt = employeeDashboardConfig?.saved_at ? formatDashboardDateTime(employeeDashboardConfig.saved_at) : "";
+    elements.mobileConfigSavedAt.textContent = savedAt || "Not published yet";
+  }
+  for (const item of [elements.mobileInstallUrlIos, elements.mobileInstallUrlAndroid]) {
+    if (item) item.textContent = mobileAppUrl();
+  }
+  if (elements.openMobileAppLink) elements.openMobileAppLink.href = mobileAppUrl();
+}
+
+async function publishMobileConfig() {
+  if (!canWriteEmployeeDashboard()) return;
+  if (elements.publishMobileConfig) elements.publishMobileConfig.disabled = true;
+  if (elements.mobileConfigStatus) elements.mobileConfigStatus.textContent = "Publishing the current dashboard filters, map, tickets, and VETRO layers...";
+  try {
+    const state = dashboardStatePayload({ employeeViewMode: "mobile" });
+    employeeDashboardConfig = await saveEmployeeDashboard({ enabled: true, state, toast: false });
+    if (elements.mobileConfigStatus) elements.mobileConfigStatus.textContent = "Mobile app config published.";
+    showSavedToast("Mobile app config published");
+    renderMobileAdminConfig();
+  } catch (error) {
+    if (elements.mobileConfigStatus) elements.mobileConfigStatus.textContent = error.message || "Mobile config publish failed.";
+    showSavedToast("Mobile config failed");
+    console.error(error);
+  } finally {
+    if (elements.publishMobileConfig) elements.publishMobileConfig.disabled = false;
+  }
+}
+
+function renderEmployeeAccess(payload = {}) {
+  if (!elements.employeeAccessList) return;
+  const users = Array.isArray(payload.users) ? payload.users : [];
+  const invites = Array.isArray(payload.invites) ? payload.invites : [];
+  const employeeUsers = users.filter((item) => item.role === "employee");
+  const pendingInvites = invites.filter((item) => !item.used_at);
+  const usedInvites = invites.filter((item) => item.used_at).slice(0, 8);
+  const userRows = employeeUsers.length
+    ? employeeUsers.map((item) => `<li><strong>${escapeHtml(item.display_name || item.username)}</strong><span>${escapeHtml(item.username)}${item.password_set_at ? ` · active ${escapeHtml(formatDashboardDateTime(item.password_set_at))}` : ""}</span></li>`).join("")
+    : "<li><strong>No employee accounts yet</strong><span>Create a setup link below.</span></li>";
+  const inviteRows = pendingInvites.length
+    ? pendingInvites.map((item) => `<li><strong>${escapeHtml(item.display_name || item.username)}</strong><span>${escapeHtml(item.username)} · pending from ${escapeHtml(formatDashboardDateTime(item.created_at))}</span></li>`).join("")
+    : "<li><strong>No pending invites</strong><span>New invite links appear here until they are used.</span></li>";
+  const usedRows = usedInvites.length
+    ? `<div class="employee-used-invites"><strong>Recently used</strong><ul>${usedInvites.map((item) => `<li>${escapeHtml(item.username)} · ${escapeHtml(formatDashboardDateTime(item.used_at))}</li>`).join("")}</ul></div>`
+    : "";
+  elements.employeeAccessList.innerHTML = `
+    <div class="employee-access-group">
+      <h4>Active employees</h4>
+      <ul>${userRows}</ul>
+    </div>
+    <div class="employee-access-group">
+      <h4>Pending setup links</h4>
+      <ul>${inviteRows}</ul>
+    </div>
+    ${usedRows}
+  `;
+}
+
+async function loadEmployeeAccess() {
+  if (!elements.employeeAccessList || !canWriteEmployeeDashboard()) return;
+  try {
+    const response = await fetch("/api/employees");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.message || `Employee access failed: ${response.status}`);
+    renderEmployeeAccess(payload);
+  } catch (error) {
+    elements.employeeAccessList.innerHTML = `<div class="mobile-admin-status">${escapeHtml(error.message || "Unable to load employees.")}</div>`;
+  }
+}
+
+function renderInviteLink(inviteUrl, invite = {}) {
+  if (!elements.employeeInviteLink) return;
+  const smsText = `Fiber Locator setup link: ${inviteUrl}`;
+  elements.employeeInviteLink.hidden = false;
+  elements.employeeInviteLink.innerHTML = `
+    <strong>Setup link for ${escapeHtml(invite.display_name || invite.username || "employee")}</strong>
+    <input readonly value="${escapeHtml(inviteUrl)}">
+    <div>
+      <button type="button" data-copy-invite-link>Copy link</button>
+      <a href="sms:?&body=${encodeURIComponent(smsText)}">Text</a>
+      <a href="mailto:?subject=${encodeURIComponent("Fiber Locator setup")}&body=${encodeURIComponent(smsText)}">Email</a>
+    </div>
+  `;
+  const copyButton = elements.employeeInviteLink.querySelector("[data-copy-invite-link]");
+  if (copyButton) copyButton.addEventListener("click", () => copyText(inviteUrl, "Invite link copied"));
+}
+
+async function createEmployeeInvite(event) {
+  event.preventDefault();
+  if (!elements.employeeInviteForm || !canWriteEmployeeDashboard()) return;
+  const username = elements.employeeUsername?.value || "";
+  const displayName = elements.employeeDisplayName?.value || "";
+  if (elements.employeeInviteStatus) elements.employeeInviteStatus.textContent = "Creating setup link...";
+  const button = elements.employeeInviteForm.querySelector('button[type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/employees/invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, display_name: displayName }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.message || `Invite failed: ${response.status}`);
+    elements.employeeInviteForm.reset();
+    if (elements.employeeInviteStatus) elements.employeeInviteStatus.textContent = "Setup link created. Copy, text, or email it to the employee.";
+    renderInviteLink(payload.invite_url, payload.invite);
+    renderEmployeeAccess(payload);
+  } catch (error) {
+    if (elements.employeeInviteStatus) elements.employeeInviteStatus.textContent = error.message || "Invite failed.";
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function copyText(text, successMessage = "Copied") {
+  try {
+    await navigator.clipboard.writeText(text);
+    showSavedToast(successMessage);
+  } catch (error) {
+    window.prompt("Copy", text);
+  }
 }
 
 function showSavedToast(message = "Saved") {
@@ -1191,6 +1880,7 @@ async function saveNamedView(name) {
   selectedSavedViewId = String(payload.savedView?.id || existing?.id || trimmedName);
   renderSavedViewControls();
   showSavedToast(`${trimmedName} saved`);
+  auditEvent("view_saved_client", { name: trimmedName });
   return selectedSavedView();
 }
 
@@ -1198,11 +1888,23 @@ async function loadDashboardState() {
   const response = await fetch("/api/state");
   if (!response.ok) return;
   const payload = await response.json();
+  currentUsername = payload.username || "";
+  currentUserDisplayName = payload.displayName || currentUsername;
+  currentUserRole = payload.role === "employee" ? "employee" : "admin";
+  applyAuditAccess(currentUsername);
+  applyUserBranding();
+  applySharedDashboardAccess();
   locatorDefaultConfig = payload.locatorDefault || { enabled: false, state: {}, saved_at: "", saved_by: "" };
   viewPresets = normalizeViewPresets(payload.viewPresets || []);
   employeeDashboardConfig = payload.employeeDashboard || { enabled: false, state: {}, saved_at: "", saved_by: "" };
   renderSavedViewControls();
   applyDashboardState(payload.state || {});
+  if (currentUserRole === "employee") {
+    currentProfileMode = "employee";
+    document.body.classList.add("employee-mode");
+    if (elements.employeeBar) elements.employeeBar.hidden = false;
+    updateDashboardMenuLabel();
+  }
 }
 
 let hiddenTickets = new Set(readJsonStorage(STORAGE_KEYS.hiddenTickets, []));
@@ -1210,6 +1912,8 @@ let archivedTickets = new Set(readJsonStorage(STORAGE_KEYS.archivedTickets, []))
 let ticketActions = normalizeTicketActions(readObjectStorage(STORAGE_KEYS.ticketActions));
 let ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(readObjectStorage(STORAGE_KEYS.ticketActionUpdatedAt));
 let ticketDescriptions = normalizeTicketDescriptions(readObjectStorage(STORAGE_KEYS.ticketDescriptions));
+let ticketListCheckpoint = normalizeTicketListCheckpoint(readJsonStorage(STORAGE_KEYS.ticketListCheckpoint, null));
+applyTicketListCheckpoint();
 let polygonColor = localStorage.getItem("polygonColor") || "#1f7a4d";
 let polygonOpacity = Number(localStorage.getItem("polygonOpacity") || "0.14");
 let vetroColor = localStorage.getItem("vetroColor") || "#00a5ff";
@@ -1217,11 +1921,11 @@ let vetroOpacity = Number(localStorage.getItem("vetroOpacity") || "0.85");
 let mapOpacity = 1;
 localStorage.removeItem("mapOpacity");
 let ticketOpacity = Number(localStorage.getItem(STORAGE_KEYS.ticketOpacity) || "1");
-let mapStyle = localStorage.getItem(STORAGE_KEYS.mapStyle) || "contrast";
-if (!MAP_TILE_STYLES[mapStyle]) mapStyle = "contrast";
-let lastStreetMapStyle = ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(mapStyle) ? "contrast" : mapStyle;
-let mapDataOverlay = "none";
-localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
+let mapStyle = localStorage.getItem(STORAGE_KEYS.mapStyle) || "locator-dark-detail";
+if (!MAP_TILE_STYLES[mapStyle]) mapStyle = "locator-dark-detail";
+let lastStreetMapStyle = ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(mapStyle) || MAP_TILE_STYLES[mapStyle]?.imagery ? "contrast" : mapStyle;
+let mapDataOverlay = localStorage.getItem(STORAGE_KEYS.mapDataOverlay) || "none";
+if (!isValidMapDataOverlay(mapDataOverlay)) mapDataOverlay = "none";
 let sheetSort = readJsonStorage(STORAGE_KEYS.sheetSort, { column: "Due Date", direction: "desc" });
 let sheetColumnFilters = readObjectStorage(STORAGE_KEYS.sheetColumnFilters);
 let sheetSavedFilters = readJsonStorage(STORAGE_KEYS.sheetSavedFilters, []);
@@ -1242,6 +1946,16 @@ let vetroLayerNameOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vetro
 let vetroLayerNoteOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vetroLayerNotes) || "{}");
 let vetroLayerSizeOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vetroLayerSizes) || "{}");
 let vetroLayerOpacityOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vetroLayerOpacities) || "{}");
+let vitruviVisible = readBooleanStorage(STORAGE_KEYS.vitruviVisible, false);
+let vitruviSelectedLayers = new Set(readJsonStorage(STORAGE_KEYS.vitruviLayers, []));
+let vitruviSearch = localStorage.getItem(STORAGE_KEYS.vitruviSearch) || "";
+let vitruviOpacity = Number(localStorage.getItem(STORAGE_KEYS.vitruviOpacity) || "0.82");
+let vitruviLayerColorOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vitruviLayerColors) || "{}");
+let vitruviLayerStyleOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vitruviLayerStyles) || "{}");
+let vitruviLayerNameOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vitruviLayerNames) || "{}");
+let vitruviLayerNoteOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vitruviLayerNotes) || "{}");
+let vitruviLayerSizeOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vitruviLayerSizes) || "{}");
+let vitruviLayerOpacityOverrides = JSON.parse(localStorage.getItem(STORAGE_KEYS.vitruviLayerOpacities) || "{}");
 let vetroSlVisible = readBooleanStorage(STORAGE_KEYS.vetroSlVisible, true);
 let vetroSlShape = localStorage.getItem(STORAGE_KEYS.vetroSlShape) || "diamond";
 let vetroSlColor = localStorage.getItem(STORAGE_KEYS.vetroSlColor) || "#e7298a";
@@ -1264,6 +1978,7 @@ if (!selectedCounties.size && legacyCountyFilterValue) {
 let pendingSelectedTicketNumber = localStorage.getItem("selectedTicketNumber") || "";
 let pendingMapView = null;
 let pendingTicketListScroll = { top: 0, left: 0 };
+let ticketListScrolled = false;
 let dashboardStateReady = false;
 let dashboardStateHydrating = false;
 let dashboardStateSaveTimer = null;
@@ -1278,6 +1993,8 @@ let locatorProfile = normalizeProfile(readObjectStorage(STORAGE_KEYS.profile));
 
 const elements = {
   sourcePath: document.querySelector("#sourcePath"),
+  appBrandLogo: document.querySelector("#appBrandLogo"),
+  mobileBrandLogo: document.querySelector("#mobileBrandLogo"),
   totalCount: document.querySelector("#totalCount"),
   dueCount: document.querySelector("#dueCount"),
   countyCount: document.querySelector("#countyCount"),
@@ -1285,11 +2002,17 @@ const elements = {
   ticketQuickSearch: document.querySelector("#ticketQuickSearch"),
   mapSearchForm: document.querySelector("#mapSearchForm"),
   mapSearch: document.querySelector("#mapSearch"),
+  locateMe: document.querySelector("#locateMe"),
+  measureToggle: document.querySelector("#measureToggle"),
+  measureClear: document.querySelector("#measureClear"),
+  measureUnit: document.querySelector("#measureUnit"),
+  measureStatus: document.querySelector("#measureStatus"),
   countyFilter: document.querySelector("#countyFilter"),
   countyFilterSummary: document.querySelector("#countyFilterSummary"),
   countyAll: document.querySelector("#countyAll"),
   countyClear: document.querySelector("#countyClear"),
   savedViewSelect: document.querySelector("#savedViewSelect"),
+  saveDashboardState: document.querySelector("#saveDashboardState"),
   saveView: document.querySelector("#saveView"),
   saveEmployeeDashboard: document.querySelector("#saveEmployeeDashboard"),
   savedViewStatus: document.querySelector("#savedViewStatus"),
@@ -1299,13 +2022,27 @@ const elements = {
   vetroToggle: document.querySelector("#vetroToggle"),
   vetroStatus: document.querySelector("#vetroStatus"),
   updateVetro: document.querySelector("#updateVetro"),
+  vetroCaptureTool: document.querySelector("#vetroCaptureTool"),
+  vetroCaptureText: document.querySelector("#vetroCaptureText"),
+  vetroCaptureFile: document.querySelector("#vetroCaptureFile"),
+  saveVetroCapture: document.querySelector("#saveVetroCapture"),
+  vetroCaptureStatus: document.querySelector("#vetroCaptureStatus"),
   vetroRefreshProgress: document.querySelector("#vetroRefreshProgress"),
   vetroRefreshStatus: document.querySelector("#vetroRefreshStatus"),
+  vetroLoginLink: document.querySelector("#vetroLoginLink"),
   vetroRefreshBar: document.querySelector("#vetroRefreshBar"),
   vetroSearch: document.querySelector("#vetroSearch"),
   vetroLayerFilter: document.querySelector("#vetroLayerFilter"),
   vetroLayerAll: document.querySelector("#vetroLayerAll"),
   vetroLayerClear: document.querySelector("#vetroLayerClear"),
+  vitruviDrawer: document.querySelector("#vitruviDrawer"),
+  vitruviToggle: document.querySelector("#vitruviToggle"),
+  vitruviStatus: document.querySelector("#vitruviStatus"),
+  vitruviSearch: document.querySelector("#vitruviSearch"),
+  vitruviLayerFilter: document.querySelector("#vitruviLayerFilter"),
+  vitruviLayerAll: document.querySelector("#vitruviLayerAll"),
+  vitruviLayerClear: document.querySelector("#vitruviLayerClear"),
+  vitruviOpacity: document.querySelector("#vitruviOpacity"),
   vetroPlanFilter: document.querySelector("#vetroPlanFilter"),
   vetroPlanAll: document.querySelector("#vetroPlanAll"),
   vetroPlanClear: document.querySelector("#vetroPlanClear"),
@@ -1349,8 +2086,11 @@ const elements = {
   undoAction: document.querySelector("#undoAction"),
   redoAction: document.querySelector("#redoAction"),
   showSheetView: document.querySelector("#showSheetView"),
+  showLiveTicketsView: document.querySelector("#showLiveTicketsView"),
   showMobileView: document.querySelector("#showMobileView"),
   showDashboardView: document.querySelector("#showDashboardView"),
+  showMobileAdminView: document.querySelector("#showMobileAdminView"),
+  showActivityView: document.querySelector("#showActivityView"),
   showEmployeeView: document.querySelector("#showEmployeeView"),
   showAdminView: document.querySelector("#showAdminView"),
   settingsFlyout: document.querySelector("#settingsFlyout"),
@@ -1359,17 +2099,65 @@ const elements = {
   oneDriveStatus: document.querySelector("#oneDriveStatus"),
   refreshOneDriveStatus: document.querySelector("#refreshOneDriveStatus"),
   connectOneDrive: document.querySelector("#connectOneDrive"),
+  deployAppUpdate: document.querySelector("#deployAppUpdate"),
   sheetBackToDashboard: document.querySelector("#sheetBackToDashboard"),
   sheetView: document.querySelector("#sheetView"),
   sheetFilterToolbar: document.querySelector("#sheetFilterToolbar"),
   sheetTableWrap: document.querySelector("#sheetTableWrap"),
+  liveTicketsView: document.querySelector("#liveTicketsView"),
+  liveTicketsSummary: document.querySelector("#liveTicketsSummary"),
+  liveTicketsSearch: document.querySelector("#liveTicketsSearch"),
+  liveTicketsBackToDashboard: document.querySelector("#liveTicketsBackToDashboard"),
+  liveTicketsList: document.querySelector("#liveTicketsList"),
+  liveTicketDetail: document.querySelector("#liveTicketDetail"),
   mobileView: document.querySelector("#mobileView"),
+  mobileAdminView: document.querySelector("#mobileAdminView"),
+  mobileAdminBackToDashboard: document.querySelector("#mobileAdminBackToDashboard"),
+  openMobileAppLink: document.querySelector("#openMobileAppLink"),
+  mobileConfigOpenCount: document.querySelector("#mobileConfigOpenCount"),
+  mobileConfigMapCount: document.querySelector("#mobileConfigMapCount"),
+  mobileConfigDoneCount: document.querySelector("#mobileConfigDoneCount"),
+  mobileConfigStartMode: document.querySelector("#mobileConfigStartMode"),
+  mobileConfigSavedAt: document.querySelector("#mobileConfigSavedAt"),
+  mobileConfigStatus: document.querySelector("#mobileConfigStatus"),
+  publishMobileConfig: document.querySelector("#publishMobileConfig"),
+  copyMobileAppLink: document.querySelector("#copyMobileAppLink"),
+  mobileInstallUrlIos: document.querySelector("#mobileInstallUrlIos"),
+  mobileInstallUrlAndroid: document.querySelector("#mobileInstallUrlAndroid"),
+  employeeInviteForm: document.querySelector("#employeeInviteForm"),
+  employeeDisplayName: document.querySelector("#employeeDisplayName"),
+  employeeUsername: document.querySelector("#employeeUsername"),
+  employeeInviteStatus: document.querySelector("#employeeInviteStatus"),
+  employeeInviteLink: document.querySelector("#employeeInviteLink"),
+  employeeAccessList: document.querySelector("#employeeAccessList"),
+  activityView: document.querySelector("#activityView"),
+  activityList: document.querySelector("#activityList"),
+  refreshActivity: document.querySelector("#refreshActivity"),
+  activityBackToDashboard: document.querySelector("#activityBackToDashboard"),
   mobileSummary: document.querySelector("#mobileSummary"),
   sheetSearch: document.querySelector("#sheetSearch"),
   exportSheetPdf: document.querySelector("#exportSheetPdf"),
   exportSheetExcel: document.querySelector("#exportSheetExcel"),
   exportSheetCsv: document.querySelector("#exportSheetCsv"),
   mobileSearch: document.querySelector("#mobileSearch"),
+  mobileLocateMe: document.querySelector("#mobileLocateMe"),
+  mobilePanelTabs: document.querySelector(".mobile-panel-tabs"),
+  mobileOpenCount: document.querySelector("#mobileOpenCount"),
+  mobileMapCount: document.querySelector("#mobileMapCount"),
+  mobileDoneCount: document.querySelector("#mobileDoneCount"),
+  mobileDigCount: document.querySelector("#mobileDigCount"),
+  mobileMapPanel: document.querySelector("#mobileMapPanel"),
+  mobileFieldMap: document.querySelector("#mobileFieldMap"),
+  mobileLiveStatus: document.querySelector("#mobileLiveStatus"),
+  mobileFollowLocation: document.querySelector("#mobileFollowLocation"),
+  mobileMeasureToggle: document.querySelector("#mobileMeasureToggle"),
+  mobileMeasureClear: document.querySelector("#mobileMeasureClear"),
+  mobileMeasureUnit: document.querySelector("#mobileMeasureUnit"),
+  mobileMeasureStatus: document.querySelector("#mobileMeasureStatus"),
+  mobileMapTickets: document.querySelector("#mobileMapTickets"),
+  mobileMapFitAll: document.querySelector("#mobileMapFitAll"),
+  mobileSaveEmployeeDashboard: document.querySelector("#mobileSaveEmployeeDashboard"),
+  mobileDeployAppUpdate: document.querySelector("#mobileDeployAppUpdate"),
   mobileRefresh: document.querySelector("#mobileRefresh"),
   mobileBackToDashboard: document.querySelector("#mobileBackToDashboard"),
   mobileTicketList: document.querySelector("#mobileTicketList"),
@@ -1377,6 +2165,7 @@ const elements = {
   profileName: document.querySelector("#profileName"),
   profileRole: document.querySelector("#profileRole"),
   profilePhoto: document.querySelector("#profilePhoto"),
+  profileLogout: document.querySelector("#profileLogout"),
   clearProfilePhoto: document.querySelector("#clearProfilePhoto"),
   openProfileEditor: document.querySelector("#openProfileEditor"),
   closeProfileEditor: document.querySelector("#closeProfileEditor"),
@@ -1396,6 +2185,7 @@ const elements = {
   ticketList: document.querySelector("#ticketList"),
   detail: document.querySelector("#detail"),
   sidebarCollapse: document.querySelector("#sidebarCollapse"),
+  layerDrawers: document.querySelectorAll(".layer-drawers > details"),
 };
 
 elements.polygonColor.value = polygonColor;
@@ -1411,8 +2201,11 @@ if (elements.vetroSlOpacity) elements.vetroSlOpacity.value = String(opacityToPer
 if (elements.vetroSlSize) elements.vetroSlSize.value = String(vetroSlSize);
 if (elements.vetroSlLabels) elements.vetroSlLabels.checked = vetroSlLabels;
 elements.vetroSearch.value = vetroSearch;
+if (elements.vitruviToggle) elements.vitruviToggle.checked = vitruviVisible;
+if (elements.vitruviSearch) elements.vitruviSearch.value = vitruviSearch;
+if (elements.vitruviOpacity) elements.vitruviOpacity.value = String(opacityToPercent(vitruviOpacity));
 syncTicketSearchInputs();
-elements.mapStyle.value = mapStyle;
+populateMapStyleSelect();
 elements.showHiddenToggle.checked = showHiddenTickets;
 elements.vetroToggle.checked = vetroVisible;
 updateDashboardMenuLabel();
@@ -1616,11 +2409,31 @@ function saveProfile() {
   scheduleDashboardStateSave();
 }
 
+function jamesBrandingEnabled() {
+  return currentUsername === "james";
+}
+
+function applyUserBranding() {
+  const jamesBranding = jamesBrandingEnabled();
+  const logo = jamesBranding ? JAMES_BRAND_LOGO : DEFAULT_BRAND_LOGO;
+  const alt = jamesBranding ? "James Fiber Locator" : "TCW";
+  for (const image of [elements.appBrandLogo, elements.mobileBrandLogo]) {
+    if (!image) continue;
+    image.src = logo;
+    image.alt = alt;
+    image.classList.toggle("james-brand-logo", jamesBranding);
+  }
+  document.body.classList.toggle("james-branding", jamesBranding);
+}
+
 function renderProfile() {
   const profile = normalizeProfile(locatorProfile);
   const employeeMode = currentProfileMode === "employee";
-  const displayName = employeeMode ? "Employee" : (profile.name.trim() || "Reed");
-  const displayRole = employeeMode ? "Employee dashboard" : (profile.role.trim() || "Admin profile");
+  const jamesBranding = jamesBrandingEnabled();
+  const displayName = employeeMode
+    ? (currentUserDisplayName || currentUsername || "Employee")
+    : (profile.name.trim() || currentUserDisplayName || currentUsername || "Admin");
+  const displayRole = employeeMode ? "Employee profile" : (profile.role.trim() || "Admin profile");
   const initials = profileInitials(displayName);
   if (elements.profileName) elements.profileName.value = profile.name;
   if (elements.profileRole) elements.profileRole.value = profile.role;
@@ -1631,7 +2444,10 @@ function renderProfile() {
   }
   for (const avatar of [elements.profileAvatar, elements.mobileProfileAvatar, elements.profileEditorAvatar]) {
     if (!avatar) continue;
-    if (profile.photo) {
+    if (jamesBranding) {
+      avatar.src = JAMES_BRAND_LOGO;
+      avatar.hidden = false;
+    } else if (profile.photo) {
       avatar.src = profile.photo;
       avatar.hidden = false;
     } else {
@@ -1748,6 +2564,12 @@ function isHexColor(value) {
   return /^#[0-9a-f]{6}$/i.test(String(value || ""));
 }
 
+function normalizeHexColor(value) {
+  const raw = String(value || "").trim();
+  const withHash = raw.startsWith("#") ? raw : `#${raw}`;
+  return isHexColor(withHash) ? withHash.toLowerCase() : "";
+}
+
 function vetroLayerShape(layerId) {
   const geometryChoice = vetroLayerStyleChoice(layerId);
   return vetroLayerStyleOverrides[String(layerId)] || (geometryChoice === "line" ? "solid" : "circle");
@@ -1772,9 +2594,11 @@ function initMap() {
   map = L.map("map", { zoomControl: true, preferCanvas: true }).setView([33.23, -92.67], 12);
   setMapTileStyle(mapStyle, false);
   mapDataOverlayLayer = L.layerGroup().addTo(map);
+  userLocationLayer = L.layerGroup().addTo(map);
   markers = L.layerGroup().addTo(map);
   polygons = L.layerGroup().addTo(map);
   map.on("click", () => {
+    if (measureTool?.active) return;
     clearSelectedTicket();
   });
   map.on("moveend zoomend", () => {
@@ -1782,7 +2606,318 @@ function initMap() {
     scheduleDashboardStateSave();
     scheduleMapDataOverlayRefresh();
   });
+  measureTool = createMeasureTool({
+    map,
+    toggleButton: elements.measureToggle,
+    clearButton: elements.measureClear,
+    unitSelect: elements.measureUnit,
+    statusElement: elements.measureStatus,
+    label: "Measure",
+    onChange: () => renderMap(visibleTickets()),
+  });
   scheduleMapDataOverlayRefresh();
+}
+
+function formatMeasureDistance(meters, unit = "feet") {
+  const feet = meters * 3.28084;
+  if (unit === "miles") return `${(feet / 5280).toFixed(2)} mi`;
+  return `${Math.round(feet).toLocaleString()} ft`;
+}
+
+function measurePointIcon(index) {
+  return L.divIcon({
+    className: "",
+    html: `<span class="measure-point">${index}</span>`,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+  });
+}
+
+function measureLabelIcon(text) {
+  return L.divIcon({
+    className: "",
+    html: `<span class="measure-distance-label">${escapeHtml(text)}</span>`,
+    iconSize: [110, 24],
+    iconAnchor: [55, 12],
+  });
+}
+
+function createMeasureTool({ map, toggleButton, clearButton, unitSelect, statusElement, label, onChange = null }) {
+  const tool = {
+    active: false,
+    points: [],
+    layer: L.layerGroup().addTo(map),
+    line: null,
+    segmentLabels: [],
+    unit: unitSelect?.value === "miles" ? "miles" : "feet",
+  };
+
+  const statusText = () => {
+    if (!tool.active && !tool.points.length) return "Off";
+    if (tool.active && !tool.points.length) return "Click first point";
+    if (tool.active && tool.points.length === 1) return "Click next point";
+    const total = tool.points.slice(1).reduce((sum, point, index) => sum + point.distanceTo(tool.points[index]), 0);
+    return `${tool.points.length} pts · ${formatMeasureDistance(total, tool.unit)}`;
+  };
+
+  const updateStatus = () => {
+    if (statusElement) statusElement.textContent = statusText();
+    if (toggleButton) {
+      toggleButton.classList.toggle("active", tool.active);
+      toggleButton.setAttribute("aria-pressed", tool.active ? "true" : "false");
+      toggleButton.textContent = tool.active ? "Measuring" : label;
+    }
+    map.getContainer().classList.toggle("measuring", tool.active);
+  };
+
+  const redraw = () => {
+    tool.layer.clearLayers();
+    tool.segmentLabels = [];
+    tool.line = null;
+    if (tool.points.length) {
+      tool.line = L.polyline(tool.points, {
+        color: "#0ea5e9",
+        weight: 4,
+        opacity: 0.95,
+        dashArray: "8 6",
+      }).addTo(tool.layer);
+    }
+    tool.points.forEach((point, index) => {
+      L.marker(point, { icon: measurePointIcon(index + 1), interactive: false }).addTo(tool.layer);
+      if (index === 0) return;
+      const previous = tool.points[index - 1];
+      const midpoint = L.latLng((previous.lat + point.lat) / 2, (previous.lng + point.lng) / 2);
+      const labelMarker = L.marker(midpoint, {
+        icon: measureLabelIcon(formatMeasureDistance(previous.distanceTo(point), tool.unit)),
+        interactive: false,
+      }).addTo(tool.layer);
+      tool.segmentLabels.push(labelMarker);
+    });
+    updateStatus();
+  };
+
+  const addPoint = (latlng) => {
+    tool.points.push(L.latLng(latlng.lat, latlng.lng));
+    redraw();
+  };
+
+  const clear = () => {
+    tool.points = [];
+    tool.layer.clearLayers();
+    tool.segmentLabels = [];
+    tool.line = null;
+    updateStatus();
+  };
+
+  const setActive = (active) => {
+    tool.active = Boolean(active);
+    updateStatus();
+    if (typeof onChange === "function") onChange(tool.active);
+  };
+
+  map.on("click", (event) => {
+    if (!tool.active) return;
+    if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+    addPoint(event.latlng);
+  });
+  map.on("contextmenu", () => {
+    if (tool.active) setActive(false);
+  });
+  map.on("zoomend moveend", redraw);
+  if (toggleButton) {
+    toggleButton.addEventListener("click", () => setActive(!tool.active));
+  }
+  if (clearButton) {
+    clearButton.addEventListener("click", clear);
+  }
+  if (unitSelect) {
+    unitSelect.addEventListener("change", () => {
+      tool.unit = unitSelect.value === "miles" ? "miles" : "feet";
+      redraw();
+    });
+  }
+  updateStatus();
+  return { ...tool, addPoint, clear, setActive, get active() { return tool.active; } };
+}
+
+function setLocationButtonsBusy(busy, label = "") {
+  for (const button of [elements.locateMe, elements.mobileLocateMe]) {
+    if (!button) continue;
+    button.disabled = busy;
+    button.textContent = busy ? "Locating..." : (label || (liveLocationEnabled ? "Live on" : "Live location"));
+  }
+}
+
+function syncLocationUi() {
+  if (elements.mobileLiveStatus) elements.mobileLiveStatus.textContent = liveLocationEnabled ? "Live location on" : "One Call polygons and fiber layers";
+  if (elements.mobileLocateMe) elements.mobileLocateMe.textContent = liveLocationEnabled ? "Live on" : "Live location";
+  if (elements.mobileFollowLocation) elements.mobileFollowLocation.textContent = liveLocationEnabled ? "Following" : "Follow me";
+}
+
+function updateUserLocation(position, { center = true } = {}) {
+  if (!map || !userLocationLayer) return;
+  const coords = position.coords || {};
+  const lat = Number(coords.latitude);
+  const lng = Number(coords.longitude);
+  const accuracy = Number(coords.accuracy || 0);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new Error("Location is unavailable.");
+  const latlng = [lat, lng];
+  if (!userLocationMarker) {
+    userLocationMarker = L.marker(latlng, {
+      icon: L.divIcon({
+        className: "",
+        html: '<span class="user-location-marker" aria-label="Your location"></span>',
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      }),
+      zIndexOffset: 1000,
+    }).addTo(userLocationLayer);
+    userLocationMarker.bindPopup("Your current location");
+  } else {
+    userLocationMarker.setLatLng(latlng);
+  }
+  if (!userLocationAccuracy) {
+    userLocationAccuracy = L.circle(latlng, {
+      radius: Number.isFinite(accuracy) ? accuracy : 0,
+      color: "#1d9bf0",
+      fillColor: "#1d9bf0",
+      fillOpacity: 0.12,
+      opacity: 0.45,
+      weight: 2,
+    }).addTo(userLocationLayer);
+  } else {
+    userLocationAccuracy.setLatLng(latlng);
+    userLocationAccuracy.setRadius(Number.isFinite(accuracy) ? accuracy : 0);
+  }
+  if (center) map.flyTo(latlng, Math.max(map.getZoom(), 17), { duration: 0.45 });
+  updateMobileUserLocation(latlng, accuracy, { center });
+  showSavedToast("Location shown on map");
+}
+
+function updateMobileUserLocation(latlng, accuracy = 0, { center = true } = {}) {
+  if (!mobileMap || !mobileMapUserLayer) return;
+  if (!mobileUserLocationMarker) {
+    mobileUserLocationMarker = L.marker(latlng, {
+      icon: L.divIcon({
+        className: "",
+        html: '<span class="user-location-marker mobile-user-location-marker" aria-label="Your live location"></span>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      }),
+      zIndexOffset: 1000,
+    }).addTo(mobileMapUserLayer);
+    mobileUserLocationMarker.bindPopup("Your live location");
+  } else {
+    mobileUserLocationMarker.setLatLng(latlng);
+  }
+  if (!mobileUserLocationAccuracy) {
+    mobileUserLocationAccuracy = L.circle(latlng, {
+      radius: Number.isFinite(accuracy) ? accuracy : 0,
+      color: "#38bdf8",
+      fillColor: "#38bdf8",
+      fillOpacity: 0.12,
+      opacity: 0.55,
+      weight: 2,
+    }).addTo(mobileMapUserLayer);
+  } else {
+    mobileUserLocationAccuracy.setLatLng(latlng);
+    mobileUserLocationAccuracy.setRadius(Number.isFinite(accuracy) ? accuracy : 0);
+  }
+  if (center) mobileMap.flyTo(latlng, Math.max(mobileMap.getZoom(), 17), { duration: 0.35 });
+}
+
+function requestUserLocation() {
+  if (!navigator.geolocation) {
+    window.alert("Location is not available in this browser.");
+    return;
+  }
+  setLocationButtonsBusy(true);
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      try {
+        updateUserLocation(position);
+      } catch (error) {
+        window.alert(error.message || "Location failed.");
+      } finally {
+        setLocationButtonsBusy(false);
+      }
+    },
+    (error) => {
+      setLocationButtonsBusy(false);
+      const message = error?.code === error?.PERMISSION_DENIED
+        ? "Location permission was denied. Enable location access for Fiber Locator in your browser or phone settings."
+        : "Unable to get your current location.";
+      window.alert(message);
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 },
+  );
+}
+
+function toggleLiveLocation() {
+  if (!navigator.geolocation) {
+    window.alert("Location is not available in this browser.");
+    return;
+  }
+  if (liveLocationEnabled && locationWatchId !== null) {
+    navigator.geolocation.clearWatch(locationWatchId);
+    locationWatchId = null;
+    liveLocationEnabled = false;
+    syncLocationUi();
+    showSavedToast("Live location off");
+    return;
+  }
+  setMobilePanel("map");
+  liveLocationEnabled = true;
+  syncLocationUi();
+  locationWatchId = navigator.geolocation.watchPosition(
+    (position) => {
+      try {
+        updateUserLocation(position, { center: true });
+        if (elements.mobileLiveStatus) {
+          const accuracy = Number(position.coords?.accuracy || 0);
+          elements.mobileLiveStatus.textContent = `Live location on${Number.isFinite(accuracy) && accuracy ? ` · ±${Math.round(accuracy)} m` : ""}`;
+        }
+      } catch (error) {
+        console.warn(error);
+      }
+    },
+    (error) => {
+      liveLocationEnabled = false;
+      locationWatchId = null;
+      syncLocationUi();
+      const message = error?.code === error?.PERMISSION_DENIED
+        ? "Location permission was denied. Enable location access for Fiber Locator in your browser or phone settings."
+        : "Unable to keep live location on.";
+      window.alert(message);
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 },
+  );
+}
+
+async function deployAppUpdate() {
+  showSavedToast("Checking for app update...");
+  try {
+    if ("serviceWorker" in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.update()));
+    }
+    const response = await fetch("/", { cache: "reload" });
+    if (!response.ok) throw new Error(`Update check failed: ${response.status}`);
+    showSavedToast("App updated. Reloading...");
+    window.setTimeout(() => window.location.reload(), 500);
+  } catch (error) {
+    console.error(error);
+    showSavedToast("App update failed");
+  }
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/static/service-worker.js").catch((error) => {
+      console.warn("Service worker registration failed", error);
+    });
+  });
 }
 
 function applySidebarCollapsed() {
@@ -1857,6 +2992,113 @@ async function googleTileLayer(tile) {
   });
 }
 
+function mapboxTileLayer(tile) {
+  if (!mapConfig.mapboxAccessToken) {
+    throw new Error("Mapbox access token is not configured on this server.");
+  }
+  return L.tileLayer(`https://api.mapbox.com/styles/v1/mapbox/${tile.styleId}/tiles/512/{z}/{x}/{y}?access_token=${encodeURIComponent(mapConfig.mapboxAccessToken)}`, {
+    maxZoom: 22,
+    tileSize: 512,
+    zoomOffset: -1,
+    attribution: tile.attribution,
+    opacity: mapOpacity,
+  });
+}
+
+async function maplibreTileLayer(tile) {
+  if (!window.maplibregl || !L.maplibreGL) {
+    throw new Error("MapLibre basemap libraries did not load.");
+  }
+  if (!maplibreStyleCache[tile.styleUrl]) {
+    const response = await fetch(tile.styleUrl, { cache: "force-cache" });
+    if (!response.ok) throw new Error(`Free vector basemap failed to load: ${response.status}`);
+    const style = await response.json();
+    if (!style || style.version !== 8 || !style.sources || !Array.isArray(style.layers)) {
+      throw new Error("Free vector basemap returned an invalid style.");
+    }
+    maplibreStyleCache[tile.styleUrl] = style;
+  }
+  const style = customizeMaplibreStyle(cloneState(maplibreStyleCache[tile.styleUrl]), tile);
+  return L.maplibreGL({
+    style,
+    interactive: false,
+  });
+}
+
+function customizeMaplibreStyle(style, tile) {
+  if (tile.customize !== "locator-dark-detail") return style;
+  style.name = "Dark locator detail";
+  for (const layer of style.layers || []) {
+    const layerId = String(layer.id || "").toLowerCase();
+    const sourceLayer = String(layer["source-layer"] || "").toLowerCase();
+    const type = layer.type;
+    layer.paint = layer.paint || {};
+    layer.layout = layer.layout || {};
+
+    if (type === "background") {
+      layer.paint["background-color"] = "#07111f";
+      continue;
+    }
+
+    if (type === "fill") {
+      if (sourceLayer.includes("building") || layerId.includes("building")) {
+        layer.paint["fill-color"] = "#263f56";
+        layer.paint["fill-outline-color"] = "#6fb7dc";
+        layer.paint["fill-opacity"] = 0.86;
+      } else if (sourceLayer.includes("water") || layerId.includes("water")) {
+        layer.paint["fill-color"] = "#0a2840";
+        layer.paint["fill-opacity"] = 0.95;
+      } else if (layerId.includes("park") || layerId.includes("wood") || layerId.includes("landcover")) {
+        layer.paint["fill-color"] = "#12372f";
+        layer.paint["fill-opacity"] = 0.72;
+      } else {
+        layer.paint["fill-color"] = "#101c2d";
+        layer.paint["fill-opacity"] = layer.paint["fill-opacity"] ?? 0.9;
+      }
+    }
+
+    if (type === "fill-extrusion" && (sourceLayer.includes("building") || layerId.includes("building"))) {
+      layer.paint["fill-extrusion-color"] = "#29445c";
+      layer.paint["fill-extrusion-opacity"] = 0.82;
+    }
+
+    if (type === "line") {
+      if (layerId.includes("road") || layerId.includes("highway") || sourceLayer.includes("transportation")) {
+        const isCasing = layerId.includes("case") || layerId.includes("casing");
+        const isMajor = layerId.includes("motorway") || layerId.includes("trunk") || layerId.includes("primary");
+        layer.paint["line-color"] = isCasing ? "#07111f" : (isMajor ? "#67b7ff" : "#a7c4da");
+        layer.paint["line-opacity"] = isCasing ? 0.95 : 0.9;
+      } else if (layerId.includes("water")) {
+        layer.paint["line-color"] = "#22607e";
+      }
+    }
+
+    if (type === "symbol") {
+      const isRoadLabel = layerId.includes("road") || layerId.includes("highway");
+      const isHouseLabel = layerId.includes("housenumber") || layerId.includes("address");
+      layer.paint["text-color"] = isHouseLabel ? "#ffe7a3" : (isRoadLabel ? "#f8fbff" : "#dbeafe");
+      layer.paint["text-halo-color"] = "#06101d";
+      layer.paint["text-halo-width"] = isRoadLabel || isHouseLabel ? 1.7 : 1.25;
+      layer.paint["text-halo-blur"] = 0.2;
+      if (layer.paint["icon-opacity"] !== undefined) layer.paint["icon-opacity"] = 0.9;
+    }
+  }
+  return style;
+}
+
+function bringBaseLayerToBack(layer) {
+  if (!layer) return;
+  if (typeof layer.bringToBack === "function") {
+    layer.bringToBack();
+    return;
+  }
+  if (typeof layer.eachLayer === "function") {
+    layer.eachLayer((item) => {
+      if (typeof item.bringToBack === "function") item.bringToBack();
+    });
+  }
+}
+
 async function setMapTileStyle(style, save = true) {
   mapStyle = MAP_TILE_STYLES[style] ? style : "contrast";
   localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
@@ -1871,7 +3113,7 @@ async function setMapTileStyle(style, save = true) {
     try {
       baseTileLayer = await googleTileLayer(tile);
       baseTileLayer.addTo(map);
-      baseTileLayer.bringToBack();
+      bringBaseLayerToBack(baseTileLayer);
     } catch (error) {
       console.error(error);
       mapStyle = "contrast";
@@ -1883,7 +3125,45 @@ async function setMapTileStyle(style, save = true) {
         opacity: mapOpacity,
         subdomains: MAP_TILE_STYLES.contrast.subdomains,
       }).addTo(map);
-      baseTileLayer.bringToBack();
+      bringBaseLayerToBack(baseTileLayer);
+      window.alert(`${error.message} Falling back to High contrast streets.`);
+    }
+  } else if (tile.provider === "maplibre") {
+    try {
+      baseTileLayer = await maplibreTileLayer(tile);
+      baseTileLayer.addTo(map);
+      bringBaseLayerToBack(baseTileLayer);
+    } catch (error) {
+      console.error(error);
+      mapStyle = "contrast";
+      localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
+      if (elements.mapStyle) elements.mapStyle.value = mapStyle;
+      baseTileLayer = L.tileLayer(MAP_TILE_STYLES.contrast.url, {
+        maxZoom: 20,
+        attribution: MAP_TILE_STYLES.contrast.attribution,
+        opacity: mapOpacity,
+        subdomains: MAP_TILE_STYLES.contrast.subdomains,
+      }).addTo(map);
+      bringBaseLayerToBack(baseTileLayer);
+      window.alert(`${error.message} Falling back to High contrast streets.`);
+    }
+  } else if (tile.provider === "mapbox") {
+    try {
+      baseTileLayer = mapboxTileLayer(tile);
+      baseTileLayer.addTo(map);
+      bringBaseLayerToBack(baseTileLayer);
+    } catch (error) {
+      console.error(error);
+      mapStyle = "contrast";
+      localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
+      if (elements.mapStyle) elements.mapStyle.value = mapStyle;
+      baseTileLayer = L.tileLayer(MAP_TILE_STYLES.contrast.url, {
+        maxZoom: 20,
+        attribution: MAP_TILE_STYLES.contrast.attribution,
+        opacity: mapOpacity,
+        subdomains: MAP_TILE_STYLES.contrast.subdomains,
+      }).addTo(map);
+      bringBaseLayerToBack(baseTileLayer);
       window.alert(`${error.message} Falling back to High contrast streets.`);
     }
   } else if (Array.isArray(tile.layers)) {
@@ -1895,7 +3175,7 @@ async function setMapTileStyle(style, save = true) {
         ...(item.subdomains ? { subdomains: item.subdomains } : {}),
       })),
     ).addTo(map);
-    baseTileLayer.eachLayer((layer) => layer.bringToBack());
+    bringBaseLayerToBack(baseTileLayer);
   } else {
     baseTileLayer = L.tileLayer(tile.url, {
       maxZoom: 20,
@@ -1903,21 +3183,23 @@ async function setMapTileStyle(style, save = true) {
       opacity: mapOpacity,
       ...(tile.subdomains ? { subdomains: tile.subdomains } : {}),
     }).addTo(map);
-    baseTileLayer.bringToBack();
+    bringBaseLayerToBack(baseTileLayer);
   }
+  scheduleMapDataOverlayRefresh();
   if (save) scheduleDashboardStateSave();
 }
 
 function isImageryMapStyle(style) {
-  return ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(style);
+  return ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(style) || Boolean(MAP_TILE_STYLES[style]?.imagery);
 }
 
 function preferredImageryMapStyle() {
+  if (mapConfig.mapboxAccessToken) return "mapbox-satellite-streets";
   return mapConfig.googleMapsTileApiKey ? "google-hybrid" : "hybrid";
 }
 
 function preferredStreetMapStyle() {
-  return MAP_TILE_STYLES[lastStreetMapStyle] && !isImageryMapStyle(lastStreetMapStyle) ? lastStreetMapStyle : "contrast";
+  return MAP_TILE_STYLES[lastStreetMapStyle] && !isImageryMapStyle(lastStreetMapStyle) ? lastStreetMapStyle : "locator-dark-detail";
 }
 
 async function toggleMapView() {
@@ -1940,10 +3222,17 @@ function setBaseTileOpacity(opacity) {
 }
 
 function mapDataOverlayConfigs() {
-  if (mapDataOverlay === "addresses") return [ARCGIS_POINT_OVERLAYS.addresses];
-  if (mapDataOverlay === "parcels") return [ARCGIS_POINT_OVERLAYS.parcels];
-  if (mapDataOverlay === "addresses-parcels") return [ARCGIS_POINT_OVERLAYS.addresses, ARCGIS_POINT_OVERLAYS.parcels];
+  const overlay = effectiveMapDataOverlay();
+  if (overlay === "addresses") return [ARCGIS_POINT_OVERLAYS.addresses];
+  if (overlay === "parcels") return [ARCGIS_POINT_OVERLAYS.parcels];
+  if (overlay === "addresses-parcels") return [ARCGIS_POINT_OVERLAYS.addresses, ARCGIS_POINT_OVERLAYS.parcels];
   return [];
+}
+
+function effectiveMapDataOverlay() {
+  if (isValidMapDataOverlay(mapDataOverlay) && mapDataOverlay !== "none") return mapDataOverlay;
+  const bundled = MAP_TILE_STYLES[mapStyle]?.mapDataOverlay;
+  return isValidMapDataOverlay(bundled) ? bundled : "none";
 }
 
 function setMapDataOverlayStatus(message) {
@@ -2048,21 +3337,139 @@ async function loadArcgisPointOverlay(config, requestId) {
 
 let mapDataOverlayTimer = null;
 function scheduleMapDataOverlayRefresh() {
-  void refreshMapDataOverlay();
+  if (mapDataOverlayTimer) window.clearTimeout(mapDataOverlayTimer);
+  mapDataOverlayTimer = window.setTimeout(() => {
+    mapDataOverlayTimer = null;
+    void refreshMapDataOverlay();
+  }, 180);
 }
 
 async function refreshMapDataOverlay() {
   if (!map || !mapDataOverlayLayer) return;
-  mapDataOverlayAbort += 1;
-  mapDataOverlay = "none";
+  const requestId = mapDataOverlayAbort + 1;
+  mapDataOverlayAbort = requestId;
   mapDataOverlayLayer.clearLayers();
-  localStorage.removeItem(STORAGE_KEYS.mapDataOverlay);
-  setMapDataOverlayStatus("");
+  const configs = mapDataOverlayConfigs();
+  if (!configs.length) {
+    setMapDataOverlayStatus("");
+    return;
+  }
+  const minZoom = Math.max(...configs.map((config) => config.minZoom || 0));
+  if (minZoom && map.getZoom() < minZoom) {
+    setMapDataOverlayStatus(`Zoom to ${minZoom}+ to show address labels.`);
+    return;
+  }
+  setMapDataOverlayStatus("Loading address labels...");
+  try {
+    const counts = await Promise.all(configs.map((config) => loadArcgisPointOverlay(config, requestId)));
+    if (requestId !== mapDataOverlayAbort) return;
+    const total = counts.reduce((sum, count) => sum + count, 0);
+    setMapDataOverlayStatus(total ? `Showing ${total} address labels.` : "No address labels found in this view.");
+  } catch (error) {
+    if (requestId !== mapDataOverlayAbort) return;
+    console.error(error);
+    setMapDataOverlayStatus("Address labels failed to load.");
+  }
 }
 
 function colorForVetroLayer(layerId) {
   const override = vetroLayerColorOverrides[String(layerId)];
   return isHexColor(override) ? override : vetroColor;
+}
+
+function syncVetroLayerColorInputs(layerId, color) {
+  const key = String(layerId);
+  for (const input of elements.vetroLayerFilter.querySelectorAll("[data-layer-color]")) {
+    if (input.dataset.layerColor === key) input.value = color;
+  }
+  for (const input of elements.vetroLayerFilter.querySelectorAll("[data-layer-color-hex]")) {
+    if (input.dataset.layerColorHex !== key) continue;
+    input.value = color;
+    input.classList.remove("invalid");
+  }
+}
+
+function setVetroLayerColorOverride(layerId, value) {
+  const color = normalizeHexColor(value);
+  if (!color) return false;
+  vetroLayerColorOverrides[layerId] = color;
+  vetroLayerColorOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerColors, vetroLayerColorOverrides, (id, item) => isHexColor(item));
+  syncVetroLayerColorInputs(layerId, color);
+  renderVetroLayer();
+  scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
+  return true;
+}
+
+function vitruviLayerId(feature) {
+  return propValue(feature?.properties || {}, "vitruvi_layer", "vitruvi_layer_label", "category_name", "geojson_layer", "Category", "category") || "Vitruvi";
+}
+
+function vitruviLayerDefaultName(layerId) {
+  const key = String(layerId);
+  const metadataLayer = vitruviGeojson?.metadata?.layers?.find((item) => String(item.id) === key);
+  return metadataLayer?.label || key;
+}
+
+function vitruviLayerDisplayName(layerId) {
+  return vitruviLayerNameOverrides[String(layerId)]?.trim() || vitruviLayerDefaultName(layerId);
+}
+
+function vitruviLayerNote(layerId) {
+  return vitruviLayerNoteOverrides[String(layerId)]?.trim() || "";
+}
+
+function vitruviLayerGeometryType(layerId) {
+  return vitruviLayerGeometryById[String(layerId)] || "";
+}
+
+function vitruviLayerStyleChoices(layerId) {
+  return vitruviLayerGeometryType(layerId).startsWith("Line")
+    ? [["", "Auto"], ["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]]
+    : [["", "Auto"], ["circle", "Circle"], ["square", "Square"], ["rectangle", "Rectangle"], ["diamond", "Diamond"], ["pin", "Pin"], ["house", "House"]];
+}
+
+function vitruviLayerStyleValid(layerId, value) {
+  return vitruviLayerStyleChoices(layerId).some(([optionValue]) => optionValue === value);
+}
+
+function vitruviLayerStyleLabel(layerId) {
+  return vitruviLayerGeometryType(layerId).startsWith("Line") ? "Line style" : "Shape";
+}
+
+function colorForVitruviLayer(layerId) {
+  const override = vitruviLayerColorOverrides[String(layerId)];
+  if (isHexColor(override)) return override;
+  const palette = ["#f97316", "#22c55e", "#38bdf8", "#eab308", "#a855f7", "#ef4444", "#14b8a6", "#f43f5e"];
+  let hash = 0;
+  for (const char of String(layerId)) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return palette[hash % palette.length];
+}
+
+function vitruviLayerSizeDefault(layerId) {
+  return vitruviLayerGeometryType(layerId).startsWith("Line") ? 3 : 11;
+}
+
+function vitruviLayerSizeRange(layerId) {
+  return vitruviLayerGeometryType(layerId).startsWith("Line")
+    ? { label: "Line width", min: 1, max: 10, step: 1 }
+    : { label: "Size", min: 7, max: 28, step: 1 };
+}
+
+function vitruviLayerSize(layerId) {
+  const range = vitruviLayerSizeRange(layerId);
+  return clampNumber(vitruviLayerSizeOverrides[String(layerId)], range.min, range.max, vitruviLayerSizeDefault(layerId));
+}
+
+function vitruviLayerOpacity(layerId) {
+  return clampNumber(vitruviLayerOpacityOverrides[String(layerId)], 0, 1, vitruviOpacity);
+}
+
+function vitruviLayerLabel(layerId, count = 0) {
+  const geometry = vitruviLayerGeometryType(layerId);
+  const geometryLabel = geometry ? ` · ${geometry.startsWith("Line") ? "Line" : "Point"}` : "";
+  const countLabel = count ? ` (${Number(count).toLocaleString()})` : "";
+  return `${vitruviLayerDisplayName(layerId)}${geometryLabel}${countLabel}`;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -2148,7 +3555,10 @@ function renderVetroLayerList(container, values, selected, counts = {}) {
             <div class="vetro-layer-appearance">
               <label class="layer-swatch">
                 <span>Color</span>
-                <input class="layer-color" type="color" data-layer-color="${escapeHtml(layerId)}" value="${escapeHtml(colorForVetroLayer(layerId))}">
+                <span class="layer-color-control">
+                  <input class="layer-color" type="color" data-layer-color="${escapeHtml(layerId)}" value="${escapeHtml(colorForVetroLayer(layerId))}">
+                  <input class="layer-color-hex" type="text" data-layer-color-hex="${escapeHtml(layerId)}" value="${escapeHtml(colorForVetroLayer(layerId))}" placeholder="#00a5ff" maxlength="7" spellcheck="false">
+                </span>
               </label>
               <label class="layer-swatch">
                 <span>Opacity %</span>
@@ -2165,6 +3575,87 @@ function renderVetroLayerList(container, values, selected, counts = {}) {
             ${vetroLayerMetaHtml(layerId)}
           </div>
           <div class="vetro-layer-note">${escapeHtml(vetroLayerTitle(layerId))}</div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function vitruviLayerTitle(layerId, count = 0) {
+  const geometry = vitruviLayerGeometryType(layerId);
+  const note = vitruviLayerNote(layerId);
+  const control = geometry.startsWith("Line") ? "line style" : "shape";
+  return `${vitruviLayerLabel(layerId, count)}. Owner-only Vitruvi layer. ${control}: ${vitruviLayerStyleOverrides[String(layerId)] || "Auto"}. Color ${colorForVitruviLayer(layerId)}. Size ${vitruviLayerSize(layerId)}. Opacity ${Math.round(vitruviLayerOpacity(layerId) * 100)}%.${note ? ` Note: ${note}` : ""}`;
+}
+
+function vitruviLayerStyleHtml(layerId) {
+  const current = vitruviLayerStyleOverrides[String(layerId)] || "";
+  const label = vitruviLayerStyleLabel(layerId);
+  return `
+    <div class="layer-setting">
+      <span>${escapeHtml(label)}</span>
+      <select class="vitruvi-layer-style" data-vitruvi-layer-style="${escapeHtml(layerId)}" aria-label="${escapeHtml(label)}">
+        ${vitruviLayerStyleChoices(layerId).map(([value, text]) => `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(text)}</option>`).join("")}
+      </select>
+    </div>
+  `;
+}
+
+function vitruviLayerMetaHtml(layerId) {
+  const name = vitruviLayerNameOverrides[String(layerId)] || "";
+  const note = vitruviLayerNoteOverrides[String(layerId)] || "";
+  return `
+    <div class="layer-metadata">
+      <div class="layer-setting">
+        <span>Name</span>
+        <input class="vitruvi-layer-alias" type="text" data-vitruvi-layer-alias="${escapeHtml(layerId)}" value="${escapeHtml(name)}" placeholder="${escapeHtml(vitruviLayerDefaultName(layerId))}" maxlength="80">
+      </div>
+      <div class="layer-setting layer-setting-wide">
+        <span>Note</span>
+        <input class="vitruvi-layer-note-input" type="text" data-vitruvi-layer-note="${escapeHtml(layerId)}" value="${escapeHtml(note)}" placeholder="Optional owner note" maxlength="160">
+      </div>
+    </div>
+  `;
+}
+
+function renderVitruviLayerList(container, values, selected, counts = {}) {
+  if (!container) return;
+  const selectedValues = Array.isArray(selected) ? selected : [];
+  container.innerHTML = values
+    .map((layerId) => {
+      const checked = selectedValues.includes(String(layerId)) ? "checked" : "";
+      const count = counts[layerId] || 0;
+      const sizeRange = vitruviLayerSizeRange(layerId);
+      return `
+        <div class="vetro-layer-item${checked ? " active" : ""}" title="${escapeHtml(vitruviLayerTitle(layerId, count))}">
+          <div class="vetro-layer-head">
+            <label class="vetro-layer-check">
+              <input type="checkbox" value="${escapeHtml(layerId)}" ${checked}>
+              <span>${escapeHtml(vitruviLayerLabel(layerId, count))}</span>
+            </label>
+            <div class="vetro-layer-appearance">
+              <label class="layer-swatch">
+                <span>Color</span>
+                <span class="layer-color-control">
+                  <input class="vitruvi-layer-color" type="color" data-vitruvi-layer-color="${escapeHtml(layerId)}" value="${escapeHtml(colorForVitruviLayer(layerId))}">
+                  <input class="vitruvi-layer-color-hex layer-color-hex" type="text" data-vitruvi-layer-color-hex="${escapeHtml(layerId)}" value="${escapeHtml(colorForVitruviLayer(layerId))}" placeholder="#f97316" maxlength="7" spellcheck="false">
+                </span>
+              </label>
+              <label class="layer-swatch">
+                <span>Opacity %</span>
+                <input class="vitruvi-layer-opacity" type="number" min="0" max="100" step="1" data-vitruvi-layer-opacity="${escapeHtml(layerId)}" value="${escapeHtml(opacityToPercent(vitruviLayerOpacity(layerId)))}">
+              </label>
+            </div>
+          </div>
+          <div class="vetro-layer-tools">
+            ${vitruviLayerStyleHtml(layerId)}
+            <div class="layer-setting layer-setting-range">
+              <span>${escapeHtml(sizeRange.label)}</span>
+              <input class="vitruvi-layer-size" type="number" min="${sizeRange.min}" max="${sizeRange.max}" step="${sizeRange.step}" data-vitruvi-layer-size="${escapeHtml(layerId)}" value="${escapeHtml(vitruviLayerSize(layerId))}">
+            </div>
+            ${vitruviLayerMetaHtml(layerId)}
+          </div>
+          <div class="vetro-layer-note">${escapeHtml(vitruviLayerTitle(layerId, count))}</div>
         </div>
       `;
     })
@@ -2338,6 +3829,185 @@ function bindVetroPopup(feature, layer) {
   layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${rows ? `<div class="popup-rows">${rows}</div>` : ""}`);
 }
 
+function syncVitruviLayerSelection() {
+  vitruviSelectedLayers = new Set(selectedValues(elements.vitruviLayerFilter));
+  writeJsonStorage(STORAGE_KEYS.vitruviLayers, [...vitruviSelectedLayers]);
+}
+
+function syncVitruviLayerColorInputs(layerId, color) {
+  const key = String(layerId);
+  if (!elements.vitruviLayerFilter) return;
+  for (const input of elements.vitruviLayerFilter.querySelectorAll("[data-vitruvi-layer-color]")) {
+    if (input.dataset.vitruviLayerColor === key) input.value = color;
+  }
+  for (const input of elements.vitruviLayerFilter.querySelectorAll("[data-vitruvi-layer-color-hex]")) {
+    if (input.dataset.vitruviLayerColorHex !== key) continue;
+    input.value = color;
+    input.classList.remove("invalid");
+  }
+}
+
+function setVitruviLayerColorOverride(layerId, value) {
+  const color = normalizeHexColor(value);
+  if (!color) return false;
+  vitruviLayerColorOverrides[layerId] = color;
+  vitruviLayerColorOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerColors, vitruviLayerColorOverrides, (id, item) => isHexColor(item));
+  syncVitruviLayerColorInputs(layerId, color);
+  renderVitruviLayer();
+  scheduleDashboardStateSave();
+  return true;
+}
+
+function vitruviPointToLayer(feature, latlng) {
+  const layerId = vitruviLayerId(feature);
+  const shape = vitruviLayerStyleOverrides[String(layerId)] || "circle";
+  return L.marker(latlng, {
+    icon: vetroMarkerIcon(shape, colorForVitruviLayer(layerId), vitruviLayerSize(layerId), vitruviLayerOpacity(layerId), ""),
+  });
+}
+
+function vitruviStyle(feature) {
+  const layerId = vitruviLayerId(feature);
+  const color = colorForVitruviLayer(layerId);
+  const opacity = vitruviLayerOpacity(layerId);
+  const geometry = feature?.geometry?.type || "";
+  const size = vitruviLayerSize(layerId);
+  const style = {
+    color,
+    fillColor: color,
+    fillOpacity: opacity * 0.32,
+    opacity,
+    weight: geometry.startsWith("Line") ? size : 1,
+    radius: size,
+  };
+  if (geometry.startsWith("Line")) {
+    const override = vitruviLayerStyleOverrides[String(layerId)] || "solid";
+    style.fillOpacity = 0;
+    if (override === "dashed") style.dashArray = "8 6";
+    if (override === "dotted") style.dashArray = "2 6";
+  }
+  return style;
+}
+
+function bindVitruviPopup(feature, layer) {
+  const props = feature.properties || {};
+  const layerId = vitruviLayerId(feature);
+  const title = propValue(props, "label", "feature_id", "vitruvi_id", "name", "Name") || vitruviLayerDisplayName(layerId);
+  const rows = [
+    ["Layer", vitruviLayerLabel(layerId)],
+    ["Layer name", vitruviLayerDisplayName(layerId)],
+    ["Layer note", vitruviLayerNote(layerId)],
+    ["Category", propValue(props, "category_name", "vitruvi_layer_label", "category")],
+    ["Status", propValue(props, "vitruvi_status", "status", "Status")],
+    ["Region", propValue(props, "region_name", "Region")],
+    ["Address", propValue(props, "full_address", "Address")],
+    ["Vitruvi ID", propValue(props, "vitruvi_id", "ID", "id")],
+    ["UID", propValue(props, "uid", "vetro_id")],
+    ["Length", propValue(props, "planned_length", "total_length", "shape__len")],
+    ["Color", colorForVitruviLayer(layerId)],
+    ["Opacity", `${Math.round(vitruviLayerOpacity(layerId) * 100)}%`],
+  ].filter(([, value]) => value)
+    .map(([label, value]) => `<div><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`)
+    .join("");
+  layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${rows ? `<div class="popup-rows">${rows}</div>` : ""}`);
+}
+
+function filteredVitruviGeojson() {
+  if (!vitruviGeojson || !isSiteOwner()) return null;
+  const layerIds = [...vitruviSelectedLayers];
+  const search = vitruviSearch.toLowerCase();
+  const sourceFeatures = Array.isArray(vitruviGeojson.features) ? vitruviGeojson.features : [];
+  return {
+    type: "FeatureCollection",
+    features: sourceFeatures.filter((feature) => {
+      const layerId = vitruviLayerId(feature);
+      if (!layerIds.includes(layerId)) return false;
+      if (search && !featureSearchText(feature).includes(search)) return false;
+      return true;
+    }),
+  };
+}
+
+function renderVitruviLayer() {
+  if (vitruviLayer) {
+    map.removeLayer(vitruviLayer);
+    vitruviLayer = null;
+  }
+  if (!elements.vitruviStatus) return;
+  if (!isSiteOwner()) {
+    elements.vitruviStatus.textContent = "Owner only";
+    return;
+  }
+  if (!elements.vitruviToggle?.checked || !vitruviGeojson) {
+    elements.vitruviStatus.textContent = vitruviGeojson ? "Off" : "Owner only";
+    scheduleDashboardStateSave();
+    return;
+  }
+  const filtered = filteredVitruviGeojson();
+  const features = Array.isArray(filtered?.features) ? filtered.features : [];
+  vitruviLayer = L.geoJSON(filtered, {
+    style: vitruviStyle,
+    pointToLayer: vitruviPointToLayer,
+    onEachFeature: bindVitruviPopup,
+  }).addTo(map);
+  const total = Array.isArray(vitruviGeojson?.features) ? vitruviGeojson.features.length : 0;
+  elements.vitruviStatus.textContent = `${features.length.toLocaleString()} / ${total.toLocaleString()}`;
+  scheduleDashboardStateSave();
+}
+
+function populateVitruviFilters() {
+  if (!elements.vitruviLayerFilter || !vitruviGeojson) return;
+  const features = vitruviGeojson.features || [];
+  const layerIds = uniqueSorted(features.map(vitruviLayerId));
+  const availableLayers = new Set(layerIds);
+  const geometryByLayer = {};
+  for (const feature of features) {
+    const layerId = vitruviLayerId(feature);
+    const geometry = feature.geometry?.type || "";
+    if (!geometryByLayer[layerId]) geometryByLayer[layerId] = new Set();
+    if (geometry) geometryByLayer[layerId].add(geometry);
+  }
+  vitruviLayerGeometryById = Object.fromEntries(Object.entries(geometryByLayer).map(([layerId, geometries]) => [layerId, [...geometries][0] || ""]));
+  vitruviLayerStyleOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerStyles, vitruviLayerStyleOverrides, (layerId, value) => availableLayers.has(layerId) && vitruviLayerStyleValid(layerId, value));
+  vitruviLayerColorOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerColors, vitruviLayerColorOverrides, (layerId, value) => availableLayers.has(layerId) && isHexColor(value));
+  vitruviLayerNameOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerNames, vitruviLayerNameOverrides, (layerId, value) => availableLayers.has(layerId) && typeof value === "string");
+  vitruviLayerNoteOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerNotes, vitruviLayerNoteOverrides, (layerId, value) => availableLayers.has(layerId) && typeof value === "string");
+  vitruviLayerSizeOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerSizes, vitruviLayerSizeOverrides, (layerId, value) => availableLayers.has(layerId) && Number.isFinite(Number(value)));
+  vitruviLayerOpacityOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerOpacities, vitruviLayerOpacityOverrides, (layerId, value) => availableLayers.has(layerId) && Number.isFinite(Number(value)));
+  vitruviSelectedLayers = new Set([...vitruviSelectedLayers].filter((layerId) => availableLayers.has(layerId)));
+  if (!vitruviSelectedLayers.size) vitruviSelectedLayers = new Set(layerIds);
+  writeJsonStorage(STORAGE_KEYS.vitruviLayers, [...vitruviSelectedLayers]);
+  const layerCounts = valueCountMap(features, vitruviLayerId);
+  renderVitruviLayerList(elements.vitruviLayerFilter, layerIds, [...vitruviSelectedLayers], layerCounts);
+}
+
+async function ensureVitruviLoaded() {
+  if (!isSiteOwner()) return;
+  if (vitruviGeojson) return;
+  elements.vitruviStatus.textContent = "Loading...";
+  const response = await fetch("/api/vitruvi");
+  if (!response.ok) throw new Error(`Vitruvi layer failed: ${response.status}`);
+  vitruviGeojson = await response.json();
+  if (!Array.isArray(vitruviGeojson?.features)) {
+    vitruviGeojson = { type: "FeatureCollection", features: [] };
+  }
+  vitruviLoaded = true;
+  populateVitruviFilters();
+  elements.vitruviStatus.textContent = `Ready ${vitruviGeojson.features.length.toLocaleString()}`;
+}
+
+async function setVitruviVisible(visible) {
+  if (!isSiteOwner()) return;
+  if (!visible) {
+    renderVitruviLayer();
+    scheduleDashboardStateSave();
+    return;
+  }
+  await ensureVitruviLoaded();
+  renderVitruviLayer();
+  scheduleDashboardStateSave();
+}
+
 function filteredVetroGeojson() {
   if (!vetroGeojson) return null;
   const layerIds = [...vetroSelectedLayers];
@@ -2490,6 +4160,12 @@ function updateVetroRefreshUi(status) {
     const message = status?.message || "Idle";
     elements.vetroRefreshStatus.textContent = running ? `${message} (${percent}%)` : message;
   }
+  if (elements.vetroLoginLink) {
+    const loginUrl = typeof status?.vetro_login_url === "string" ? status.vetro_login_url : "";
+    const showLogin = Boolean(status?.auth_required && loginUrl);
+    elements.vetroLoginLink.hidden = !showLogin;
+    if (showLogin) elements.vetroLoginLink.href = loginUrl;
+  }
 }
 
 async function pollVetroRefresh() {
@@ -2524,16 +4200,56 @@ async function startVetroRefresh() {
   updateVetroRefreshUi({ running: true, message: "Starting VETRO refresh", percent: 3 });
   try {
     const response = await fetch("/api/vetro-refresh", { method: "POST" });
-    if (!response.ok && response.status !== 409) throw new Error(`VETRO refresh request failed: ${response.status}`);
+    const startStatus = await response.json().catch(() => ({}));
+    if (startStatus.auth_required && startStatus.vetro_login_url) {
+      updateVetroRefreshUi({ ...startStatus, running: false, success: false, percent: 100 });
+      auditEvent("vetro_login_required", { url: startStatus.vetro_login_url });
+      return;
+    }
+    if (!response.ok && response.status !== 409) throw new Error(startStatus.message || `VETRO refresh request failed: ${response.status}`);
     const status = await pollVetroRefresh();
     if (!status.success) throw new Error(status.message || "VETRO refresh failed");
     await reloadVetroAfterRefresh();
     updateVetroRefreshUi({ ...status, message: "VETRO refresh completed", percent: 100 });
+    auditEvent("vetro_refresh_completed", {});
   } catch (error) {
     updateVetroRefreshUi({ running: false, success: false, message: error.message || "VETRO refresh failed", percent: 100 });
+    auditEvent("vetro_refresh_failed", { message: error.message || "VETRO refresh failed" });
     console.error(error);
   } finally {
     if (elements.updateVetro) elements.updateVetro.disabled = false;
+  }
+}
+
+async function saveVetroCapture() {
+  if (!elements.vetroCaptureText || !elements.saveVetroCapture) return;
+  const content = elements.vetroCaptureText.value.trim();
+  if (!content) {
+    if (elements.vetroCaptureStatus) elements.vetroCaptureStatus.textContent = "Paste a HAR or copied cURL first.";
+    return;
+  }
+  elements.saveVetroCapture.disabled = true;
+  if (elements.vetroCaptureStatus) elements.vetroCaptureStatus.textContent = "Saving capture...";
+  try {
+    const response = await fetch("/api/vetro-capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.message || `VETRO capture failed: ${response.status}`);
+    if (elements.vetroCaptureStatus) {
+      const tiles = Number(payload.vetro_tile_count || payload.pbf_url_count || 0);
+      const layerCount = payload.layer_counts && typeof payload.layer_counts === "object" ? Object.keys(payload.layer_counts).length : 0;
+      const readiness = payload.ready_for_import ? "Ready to import." : (payload.capture_warning || "Not ready to import.");
+      elements.vetroCaptureStatus.textContent = `Capture saved. Found ${tiles} VETRO tile request${tiles === 1 ? "" : "s"}${layerCount ? ` across ${layerCount} layer${layerCount === 1 ? "" : "s"}` : ""}. ${readiness}`;
+    }
+    auditEvent("vetro_capture_saved_client", { pbf_url_count: payload.pbf_url_count || 0, vetro_tile_count: payload.vetro_tile_count || 0, ready_for_import: Boolean(payload.ready_for_import) });
+  } catch (error) {
+    if (elements.vetroCaptureStatus) elements.vetroCaptureStatus.textContent = error.message || "Capture save failed";
+    console.error(error);
+  } finally {
+    elements.saveVetroCapture.disabled = false;
   }
 }
 
@@ -2564,8 +4280,10 @@ async function refreshServerData() {
     }
     await loadTickets();
     showSavedToast("Refresh complete");
+    auditEvent("ticket_refresh_completed", {});
   } catch (error) {
     showSavedToast("Refresh failed");
+    auditEvent("ticket_refresh_failed", { message: error.message || "Refresh failed" });
     throw error;
   } finally {
     elements.refresh.disabled = false;
@@ -2659,6 +4377,7 @@ function ticketDescription(ticketNumber) {
 }
 
 function saveTicketWorkflowState() {
+  applyTicketListCheckpoint();
   ticketActions = normalizeTicketActions(ticketActions);
   ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(ticketActionUpdatedAt);
   ticketDescriptions = normalizeTicketDescriptions(ticketDescriptions);
@@ -2688,18 +4407,32 @@ function setTicketAction(ticketNumber, actionKey, selected) {
 }
 
 function setTicketActions(ticketNumber, actionKeys) {
+  if (!actionKeys?.length && protectedTicketNumbersFromCheckpoint().has(String(ticketNumber))) return;
   const next = [...new Set((actionKeys || []).map(String).filter((key) => actionByKey(key)))];
   if (next.length) ticketActions[ticketNumber] = next;
   else delete ticketActions[ticketNumber];
   stampTicketAction(ticketNumber);
   saveTicketWorkflowState();
+  auditEvent("ticket_actions_changed", { ticket: ticketNumber, actions: next });
 }
 
 function setAllTicketActions(ticketNumber, selected) {
+  if (!selected && protectedTicketNumbersFromCheckpoint().has(String(ticketNumber))) return;
   if (selected) ticketActions[ticketNumber] = TICKET_ACTIONS.map((action) => action.key);
   else delete ticketActions[ticketNumber];
   stampTicketAction(ticketNumber);
   saveTicketWorkflowState();
+  auditEvent("ticket_actions_all_changed", { ticket: ticketNumber, selected });
+}
+
+function bindTicketDescriptionControls(root) {
+  if (!root) return;
+  for (const input of root.querySelectorAll("[data-ticket-description]")) {
+    input.addEventListener("change", () => {
+      rememberUndoState();
+      setTicketDescription(input.dataset.ticketDescription, input.value);
+    });
+  }
 }
 
 function sheetActionSummaryHtml(ticketNumber) {
@@ -3059,7 +4792,8 @@ function exportSheetCsv() {
 function sheetExportRowStyle(ticket) {
   if (ticketIsTcwDmiWork(ticket)) return "background:#fff0e6;border-left:5px solid #ff6a00;";
   if (ticketIsEmergency(ticket)) return "background:#ffe5ea;border-left:4px solid #ff0033;";
-  if (ticketIsRemark(ticket)) return "background:#e8f3ff;border-left:4px solid #008cff;";
+  if (ticketIsRemark(ticket)) return "background:#f3e8ff;border-left:4px solid #a855f7;";
+  if (ticketIsRenewal(ticket)) return "background:#e5f7ff;border-left:4px solid #38bdf8;";
   return "";
 }
 
@@ -3579,18 +5313,22 @@ function scopedTickets() {
 }
 
 function visibleTickets() {
+  const protectedTickets = protectedTicketNumbersFromCheckpoint();
   return matchingTickets().filter(
     (ticket) => !archivedTickets.has(ticket.ticket_number)
       && !ticketIsActionHidden(ticket)
+      && !protectedTickets.has(ticket.ticket_number)
       && (elements.showHiddenToggle.checked || !hiddenTickets.has(ticket.ticket_number)),
   );
 }
 
 function matchingTickets() {
   const query = ticketSearch.trim().toLowerCase();
+  const protectedTickets = protectedTicketNumbersFromCheckpoint();
   return scopedTickets().filter((ticket) => {
     if (archivedTickets.has(ticket.ticket_number)) return false;
     if (ticketIsActionHidden(ticket)) return false;
+    if (protectedTickets.has(ticket.ticket_number)) return false;
     if (!countyFilterAll && !selectedCounties.has(ticket.county || "")) return false;
     if (query && !searchable(ticket).includes(query)) return false;
     return true;
@@ -3598,7 +5336,8 @@ function matchingTickets() {
 }
 
 function renderMetrics(list = []) {
-  const activeTickets = scopedTickets().filter((ticket) => !archivedTickets.has(ticket.ticket_number) && !ticketIsActionHidden(ticket));
+  const protectedTickets = protectedTicketNumbersFromCheckpoint();
+  const activeTickets = scopedTickets().filter((ticket) => !archivedTickets.has(ticket.ticket_number) && !ticketIsActionHidden(ticket) && !protectedTickets.has(ticket.ticket_number));
   const counties = new Set(activeTickets.map((ticket) => ticket.county).filter(Boolean));
   const activeCount = activeTickets.filter((ticket) => !hiddenTickets.has(ticket.ticket_number)).length;
   elements.totalCount.textContent = String(activeCount);
@@ -3607,6 +5346,7 @@ function renderMetrics(list = []) {
 }
 
 function saveHiddenTickets() {
+  applyTicketListCheckpoint();
   writeJsonStorage(STORAGE_KEYS.hiddenTickets, [...hiddenTickets]);
   scheduleDashboardStateSave();
   void saveDashboardState().catch((error) => {
@@ -3615,6 +5355,7 @@ function saveHiddenTickets() {
 }
 
 function saveArchivedTickets() {
+  applyTicketListCheckpoint();
   writeJsonStorage(STORAGE_KEYS.archivedTickets, [...archivedTickets]);
   scheduleDashboardStateSave();
   void saveDashboardState().catch((error) => {
@@ -3646,24 +5387,29 @@ function archiveIcon() {
 
 function toggleTicketHidden(ticketNumber) {
   rememberUndoState();
+  let hidden = false;
   if (hiddenTickets.has(ticketNumber)) {
     hiddenTickets.delete(ticketNumber);
   } else {
     hiddenTickets.add(ticketNumber);
+    hidden = true;
     if (selectedTicket?.ticket_number === ticketNumber && !elements.showHiddenToggle.checked) {
       selectedTicket = visibleTickets().find((ticket) => ticket.ticket_number !== ticketNumber) || null;
     }
   }
   saveHiddenTickets();
+  auditEvent("ticket_hidden_changed", { ticket: ticketNumber, hidden });
   render();
 }
 
 function toggleTicketArchived(ticketNumber) {
   rememberUndoState();
+  let archived = false;
   if (archivedTickets.has(ticketNumber)) {
     archivedTickets.delete(ticketNumber);
   } else {
     archivedTickets.add(ticketNumber);
+    archived = true;
     if (selectedTicket?.ticket_number === ticketNumber) {
       selectedTicket = null;
       pendingSelectedTicketNumber = "";
@@ -3671,6 +5417,7 @@ function toggleTicketArchived(ticketNumber) {
     }
   }
   saveArchivedTickets();
+  auditEvent("ticket_archived_changed", { ticket: ticketNumber, archived });
   render();
 }
 
@@ -3733,8 +5480,8 @@ function ticketIsEmergency(ticket) {
     .includes("EMERGENCY");
 }
 
-function ticketIsRemark(ticket) {
-  const text = [
+function ticketPriorityText(ticket) {
+  return [
     ticket.message_type,
     ticket.work_type,
     ticket.location_information,
@@ -3744,7 +5491,15 @@ function ticketIsRemark(ticket) {
     .filter(Boolean)
     .join(" ")
     .toUpperCase();
-  return text.includes("REMARK") || text.includes("RECALL");
+}
+
+function ticketIsRenewal(ticket) {
+  return ticketPriorityText(ticket).includes("RENEWAL");
+}
+
+function ticketIsRemark(ticket) {
+  const text = ticketPriorityText(ticket);
+  return text.includes("REMARK") || text.includes("RECALL") || text.includes("SECOND REQUEST");
 }
 
 function normalizedCompanyText(value) {
@@ -3835,7 +5590,8 @@ function priorityLegendItems() {
   const dateText = (date) => date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return [
     { className: "legend-emergency", label: "Emergency - immediate priority" },
-    { className: "legend-remark", label: "Remark/recall - due within 24 hours" },
+    { className: "legend-remark", label: "Recall / second request - due within 24 hours" },
+    { className: "legend-renewal", label: "Renewal request - excavator still working after 10 days" },
     { className: "legend-tcw", label: "TCW/DMI/Computer Works/Dirt Moves work" },
     { className: "legend-due-today", label: `Past due / due ${dateText(today)} at 8:00 AM` },
     { className: "legend-due-next", label: `Due next working day ${dateText(nextDay)} at 8:00 AM` },
@@ -3875,6 +5631,7 @@ function ticketPriorityClasses(ticket) {
   if (ticketIsTcwDmiWork(ticket)) classes.push("ticket-tcw-dmi-work");
   if (ticketIsEmergency(ticket)) classes.push("ticket-emergency-priority");
   if (ticketIsRemark(ticket)) classes.push("ticket-remark-priority");
+  if (ticketIsRenewal(ticket)) classes.push("ticket-renewal-priority");
   const dueStatus = ticketDueStatus(ticket);
   if (dueStatus) classes.push(`ticket-${dueStatus}`);
   return classes.join(" ");
@@ -3883,12 +5640,13 @@ function ticketPriorityClasses(ticket) {
 function ticketVisualColors(ticket) {
   if (ticketIsTcwDmiWork(ticket)) return { stroke: "#ff6a00", fill: "#ff6a00", fillOpacity: 0.26 };
   if (ticketIsEmergency(ticket)) return { stroke: "#ff0033", fill: "#ff0033", fillOpacity: 0.28 };
-  if (ticketIsRemark(ticket)) return { stroke: "#008cff", fill: "#008cff", fillOpacity: 0.22 };
+  if (ticketIsRemark(ticket)) return { stroke: "#a855f7", fill: "#a855f7", fillOpacity: 0.24 };
+  if (ticketIsRenewal(ticket)) return { stroke: "#38bdf8", fill: "#38bdf8", fillOpacity: 0.22 };
   switch (ticketDueStatus(ticket)) {
     case "due-today":
       return { stroke: "#ffb3b3", fill: "#ffb3b3", fillOpacity: 0.34 };
     case "due-next":
-      return { stroke: "#c026ff", fill: "#c026ff", fillOpacity: 0.3 };
+      return { stroke: "#facc15", fill: "#facc15", fillOpacity: 0.3 };
     case "due-later":
       return { stroke: "#8df5a5", fill: "#8df5a5", fillOpacity: 0.28 };
     default:
@@ -3898,7 +5656,7 @@ function ticketVisualColors(ticket) {
 
 function ticketMapColors(ticket) {
   const colors = ticketVisualColors(ticket);
-  if (ticketHasActions(ticket.ticket_number) && !ticketIsTcwDmiWork(ticket) && !ticketIsEmergency(ticket) && !ticketIsRemark(ticket)) {
+  if (ticketHasActions(ticket.ticket_number) && !ticketIsTcwDmiWork(ticket) && !ticketIsEmergency(ticket) && !ticketIsRemark(ticket) && !ticketIsRenewal(ticket)) {
     return { stroke: "#ff2b2b", fill: "#ff2b2b", fillOpacity: 0.3 };
   }
   return colors;
@@ -3911,6 +5669,34 @@ function sortedTickets(list) {
     if (aDate !== bDate) return aDate.localeCompare(bDate);
     return (a.work_begin_time || "").localeCompare(b.work_begin_time || "") || a.ticket_number.localeCompare(b.ticket_number);
   });
+}
+
+function ticketDateTimeValue(ticket) {
+  const dueDate = parseTicketDueDate(ticket);
+  if (!dueDate) return Infinity;
+  const time = String(ticket.work_begin_time || "").trim();
+  const timeMatch = time.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+  if (timeMatch) {
+    let hours = Number(timeMatch[1]);
+    const minutes = Number(timeMatch[2]);
+    const seconds = Number(timeMatch[3] || 0);
+    const meridiem = String(timeMatch[4] || "").toUpperCase();
+    if (meridiem === "PM" && hours < 12) hours += 12;
+    if (meridiem === "AM" && hours === 12) hours = 0;
+    dueDate.setHours(hours, minutes, seconds, 0);
+  }
+  return dueDate.getTime();
+}
+
+function compareTicketsByDate(a, b, direction = "asc") {
+  const aValue = ticketDateTimeValue(a);
+  const bValue = ticketDateTimeValue(b);
+  if (aValue !== bValue) {
+    const safeA = Number.isFinite(aValue) ? aValue : Number.MAX_SAFE_INTEGER;
+    const safeB = Number.isFinite(bValue) ? bValue : Number.MAX_SAFE_INTEGER;
+    return (safeA - safeB) * (direction === "desc" ? -1 : 1);
+  }
+  return String(a.ticket_number || "").localeCompare(String(b.ticket_number || ""), undefined, { numeric: true });
 }
 
 function setTicketsHidden(ticketNumbers, hidden) {
@@ -3933,6 +5719,7 @@ function setTicketsHidden(ticketNumbers, hidden) {
     selectedTicket = visibleTickets().find((ticket) => !hiddenTickets.has(ticket.ticket_number)) || null;
   }
   saveHiddenTickets();
+  auditEvent("ticket_group_hidden_changed", { count: numbers.length, hidden });
   render();
 }
 
@@ -4051,6 +5838,7 @@ function renderTicketGroup(summaryLabel, items = [], extraClass = "", open = tru
 }
 
 function renderList(list = []) {
+  const protectedTickets = protectedTicketNumbersFromCheckpoint();
   if (!list.length) {
     elements.ticketList.innerHTML = '<div class="detail-content">No matching tickets.</div>';
     return;
@@ -4059,7 +5847,7 @@ function renderList(list = []) {
   const emergencies = [];
   const dateGroups = new Map();
   const activeList = list.filter((ticket) => !archivedTickets.has(ticket.ticket_number));
-  const archivedList = sortedTickets(scopedTickets().filter((ticket) => archivedTickets.has(ticket.ticket_number)));
+  const archivedList = sortedTickets(scopedTickets().filter((ticket) => archivedTickets.has(ticket.ticket_number) && !protectedTickets.has(ticket.ticket_number)));
   for (const ticket of sortedTickets(activeList)) {
     if (ticketIsEmergency(ticket)) {
       emergencies.push(ticket);
@@ -4073,13 +5861,15 @@ function renderList(list = []) {
   const sections = [];
   if (emergencies.length) {
     const visibleEmergencies = elements.showHiddenToggle.checked
-      ? emergencies
-      : emergencies.filter((ticket) => !hiddenTickets.has(ticket.ticket_number));
+      ? emergencies.filter((ticket) => !protectedTickets.has(ticket.ticket_number))
+      : emergencies.filter((ticket) => !hiddenTickets.has(ticket.ticket_number) && !protectedTickets.has(ticket.ticket_number));
     sections.push(renderTicketGroup("Priority emergencies", emergencies, "ticket-emergency-group", true, visibleEmergencies));
   }
   sections.push(
     ...[...dateGroups.entries()].map(([dueDate, items]) => {
-      const visibleItems = elements.showHiddenToggle.checked ? items : items.filter((ticket) => !hiddenTickets.has(ticket.ticket_number));
+      const visibleItems = elements.showHiddenToggle.checked
+        ? items.filter((ticket) => !protectedTickets.has(ticket.ticket_number))
+        : items.filter((ticket) => !hiddenTickets.has(ticket.ticket_number) && !protectedTickets.has(ticket.ticket_number));
       return renderTicketGroup(dueDate, items, "ticket-date-folder", true, visibleItems);
     }),
   );
@@ -4177,31 +5967,77 @@ function focusTicketOnMap(ticket) {
   }
 }
 
+function ticketPolygonBounds(ticket) {
+  if (!ticket?.polygon || typeof L === "undefined") return null;
+  const layer = L.geoJSON(ticket.polygon);
+  const bounds = layer.getBounds();
+  return bounds?.isValid?.() ? bounds : null;
+}
+
+function paddedBoundsByPixels(bounds, mapInstance, pixels = SELECTED_POLYGON_NEARBY_PIXELS) {
+  if (!bounds?.isValid?.() || !mapInstance) return null;
+  const zoom = mapInstance.getZoom();
+  const southWest = mapInstance.project(bounds.getSouthWest(), zoom).subtract([pixels, pixels]);
+  const northEast = mapInstance.project(bounds.getNorthEast(), zoom).add([pixels, pixels]);
+  const padded = L.latLngBounds(
+    mapInstance.unproject(southWest, zoom),
+    mapInstance.unproject(northEast, zoom),
+  );
+  return padded?.isValid?.() ? padded : bounds;
+}
+
+function selectedPolygonFocusBounds(mapInstance) {
+  if (!selectedTicket?.polygon) return null;
+  const bounds = ticketPolygonBounds(selectedTicket);
+  return paddedBoundsByPixels(bounds, mapInstance);
+}
+
+function shouldDimNearSelectedPolygon(ticket, focusBounds) {
+  if (!focusBounds || !ticket?.polygon || selectedTicket?.ticket_number === ticket.ticket_number) return false;
+  const bounds = ticketPolygonBounds(ticket);
+  return Boolean(bounds?.isValid?.() && focusBounds.intersects(bounds));
+}
+
 function renderMap(list = []) {
   markers.clearLayers();
   polygons.clearLayers();
   const bounds = [];
+  const focusedPolygonBounds = selectedPolygonFocusBounds(map);
+  const measuring = Boolean(measureTool?.active);
 
   for (const ticket of list) {
     if (ticket.polygon) {
       const dueColors = ticketMapColors(ticket);
       const selected = selectedTicket?.ticket_number === ticket.ticket_number;
+      const dimmedBySelection = shouldDimNearSelectedPolygon(ticket, focusedPolygonBounds);
+      const fillOpacity = dimmedBySelection
+        ? NEARBY_POLYGON_DIM_OPACITY
+        : (selected ? Math.max(0.48, dueColors.fillOpacity) : dueColors.fillOpacity);
+      const strokeOpacity = dimmedBySelection ? NEARBY_POLYGON_DIM_STROKE_OPACITY : 1;
       const polygon = L.geoJSON(ticket.polygon, {
         style: {
           color: dueColors.stroke,
           fillColor: dueColors.fill,
-          fillOpacity: (selected ? Math.max(0.48, dueColors.fillOpacity) : dueColors.fillOpacity) * ticketOpacity,
-          opacity: ticketOpacity,
-          weight: selected ? 6 : 4,
+          fillOpacity: (measuring ? Math.min(fillOpacity, 0.08) : fillOpacity) * ticketOpacity,
+          opacity: (measuring ? 0.28 : strokeOpacity) * ticketOpacity,
+          weight: measuring ? 2 : (selected ? 6 : 4),
         },
       });
       polygon.bindPopup(`<strong>${escapeHtml(ticket.ticket_number)}</strong><br>${escapeHtml(ticketAddress(ticket) || "GeoCall polygon")}`);
       polygon.on("click", (event) => {
         if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+        if (measureTool?.active) {
+          measureTool.addPoint(event.latlng);
+          return;
+        }
         selectTicket(ticket.ticket_number, { focus: true });
       });
       polygon.on("dblclick", (event) => {
         if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+        if (measureTool?.active) {
+          measureTool.addPoint(event.latlng);
+          return;
+        }
         selectTicket(ticket.ticket_number, { focus: true });
       });
       polygon.addTo(polygons);
@@ -4216,12 +6052,14 @@ function renderMap(list = []) {
 
     if (typeof ticket.latitude !== "number" || typeof ticket.longitude !== "number") continue;
     const pointColors = ticketMapColors(ticket);
+    const markerDimmedBySelection = shouldDimNearSelectedPolygon(ticket, focusedPolygonBounds);
+    const markerOpacity = markerDimmedBySelection ? NEARBY_POLYGON_DIM_STROKE_OPACITY : 1;
     const marker = L.circleMarker([ticket.latitude, ticket.longitude], {
       radius: selectedTicket?.ticket_number === ticket.ticket_number ? 10 : 7,
       color: pointColors.stroke,
       fillColor: pointColors.fill,
-      opacity: ticketOpacity,
-      fillOpacity: 0.88 * ticketOpacity,
+      opacity: markerOpacity * ticketOpacity,
+      fillOpacity: (markerDimmedBySelection ? NEARBY_POLYGON_DIM_OPACITY : 0.88) * ticketOpacity,
       weight: selectedTicket?.ticket_number === ticket.ticket_number ? 5 : 4,
     });
     marker.bindPopup(`<strong>${escapeHtml(ticket.ticket_number)}</strong><br>${escapeHtml(ticketAddress(ticket))}`);
@@ -4241,6 +6079,50 @@ function renderMap(list = []) {
     initialTicketBoundsApplied = true;
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
   }
+}
+
+function ticketPopupContent(ticket) {
+  const address = ticketAddress(ticket) || "GeoCall polygon";
+  const work = workDescription(ticket);
+  return `
+    <strong>${escapeHtml(ticket.ticket_number)}</strong><br>
+    ${escapeHtml(address)}
+    ${work ? `<br><small>${escapeHtml(work)}</small>` : ""}
+  `;
+}
+
+function ticketPopupLatLng(ticket) {
+  if (!ticket) return null;
+  if (ticket.polygon) {
+    const layer = L.geoJSON(ticket.polygon);
+    const bounds = layer.getBounds();
+    if (bounds.isValid()) return bounds.getCenter();
+  }
+  if (typeof ticket.latitude === "number" && typeof ticket.longitude === "number") {
+    return L.latLng(ticket.latitude, ticket.longitude);
+  }
+  return null;
+}
+
+function openTicketMapPopup(ticket) {
+  if (!map || !ticket) return;
+  const latlng = ticketPopupLatLng(ticket);
+  if (!latlng) return;
+  L.popup({ closeButton: true, autoClose: true, maxWidth: 360 })
+    .setLatLng(latlng)
+    .setContent(ticketPopupContent(ticket))
+    .openOn(map);
+}
+
+function syncSelectedTicketCard(previousTicketNumber = "") {
+  if (!elements.ticketList) return;
+  if (previousTicketNumber) {
+    const previous = elements.ticketList.querySelector(`[data-ticket="${CSS.escape(previousTicketNumber)}"]`);
+    if (previous) previous.classList.remove("active");
+  }
+  if (!selectedTicket) return;
+  const current = elements.ticketList.querySelector(`[data-ticket="${CSS.escape(selectedTicket.ticket_number)}"]`);
+  if (current) current.classList.add("active");
 }
 
 function field(label, value) {
@@ -4455,23 +6337,114 @@ function mobileAttachmentListHtml(ticketNumber) {
 function mobileTicketCardHtml(ticket) {
   const selected = selectedTicket?.ticket_number === ticket.ticket_number;
   const priorityClasses = ticketPriorityClasses(ticket);
+  const dueStatus = ticketDueStatus(ticket);
+  const actionLabels = ticketActionLabels(ticket.ticket_number);
+  const completed = ticketIsActionHidden(ticket);
   return `
     <button class="mobile-ticket-card ${priorityClasses} ${selected ? "active" : ""}" type="button" data-mobile-ticket="${escapeHtml(ticket.ticket_number)}">
-      <span class="mobile-ticket-number">${escapeHtml(ticket.ticket_number)}</span>
-      <span>${escapeHtml(ticket.county || "UNKNOWN")} · ${escapeHtml(ticket.work_begin_date || "")}</span>
+      <span class="mobile-card-topline">
+        <span class="mobile-ticket-number">${escapeHtml(ticket.ticket_number)}</span>
+        <span class="mobile-status-pill mobile-status-${escapeHtml(completed ? "done" : dueStatus)}">${escapeHtml(completed ? "Done" : dueStatusLabel(dueStatus))}</span>
+      </span>
+      <span class="mobile-card-meta">${escapeHtml(ticket.county || "UNKNOWN")} · ${escapeHtml(ticket.work_begin_date || "")} ${escapeHtml(ticket.work_begin_time || "")}</span>
       <strong>${escapeHtml(workDescription(ticket))}</strong>
       <small>${escapeHtml(ticketAddress(ticket))}</small>
+      ${actionLabels.length ? `<span class="mobile-action-pills">${actionLabels.map((label) => `<i>${escapeHtml(label)}</i>`).join("")}</span>` : ""}
     </button>
   `;
 }
 
+function mobileOpenTickets() {
+  return visibleTickets()
+    .filter((ticket) => !ticketIsActionHidden(ticket))
+    .sort((a, b) => compareTicketsByDate(a, b, "asc"));
+}
+
+function mobileDoneTickets() {
+  return tickets
+    .filter((ticket) => ticketIsActionHidden(ticket))
+    .sort((a, b) => compareTicketsByDate(a, b, "desc"));
+}
+
+function mobileDigTickets() {
+  return sheetTickets();
+}
+
+function mobilePanelTickets() {
+  if (mobilePanel === "map") return visibleTickets();
+  if (mobilePanel === "dig") return mobileDigTickets();
+  if (mobilePanel === "done") return mobileDoneTickets();
+  return mobileOpenTickets();
+}
+
+function setMobilePanel(panel) {
+  const previousPanel = mobilePanel;
+  mobilePanel = ["map", "done", "dig"].includes(panel) ? panel : "tickets";
+  if (mobilePanel !== "map") {
+    document.body.classList.remove("mobile-map-ticket-open");
+  } else if (previousPanel !== "map") {
+    document.body.classList.remove("mobile-detail-open", "mobile-map-ticket-open");
+    mobileMapHasFit = false;
+  }
+  localStorage.setItem("mobilePanel", mobilePanel);
+  renderMobileView();
+}
+
+function dueStatusLabel(status) {
+  if (status === "due-today") return "Today";
+  if (status === "due-next") return "Soon";
+  if (status === "due-later") return "Later";
+  return "Open";
+}
+
+function mobileTicketIndex(ticketNumber) {
+  return mobilePanelTickets().findIndex((ticket) => ticket.ticket_number === ticketNumber);
+}
+
+function selectMobileTicketByOffset(offset) {
+  const list = mobilePanelTickets();
+  if (!list.length) return;
+  const currentIndex = Math.max(0, mobileTicketIndex(selectedTicket?.ticket_number || ""));
+  const nextIndex = Math.max(0, Math.min(list.length - 1, currentIndex + offset));
+  selectedTicket = list[nextIndex];
+  pendingSelectedTicketNumber = selectedTicket?.ticket_number || "";
+  localStorage.setItem("selectedTicketNumber", pendingSelectedTicketNumber);
+  document.body.classList.add("mobile-detail-open");
+  renderMobileView();
+  scheduleDashboardStateSave();
+}
+
+function mobileDetailProgress(ticketNumber) {
+  const list = mobilePanelTickets();
+  const index = list.findIndex((ticket) => ticket.ticket_number === ticketNumber);
+  if (index < 0) return "";
+  return `${(index + 1).toLocaleString()} of ${list.length.toLocaleString()}`;
+}
+
 function renderMobileView() {
   if (!elements.mobileView || currentView !== "mobile") return;
-  const list = visibleTickets();
+  const openList = mobileOpenTickets();
+  const doneList = mobileDoneTickets();
+  const digList = mobileDigTickets();
+  const list = mobilePanelTickets();
+  const mapDetailOpen = mobilePanel === "map" && document.body.classList.contains("mobile-map-ticket-open") && selectedTicket;
+  document.body.classList.toggle("mobile-map-open", mobilePanel === "map");
   if (elements.mobileSummary) {
-    elements.mobileSummary.textContent = `${list.length.toLocaleString()} active ticket${list.length === 1 ? "" : "s"}`;
+    elements.mobileSummary.textContent = `${openList.length.toLocaleString()} open · ${doneList.length.toLocaleString()} done · ${digList.length.toLocaleString()} dig`;
   }
-  if (!selectedTicket || !list.some((ticket) => ticket.ticket_number === selectedTicket.ticket_number)) {
+  if (elements.mobileOpenCount) elements.mobileOpenCount.textContent = openList.length.toLocaleString();
+  if (elements.mobileMapCount) elements.mobileMapCount.textContent = visibleTickets().length.toLocaleString();
+  if (elements.mobileDoneCount) elements.mobileDoneCount.textContent = doneList.length.toLocaleString();
+  if (elements.mobileDigCount) elements.mobileDigCount.textContent = digList.length.toLocaleString();
+  if (elements.mobilePanelTabs) {
+    for (const button of elements.mobilePanelTabs.querySelectorAll("[data-mobile-panel]")) {
+      button.classList.toggle("active", button.dataset.mobilePanel === mobilePanel);
+    }
+  }
+  if (elements.mobileTicketList) elements.mobileTicketList.hidden = mobilePanel === "map";
+  if (elements.mobileMapPanel) elements.mobileMapPanel.hidden = mobilePanel !== "map";
+  if (elements.mobileTicketDetail) elements.mobileTicketDetail.hidden = mobilePanel === "map" && !mapDetailOpen;
+  if (mobilePanel !== "map" && (!selectedTicket || !list.some((ticket) => ticket.ticket_number === selectedTicket.ticket_number))) {
     selectedTicket = list[0] || null;
   }
   if (elements.mobileTicketList) {
@@ -4480,7 +6453,149 @@ function renderMobileView() {
       : '<div class="mobile-empty">No tickets match the current filters.</div>';
   }
   renderMobileTicketDetail();
+  renderMobileMap(visibleTickets());
   bindMobileView();
+}
+
+function initMobileMap() {
+  if (mobileMap || !elements.mobileFieldMap || typeof L === "undefined") return;
+  mobileMap = L.map(elements.mobileFieldMap, { zoomControl: true, preferCanvas: true }).setView([33.23, -92.67], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors",
+    subdomains: "abc",
+    maxZoom: 20,
+  }).addTo(mobileMap);
+  mobileMapMarkers = L.layerGroup().addTo(mobileMap);
+  mobileMapPolygons = L.layerGroup().addTo(mobileMap);
+  mobileMapUserLayer = L.layerGroup().addTo(mobileMap);
+  mobileMap.on("click", () => {
+    if (mobileMeasureTool?.active) return;
+    clearSelectedTicket();
+    document.body.classList.remove("mobile-map-ticket-open");
+    renderMobileView();
+  });
+  mobileMeasureTool = createMeasureTool({
+    map: mobileMap,
+    toggleButton: elements.mobileMeasureToggle,
+    clearButton: elements.mobileMeasureClear,
+    unitSelect: elements.mobileMeasureUnit,
+    statusElement: elements.mobileMeasureStatus,
+    label: "Measure",
+    onChange: () => renderMobileMap(visibleTickets()),
+  });
+}
+
+function renderMobileMap(list = []) {
+  if (mobilePanel !== "map" || !elements.mobileFieldMap) return;
+  initMobileMap();
+  if (!mobileMap || !mobileMapMarkers) return;
+  mobileMapMarkers.clearLayers();
+  if (mobileMapPolygons) mobileMapPolygons.clearLayers();
+  if (mobileMapVetroLayer) {
+    mobileMap.removeLayer(mobileMapVetroLayer);
+    mobileMapVetroLayer = null;
+  }
+  const bounds = [];
+  const focusedPolygonBounds = selectedPolygonFocusBounds(mobileMap);
+  const measuring = Boolean(mobileMeasureTool?.active);
+  for (const ticket of list) {
+    if (ticket.polygon && mobileMapPolygons) {
+      const dueColors = ticketMapColors(ticket);
+      const selected = selectedTicket?.ticket_number === ticket.ticket_number;
+      const dimmedBySelection = shouldDimNearSelectedPolygon(ticket, focusedPolygonBounds);
+      const fillOpacity = dimmedBySelection
+        ? NEARBY_POLYGON_DIM_OPACITY
+        : (selected ? Math.max(0.46, dueColors.fillOpacity) : dueColors.fillOpacity);
+      const strokeOpacity = dimmedBySelection ? NEARBY_POLYGON_DIM_STROKE_OPACITY : 0.96;
+      const polygon = L.geoJSON(ticket.polygon, {
+        style: {
+          color: dueColors.stroke,
+          fillColor: dueColors.fill,
+          fillOpacity: measuring ? Math.min(fillOpacity, 0.08) : fillOpacity,
+          opacity: measuring ? 0.28 : strokeOpacity,
+          weight: measuring ? 2 : (selected ? 6 : 4),
+        },
+      });
+      polygon.bindPopup(`<strong>${escapeHtml(ticket.ticket_number)}</strong><br>${escapeHtml(ticketAddress(ticket) || "GeoCall polygon")}`);
+      polygon.on("click", (event) => {
+        if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+        if (mobileMeasureTool?.active) {
+          mobileMeasureTool.addPoint(event.latlng);
+          return;
+        }
+        selectedTicket = ticket;
+        pendingSelectedTicketNumber = ticket.ticket_number;
+        localStorage.setItem("selectedTicketNumber", pendingSelectedTicketNumber);
+        document.body.classList.add("mobile-map-ticket-open");
+        renderMobileView();
+        scheduleDashboardStateSave();
+      });
+      polygon.addTo(mobileMapPolygons);
+      polygon.eachLayer((layer) => {
+        if (!layer.getBounds) return;
+        const layerBounds = layer.getBounds();
+        bounds.push([layerBounds.getSouth(), layerBounds.getWest()]);
+        bounds.push([layerBounds.getNorth(), layerBounds.getEast()]);
+      });
+    }
+    if (!Number.isFinite(Number(ticket.latitude)) || !Number.isFinite(Number(ticket.longitude))) continue;
+    const colors = ticketMapColors(ticket);
+    const latlng = [Number(ticket.latitude), Number(ticket.longitude)];
+    const markerDimmedBySelection = shouldDimNearSelectedPolygon(ticket, focusedPolygonBounds);
+    const marker = L.circleMarker(latlng, {
+      radius: selectedTicket?.ticket_number === ticket.ticket_number ? 10 : 7,
+      color: colors.stroke,
+      fillColor: colors.fill,
+      opacity: markerDimmedBySelection ? NEARBY_POLYGON_DIM_STROKE_OPACITY : 0.95,
+      fillOpacity: markerDimmedBySelection ? NEARBY_POLYGON_DIM_OPACITY : 0.85,
+      weight: selectedTicket?.ticket_number === ticket.ticket_number ? 5 : 3,
+    }).addTo(mobileMapMarkers);
+    marker.bindPopup(`<strong>${escapeHtml(ticket.ticket_number)}</strong><br>${escapeHtml(ticketAddress(ticket))}`);
+    marker.on("click", (event) => {
+      if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+      selectedTicket = ticket;
+      pendingSelectedTicketNumber = ticket.ticket_number;
+      localStorage.setItem("selectedTicketNumber", pendingSelectedTicketNumber);
+      document.body.classList.add("mobile-map-ticket-open");
+      renderMobileView();
+      scheduleDashboardStateSave();
+    });
+    bounds.push(latlng);
+  }
+  if (!vetroGeojson) {
+    void ensureVetroLoaded().then(() => {
+      if (currentView === "mobile" && mobilePanel === "map") renderMobileMap(list);
+    }).catch((error) => console.warn(error));
+  } else if (vetroGeojson) {
+    const filtered = filteredVetroGeojson();
+    if (filtered) {
+      mobileMapVetroLayer = L.geoJSON(filtered, {
+        style: vetroStyle,
+        pointToLayer: vetroPointToLayer,
+        onEachFeature: bindVetroPopup,
+      }).addTo(mobileMap);
+      mobileMapVetroLayer.eachLayer((layer) => {
+        if (!layer.getBounds) return;
+        const layerBounds = layer.getBounds();
+        if (!layerBounds?.isValid?.()) return;
+        bounds.push([layerBounds.getSouth(), layerBounds.getWest()]);
+        bounds.push([layerBounds.getNorth(), layerBounds.getEast()]);
+      });
+    }
+  }
+  requestAnimationFrame(() => {
+    mobileMap.invalidateSize();
+    if (!mobileMapHasFit && bounds.length) {
+      mobileMap.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
+      mobileMapHasFit = true;
+    }
+  });
+}
+
+function fitMobileMapToTickets() {
+  mobileMapHasFit = false;
+  document.body.classList.remove("mobile-map-ticket-open");
+  renderMobileMap(visibleTickets());
 }
 
 function renderMobileTicketDetail() {
@@ -4493,6 +6608,11 @@ function renderMobileTicketDetail() {
   const mapsUrl = ticketGoogleMapsUrl(ticket, false);
   const navUrl = ticketGoogleMapsUrl(ticket, true);
   const embedUrl = ticketGoogleMapsEmbedUrl(ticket);
+  const phoneUrl = phoneHref(ticket.contact_phone || ticket.company_phone);
+  const progress = mobileDetailProgress(ticket.ticket_number);
+  const actionLabels = ticketActionLabels(ticket.ticket_number);
+  const completed = ticketIsActionHidden(ticket);
+  const backLabel = mobilePanel === "map" ? "Map" : "Tickets";
   if (!Array.isArray(attachmentCache[ticket.ticket_number])) {
     void loadTicketAttachments(ticket.ticket_number).then(() => {
       if (currentView === "mobile" && selectedTicket?.ticket_number === ticket.ticket_number) renderMobileTicketDetail();
@@ -4503,18 +6623,30 @@ function renderMobileTicketDetail() {
       <div class="mobile-detail-head">
         <div>
           <h3>${escapeHtml(ticket.ticket_number)}</h3>
-          <p>${escapeHtml(ticket.county)} · ${escapeHtml(ticket.message_type || ticket.work_type)}</p>
+          <p>${escapeHtml(ticket.county)} · ${escapeHtml(ticket.message_type || ticket.work_type)}${progress ? ` · ${escapeHtml(progress)}` : ""}</p>
         </div>
+        <button class="mobile-detail-back" type="button" data-mobile-back-to-list>${backLabel}</button>
         ${ticket.portal_html_available ? `<a href="/api/portal-html?ticket=${encodeURIComponent(ticket.ticket_number)}" target="_blank" rel="noreferrer">Ticket page</a>` : ""}
+      </div>
+
+      <div class="mobile-detail-summary">
+        <span>${escapeHtml(dueStatusLabel(ticketDueStatus(ticket)))}</span>
+        <span>${escapeHtml(ticket.county || "UNKNOWN")}</span>
+        ${ticketIsTcwDmiWork(ticket) ? "<span>Priority company</span>" : ""}
+        ${actionLabels.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}
       </div>
 
       <div class="mobile-map-preview">
         ${embedUrl ? `<iframe title="Ticket map" loading="lazy" src="${escapeHtml(embedUrl)}"></iframe>` : '<div class="mobile-empty">No map coordinates available</div>'}
       </div>
-      <div class="mobile-action-row">
+      <div class="mobile-action-row mobile-action-dock">
         ${navUrl ? `<a class="mobile-primary-action" href="${escapeHtml(navUrl)}" target="_blank" rel="noreferrer">Navigate</a>` : ""}
+        <button class="mobile-complete-action" type="button" data-mobile-complete-ticket="${escapeHtml(ticket.ticket_number)}">${completed ? "Completed" : "Complete ticket"}</button>
+        ${phoneUrl ? `<a class="mobile-secondary-action" href="${escapeHtml(phoneUrl)}">Call</a>` : ""}
         ${mapsUrl ? `<a class="mobile-secondary-action" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer">Open Google Maps</a>` : ""}
-        <button class="mobile-secondary-action" type="button" data-mobile-show-dashboard="${escapeHtml(ticket.ticket_number)}">Show on dashboard</button>
+        <button class="mobile-secondary-action" type="button" data-mobile-copy-ticket="${escapeHtml(ticket.ticket_number)}">Copy #</button>
+        <button class="mobile-secondary-action" type="button" data-mobile-prev-ticket>Prev</button>
+        <button class="mobile-secondary-action" type="button" data-mobile-next-ticket>Next</button>
       </div>
 
       <section>
@@ -4540,7 +6672,7 @@ function renderMobileTicketDetail() {
 
       <section>
         <h4>Actions</h4>
-        ${actionControlHtml(ticket.ticket_number, true)}
+        ${actionControlHtml(ticket.ticket_number, true, { deferred: true })}
         <label class="mobile-note">
           Note / description
           <textarea data-ticket-description="${escapeHtml(ticket.ticket_number)}" rows="3" placeholder="Add locator notes">${escapeHtml(ticketDescription(ticket.ticket_number))}</textarea>
@@ -4570,6 +6702,10 @@ function bindMobileView() {
       selectedTicket = tickets.find((ticket) => ticket.ticket_number === button.dataset.mobileTicket) || null;
       pendingSelectedTicketNumber = selectedTicket?.ticket_number || "";
       localStorage.setItem("selectedTicketNumber", pendingSelectedTicketNumber);
+      if (mobilePanel === "map") {
+        document.body.classList.add("mobile-map-ticket-open");
+      }
+      document.body.classList.add("mobile-detail-open");
       renderMobileView();
       scheduleDashboardStateSave();
     });
@@ -4578,6 +6714,17 @@ function bindMobileView() {
 
 function bindMobileDetailControls() {
   if (!elements.mobileTicketDetail) return;
+  const backButton = elements.mobileTicketDetail.querySelector("[data-mobile-back-to-list]");
+  if (backButton) {
+    backButton.addEventListener("click", () => {
+      if (mobilePanel === "map") {
+        document.body.classList.remove("mobile-map-ticket-open");
+      } else {
+        document.body.classList.remove("mobile-detail-open");
+      }
+      renderMobileView();
+    });
+  }
   const dashboardButton = elements.mobileTicketDetail.querySelector("[data-mobile-show-dashboard]");
   if (dashboardButton) {
     dashboardButton.addEventListener("click", () => {
@@ -4586,6 +6733,32 @@ function bindMobileDetailControls() {
       selectTicket(ticketNumber, { focus: true });
     });
   }
+  const copyButton = elements.mobileTicketDetail.querySelector("[data-mobile-copy-ticket]");
+  if (copyButton) {
+    copyButton.addEventListener("click", async () => {
+      const ticketNumber = copyButton.dataset.mobileCopyTicket || "";
+      try {
+        await navigator.clipboard.writeText(ticketNumber);
+        showSavedToast(`Copied ${ticketNumber}`);
+      } catch (error) {
+        window.prompt("Copy ticket number", ticketNumber);
+      }
+    });
+  }
+  const completeButton = elements.mobileTicketDetail.querySelector("[data-mobile-complete-ticket]");
+  if (completeButton) {
+    completeButton.addEventListener("click", () => {
+      const ticketNumber = completeButton.dataset.mobileCompleteTicket;
+      setTicketActions(ticketNumber, ["located"]);
+      showSavedToast(`${ticketNumber} completed`);
+      document.body.classList.remove("mobile-detail-open");
+      renderMobileView();
+    });
+  }
+  const prevButton = elements.mobileTicketDetail.querySelector("[data-mobile-prev-ticket]");
+  if (prevButton) prevButton.addEventListener("click", () => selectMobileTicketByOffset(-1));
+  const nextButton = elements.mobileTicketDetail.querySelector("[data-mobile-next-ticket]");
+  if (nextButton) nextButton.addEventListener("click", () => selectMobileTicketByOffset(1));
   for (const form of elements.mobileTicketDetail.querySelectorAll("[data-mobile-upload]")) {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -4613,12 +6786,144 @@ function bindMobileDetailControls() {
   }
 }
 
+function liveTickets() {
+  return visibleTickets()
+    .filter((ticket) => !ticketHasActions(ticket.ticket_number))
+    .sort((a, b) => compareTicketsByDate(a, b, "asc"));
+}
+
+function liveTicketRowHtml(ticket, index, count) {
+  const mapsUrl = ticketGoogleMapsUrl(ticket, false);
+  const due = ticketDueText(ticket) || "No due date";
+  const selected = selectedTicket?.ticket_number === ticket.ticket_number;
+  return `
+    <button class="live-ticket-row ${ticketPriorityClasses(ticket)} ${selected ? "active" : ""}" type="button" data-live-ticket="${escapeHtml(ticket.ticket_number)}">
+      <span class="live-ticket-row-head">
+        <strong>${escapeHtml(ticket.ticket_number)}</strong>
+        <span class="live-ticket-status">${(index + 1).toLocaleString()} of ${count.toLocaleString()}</span>
+      </span>
+      <span class="live-ticket-meta">
+        <span>${escapeHtml(due)}</span>
+        <span>${escapeHtml(ticket.county || "UNKNOWN")}</span>
+        <span>${escapeHtml(ticket.message_type || ticket.work_type || "Ticket")}</span>
+        ${ticket.polygon ? "<span>Polygon</span>" : ""}
+      </span>
+      <p>${escapeHtml(ticketAddress(ticket) || "No address listed")}</p>
+      <p>${escapeHtml(ticket.contractor || ticket.done_for || ticket.caller || "No contractor listed")}</p>
+      <span class="live-ticket-actions">
+        ${ticket.portal_html_available ? `<span class="live-ticket-status">Ticket page ready</span>` : ""}
+        ${mapsUrl ? `<span class="live-ticket-status">Map link ready</span>` : ""}
+      </span>
+    </button>
+  `;
+}
+
+function renderLiveTicketDetail() {
+  if (!elements.liveTicketDetail) return;
+  const list = liveTickets();
+  if (!selectedTicket || !list.some((ticket) => ticket.ticket_number === selectedTicket.ticket_number)) {
+    selectedTicket = list[0] || null;
+  }
+  if (!selectedTicket) {
+    elements.liveTicketDetail.innerHTML = '<div class="live-ticket-empty">No live tickets need action right now.</div>';
+    return;
+  }
+  const ticket = selectedTicket;
+  const mapsUrl = ticketGoogleMapsUrl(ticket, false);
+  const navUrl = ticketGoogleMapsUrl(ticket, true);
+  elements.liveTicketDetail.innerHTML = `
+    <div class="live-ticket-detail-card ${ticketPriorityClasses(ticket)}">
+      <div>
+        <h3>${escapeHtml(ticket.ticket_number)}</h3>
+        <div class="live-ticket-meta">
+          <span>${escapeHtml(ticketDueText(ticket) || "No due date")}</span>
+          <span>${escapeHtml(ticket.county || "UNKNOWN")}</span>
+          <span>${escapeHtml(ticket.message_type || ticket.work_type || "Ticket")}</span>
+        </div>
+      </div>
+      <div class="live-ticket-actions">
+        <button type="button" data-live-show-dashboard="${escapeHtml(ticket.ticket_number)}">Open on dashboard</button>
+        ${navUrl ? `<a class="mobile-secondary-action" href="${escapeHtml(navUrl)}" target="_blank" rel="noreferrer">Navigate</a>` : ""}
+        ${mapsUrl ? `<a class="mobile-secondary-action" href="${escapeHtml(mapsUrl)}" target="_blank" rel="noreferrer">Open Google Maps</a>` : ""}
+        ${ticket.portal_html_available ? `<a class="mobile-secondary-action" href="/api/portal-html?ticket=${encodeURIComponent(ticket.ticket_number)}" target="_blank" rel="noreferrer">Ticket page</a>` : ""}
+      </div>
+      <section>
+        <h4>Actions</h4>
+        ${actionControlHtml(ticket.ticket_number, false, { deferred: true })}
+      </section>
+      <section>
+        <h4>Work Description</h4>
+        <div class="description-box">${escapeHtml(workDescription(ticket))}</div>
+      </section>
+      <section class="mobile-fields">
+        ${htmlField("Address", mapLinkHtml(ticketAddress(ticket), ticket))}
+        ${field("Intersection", ticket.nearest_intersection)}
+        ${htmlField("Coordinates", coordinateLinkHtml(ticket))}
+        ${field("Contractor", ticket.contractor)}
+        ${field("Contact", ticket.contact)}
+        ${htmlField("Contact phone", contactLinkHtml(ticket.contact_phone || ticket.company_phone))}
+        ${htmlField("Email", emailLinkHtml(ticket.contact_email))}
+        ${field("Done For", ticket.done_for)}
+        ${field("Prepared", `${ticket.prepared_date || ""} ${ticket.prepared_time || ""}`.trim())}
+        ${field("Work Begins", `${ticket.work_begin_date || ""} ${ticket.work_begin_time || ""}`.trim())}
+        ${field("Extent", ticket.extent)}
+        ${field("Work Type", ticket.work_type)}
+        ${field("Directional Boring", ticket.directional_boring)}
+        ${field("White Paint", ticket.white_paint)}
+      </section>
+      <label class="mobile-note">
+        Note / description
+        <textarea data-ticket-description="${escapeHtml(ticket.ticket_number)}" rows="3" placeholder="Add locator notes">${escapeHtml(ticketDescription(ticket.ticket_number))}</textarea>
+      </label>
+      <details class="mobile-raw-ticket">
+        <summary>Raw ticket text</summary>
+        <div class="raw">${linkifyContactText(ticket.raw_text)}</div>
+      </details>
+    </div>
+  `;
+  bindTicketActionControls(elements.liveTicketDetail);
+  bindTicketDescriptionControls(elements.liveTicketDetail);
+  const dashboardButton = elements.liveTicketDetail.querySelector("[data-live-show-dashboard]");
+  if (dashboardButton) {
+    dashboardButton.addEventListener("click", () => {
+      setCurrentView("dashboard");
+      selectTicket(dashboardButton.dataset.liveShowDashboard, { focus: true });
+    });
+  }
+}
+
+function renderLiveTicketsView() {
+  if (!elements.liveTicketsView || currentView !== "live-tickets") return;
+  const list = liveTickets();
+  if (elements.liveTicketsSummary) {
+    const filtered = ticketSearch.trim() ? " matching current search" : "";
+    elements.liveTicketsSummary.textContent = `${list.length.toLocaleString()} live ticket${list.length === 1 ? "" : "s"}${filtered}, sorted soonest due first.`;
+  }
+  if (elements.liveTicketsSearch) elements.liveTicketsSearch.value = ticketSearch;
+  if (elements.liveTicketsList) {
+    elements.liveTicketsList.innerHTML = list.length
+      ? list.map((ticket, index) => liveTicketRowHtml(ticket, index, list.length)).join("")
+      : '<div class="live-ticket-empty">No live tickets need action with the current dashboard filters.</div>';
+    for (const button of elements.liveTicketsList.querySelectorAll("[data-live-ticket]")) {
+      button.addEventListener("click", () => {
+        selectedTicket = tickets.find((ticket) => ticket.ticket_number === button.dataset.liveTicket) || null;
+        pendingSelectedTicketNumber = selectedTicket?.ticket_number || "";
+        localStorage.setItem("selectedTicketNumber", pendingSelectedTicketNumber);
+        renderLiveTicketsView();
+        scheduleDashboardStateSave();
+      });
+    }
+  }
+  renderLiveTicketDetail();
+}
+
 function renderDetail() {
   if (!selectedTicket) {
     elements.detail.hidden = true;
     elements.detail.classList.remove(
       "ticket-emergency-priority",
       "ticket-remark-priority",
+      "ticket-renewal-priority",
       "ticket-tcw-dmi-work",
       "ticket-due-today",
       "ticket-due-next",
@@ -4634,6 +6939,7 @@ function renderDetail() {
   elements.detail.hidden = false;
   elements.detail.classList.toggle("ticket-emergency-priority", ticketIsEmergency(ticket));
   elements.detail.classList.toggle("ticket-remark-priority", ticketIsRemark(ticket));
+  elements.detail.classList.toggle("ticket-renewal-priority", ticketIsRenewal(ticket));
   elements.detail.classList.toggle("ticket-tcw-dmi-work", ticketIsTcwDmiWork(ticket));
   elements.detail.classList.toggle("ticket-due-today", ticketDueStatus(ticket) === "due-today");
   elements.detail.classList.toggle("ticket-due-next", ticketDueStatus(ticket) === "due-next");
@@ -4684,15 +6990,19 @@ function renderDetail() {
 }
 
 function selectTicket(ticketNumber, options = {}) {
+  const previousTicketNumber = selectedTicket?.ticket_number || "";
   selectedTicket = tickets.find((ticket) => ticket.ticket_number === ticketNumber) || null;
   pendingSelectedTicketNumber = selectedTicket?.ticket_number || "";
   localStorage.setItem("selectedTicketNumber", pendingSelectedTicketNumber);
   const list = visibleTickets();
-  renderList(list);
+  syncSelectedTicketCard(previousTicketNumber);
   renderMap(list);
   renderDetail();
   if (options.focus) {
     focusTicketOnMap(selectedTicket);
+  }
+  if (selectedTicket && options.popup !== false) {
+    window.setTimeout(() => openTicketMapPopup(selectedTicket), options.focus ? 220 : 0);
   }
   scheduleDashboardStateSave();
 }
@@ -4724,6 +7034,7 @@ function render() {
   renderMap(list);
   renderDetail();
   if (currentView === "sheet") renderSheetView();
+  if (currentView === "live-tickets") renderLiveTicketsView();
   if (currentView === "mobile") renderMobileView();
   restoreTicketListScroll();
   scheduleDashboardStateSave();
@@ -4781,11 +7092,31 @@ if (elements.sheetSearch) {
     updateTicketSearch(elements.sheetSearch.value, { renderSheet: true });
   });
 }
+if (elements.liveTicketsSearch) {
+  elements.liveTicketsSearch.addEventListener("input", () => {
+    updateTicketSearch(elements.liveTicketsSearch.value);
+    renderLiveTicketsView();
+  });
+}
 elements.undoAction.addEventListener("click", undoLastChange);
 elements.redoAction.addEventListener("click", redoLastChange);
 elements.showSheetView.addEventListener("click", () => setCurrentView("sheet"));
+if (elements.showLiveTicketsView) elements.showLiveTicketsView.addEventListener("click", () => setCurrentView("live-tickets"));
 if (elements.showMobileView) elements.showMobileView.addEventListener("click", () => setCurrentView("mobile"));
 elements.showDashboardView.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.showMobileAdminView) elements.showMobileAdminView.addEventListener("click", () => setCurrentView("mobile-admin"));
+if (elements.showActivityView) elements.showActivityView.addEventListener("click", () => setCurrentView("activity"));
+if (elements.refreshActivity) elements.refreshActivity.addEventListener("click", () => {
+  void loadActivity().catch((error) => {
+    if (elements.activityList) elements.activityList.innerHTML = `<div class="detail-content">${escapeHtml(error.message)}</div>`;
+    console.error(error);
+  });
+});
+if (elements.activityBackToDashboard) elements.activityBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.mobileAdminBackToDashboard) elements.mobileAdminBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.publishMobileConfig) elements.publishMobileConfig.addEventListener("click", publishMobileConfig);
+if (elements.copyMobileAppLink) elements.copyMobileAppLink.addEventListener("click", () => copyText(mobileAppUrl(), "Mobile app link copied"));
+if (elements.employeeInviteForm) elements.employeeInviteForm.addEventListener("submit", createEmployeeInvite);
 if (elements.showEmployeeView) elements.showEmployeeView.addEventListener("click", () => setProfileMode("employee"));
 if (elements.showAdminView) elements.showAdminView.addEventListener("click", () => setProfileMode("admin"));
 if (elements.showSettingsMenu) {
@@ -4805,14 +7136,36 @@ if (elements.settingsFlyout) {
 }
 if (elements.refreshOneDriveStatus) elements.refreshOneDriveStatus.addEventListener("click", () => void refreshOneDriveStatus());
 if (elements.connectOneDrive) elements.connectOneDrive.addEventListener("click", () => void connectOneDrive());
+if (elements.deployAppUpdate) elements.deployAppUpdate.addEventListener("click", () => void deployAppUpdate());
 elements.sheetBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.liveTicketsBackToDashboard) elements.liveTicketsBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.exportSheetPdf) elements.exportSheetPdf.addEventListener("click", exportSheetPdf);
 if (elements.exportSheetExcel) elements.exportSheetExcel.addEventListener("click", exportSheetExcel);
 if (elements.exportSheetCsv) elements.exportSheetCsv.addEventListener("click", exportSheetCsv);
-if (elements.mobileBackToDashboard) elements.mobileBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.mobileSearch) {
   elements.mobileSearch.addEventListener("input", () => {
     updateTicketSearch(elements.mobileSearch.value);
+  });
+}
+if (elements.mobilePanelTabs) {
+  for (const button of elements.mobilePanelTabs.querySelectorAll("[data-mobile-panel]")) {
+    button.addEventListener("click", () => setMobilePanel(button.dataset.mobilePanel));
+  }
+}
+if (elements.locateMe) elements.locateMe.addEventListener("click", requestUserLocation);
+if (elements.mobileLocateMe) elements.mobileLocateMe.addEventListener("click", toggleLiveLocation);
+if (elements.mobileFollowLocation) elements.mobileFollowLocation.addEventListener("click", toggleLiveLocation);
+if (elements.mobileMapTickets) elements.mobileMapTickets.addEventListener("click", () => setMobilePanel("tickets"));
+if (elements.mobileMapFitAll) elements.mobileMapFitAll.addEventListener("click", fitMobileMapToTickets);
+if (elements.mobileDeployAppUpdate) elements.mobileDeployAppUpdate.addEventListener("click", () => void deployAppUpdate());
+if (elements.mobileSaveEmployeeDashboard) {
+  elements.mobileSaveEmployeeDashboard.addEventListener("click", async () => {
+    try {
+      await saveEmployeeDashboard({ enabled: true, state: dashboardStatePayload({ employeeViewMode: "mobile" }), toast: true });
+    } catch (error) {
+      showSavedToast("Employee save failed");
+      console.error(error);
+    }
   });
 }
 if (elements.mapSearchForm) {
@@ -4829,6 +7182,7 @@ if (elements.mobileRefresh) {
     elements.mobileRefresh.disabled = true;
     elements.mobileRefresh.textContent = "Refreshing...";
     try {
+      await loadDashboardState();
       await loadTickets();
     } finally {
       elements.mobileRefresh.disabled = false;
@@ -4865,6 +7219,11 @@ if (elements.clearProfilePhoto) {
   elements.clearProfilePhoto.addEventListener("click", () => {
     locatorProfile.photo = "";
     saveProfile();
+  });
+}
+if (elements.profileLogout) {
+  elements.profileLogout.addEventListener("click", () => {
+    window.location.href = "/logout";
   });
 }
 if (elements.openProfileEditor) {
@@ -4925,6 +7284,16 @@ if (elements.savedViewSelect) {
     }
   });
 }
+if (elements.saveDashboardState) {
+  elements.saveDashboardState.addEventListener("click", async () => {
+    try {
+      await saveDashboardCheckpoint();
+    } catch (error) {
+      showSavedToast("Dashboard save failed");
+      console.error(error);
+    }
+  });
+}
 if (elements.saveView) {
   elements.saveView.addEventListener("click", async () => {
     try {
@@ -4955,6 +7324,19 @@ if (elements.saveEmployeeDashboard) {
 if (elements.updateVetro) {
   elements.updateVetro.addEventListener("click", () => {
     void startVetroRefresh();
+  });
+}
+if (elements.vetroCaptureFile && elements.vetroCaptureText) {
+  elements.vetroCaptureFile.addEventListener("change", async () => {
+    const file = elements.vetroCaptureFile.files?.[0];
+    if (!file) return;
+    elements.vetroCaptureText.value = await file.text();
+    if (elements.vetroCaptureStatus) elements.vetroCaptureStatus.textContent = `${file.name} loaded. Hit Save capture.`;
+  });
+}
+if (elements.saveVetroCapture) {
+  elements.saveVetroCapture.addEventListener("click", () => {
+    void saveVetroCapture();
   });
 }
 elements.refresh.addEventListener("click", refreshServerData);
@@ -4988,19 +7370,25 @@ elements.ticketOpacity.addEventListener("input", () => {
 });
 elements.mapStyle.addEventListener("change", () => {
   rememberUndoState();
+  auditEvent("map_style_changed", { style: elements.mapStyle.value });
   void setMapTileStyle(elements.mapStyle.value).catch((error) => console.error(error));
 });
 elements.vetroLayerFilter.addEventListener("input", (event) => {
+  if (!canEditVetroAppearance()) return;
   if (event.target.matches(".layer-color")) {
     rememberUndoState();
     const layerId = event.target.dataset.layerColor;
-    const value = event.target.value;
-    if (isHexColor(value)) vetroLayerColorOverrides[layerId] = value;
-    else delete vetroLayerColorOverrides[layerId];
-    vetroLayerColorOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerColors, vetroLayerColorOverrides, (id, item) => isHexColor(item));
-    renderVetroLayer();
-    scheduleDashboardStateSave();
-    scheduleEmployeeDashboardSync();
+    setVetroLayerColorOverride(layerId, event.target.value);
+    return;
+  }
+  if (event.target.matches(".layer-color-hex")) {
+    const layerId = event.target.dataset.layerColorHex;
+    const value = normalizeHexColor(event.target.value);
+    event.target.classList.toggle("invalid", Boolean(event.target.value.trim()) && !value);
+    if (value) {
+      rememberUndoState();
+      setVetroLayerColorOverride(layerId, value);
+    }
     return;
   }
   if (event.target.matches(".layer-size")) {
@@ -5023,7 +7411,20 @@ elements.vetroLayerFilter.addEventListener("input", (event) => {
   }
 });
 elements.vetroLayerFilter.addEventListener("change", (event) => {
+  if (!canEditVetroAppearance()) return;
   if (event.target.matches(".layer-color")) {
+    return;
+  }
+  if (event.target.matches(".layer-color-hex")) {
+    const layerId = event.target.dataset.layerColorHex;
+    const value = normalizeHexColor(event.target.value);
+    if (value) {
+      rememberUndoState();
+      setVetroLayerColorOverride(layerId, value);
+    } else {
+      event.target.value = colorForVetroLayer(layerId);
+      event.target.classList.remove("invalid");
+    }
     return;
   }
   if (event.target.matches(".layer-style")) {
@@ -5065,6 +7466,7 @@ elements.vetroLayerFilter.addEventListener("change", (event) => {
   scheduleEmployeeDashboardSync();
 });
 elements.vetroLayerAll.addEventListener("click", () => {
+  if (!canEditVetroAppearance()) return;
   rememberUndoState();
   setAllChecked(elements.vetroLayerFilter, true);
   syncVetroLayerSelection();
@@ -5072,6 +7474,7 @@ elements.vetroLayerAll.addEventListener("click", () => {
   scheduleEmployeeDashboardSync();
 });
 elements.vetroLayerClear.addEventListener("click", () => {
+  if (!canEditVetroAppearance()) return;
   rememberUndoState();
   setAllChecked(elements.vetroLayerFilter, false);
   syncVetroLayerSelection();
@@ -5081,7 +7484,8 @@ elements.vetroLayerClear.addEventListener("click", () => {
 [
   elements.vetroPlanFilter,
 ].filter(Boolean).forEach((container) => {
-  container.addEventListener("change", () => {
+	  container.addEventListener("change", () => {
+    if (!canEditVetroAppearance()) return;
     rememberUndoState();
     syncVetroFacetSelection();
     renderVetroLayer();
@@ -5091,17 +7495,25 @@ elements.vetroLayerClear.addEventListener("click", () => {
 [
   [elements.vetroPlanAll, elements.vetroPlanClear, elements.vetroPlanFilter],
 ].filter(([allButton, clearButton, container]) => allButton && clearButton && container).forEach(([allButton, clearButton, container]) => {
-  allButton.addEventListener("click", () => setFilterChecked(container, true));
-  clearButton.addEventListener("click", () => setFilterChecked(container, false));
+  allButton.addEventListener("click", () => {
+    if (!canEditVetroAppearance()) return;
+    setFilterChecked(container, true);
+  });
+  clearButton.addEventListener("click", () => {
+    if (!canEditVetroAppearance()) return;
+    setFilterChecked(container, false);
+  });
 });
 elements.vetroSearch.addEventListener("input", () => {
+  if (!canEditVetroAppearance()) return;
   rememberUndoState();
   syncVetroFacetSelection();
   renderVetroLayer();
   scheduleEmployeeDashboardSync();
 });
 if (elements.vetroSlToggle) {
-  elements.vetroSlToggle.addEventListener("change", () => {
+	  elements.vetroSlToggle.addEventListener("change", () => {
+    if (!canEditVetroAppearance()) return;
     rememberUndoState();
     vetroSlVisible = elements.vetroSlToggle.checked;
     writeBooleanStorage(STORAGE_KEYS.vetroSlVisible, vetroSlVisible);
@@ -5110,7 +7522,8 @@ if (elements.vetroSlToggle) {
   });
 }
 if (elements.vetroSlShape) {
-  elements.vetroSlShape.addEventListener("change", () => {
+	  elements.vetroSlShape.addEventListener("change", () => {
+    if (!canEditVetroAppearance()) return;
     rememberUndoState();
     vetroSlShape = elements.vetroSlShape.value;
     localStorage.setItem(STORAGE_KEYS.vetroSlShape, vetroSlShape);
@@ -5119,7 +7532,8 @@ if (elements.vetroSlShape) {
   });
 }
 if (elements.vetroSlColor) {
-  elements.vetroSlColor.addEventListener("change", () => {
+	  elements.vetroSlColor.addEventListener("change", () => {
+    if (!canEditVetroAppearance()) return;
     rememberUndoState();
     vetroSlColor = elements.vetroSlColor.value;
     localStorage.setItem(STORAGE_KEYS.vetroSlColor, vetroSlColor);
@@ -5129,7 +7543,8 @@ if (elements.vetroSlColor) {
   });
 }
 if (elements.vetroSlOutlineColor) {
-  elements.vetroSlOutlineColor.addEventListener("change", () => {
+	  elements.vetroSlOutlineColor.addEventListener("change", () => {
+    if (!canEditVetroAppearance()) return;
     rememberUndoState();
     vetroSlOutlineColor = elements.vetroSlOutlineColor.value;
     localStorage.setItem(STORAGE_KEYS.vetroSlOutlineColor, vetroSlOutlineColor);
@@ -5139,7 +7554,8 @@ if (elements.vetroSlOutlineColor) {
   });
 }
 if (elements.vetroSlOpacity) {
-  elements.vetroSlOpacity.addEventListener("input", () => {
+	  elements.vetroSlOpacity.addEventListener("input", () => {
+    if (!canEditVetroAppearance()) return;
     rememberUndoState();
     vetroSlOpacity = percentToOpacity(elements.vetroSlOpacity.value, vetroSlOpacity);
     localStorage.setItem(STORAGE_KEYS.vetroSlOpacity, String(vetroSlOpacity));
@@ -5149,7 +7565,8 @@ if (elements.vetroSlOpacity) {
   });
 }
 if (elements.vetroSlSize) {
-  elements.vetroSlSize.addEventListener("input", () => {
+	  elements.vetroSlSize.addEventListener("input", () => {
+    if (!canEditVetroAppearance()) return;
     rememberUndoState();
     vetroSlSize = clampNumber(elements.vetroSlSize.value, 8, 22, vetroSlSize);
     localStorage.setItem(STORAGE_KEYS.vetroSlSize, String(vetroSlSize));
@@ -5159,7 +7576,8 @@ if (elements.vetroSlSize) {
   });
 }
 if (elements.vetroSlLabels) {
-  elements.vetroSlLabels.addEventListener("change", () => {
+	  elements.vetroSlLabels.addEventListener("change", () => {
+    if (!canEditVetroAppearance()) return;
     rememberUndoState();
     vetroSlLabels = elements.vetroSlLabels.checked;
     writeBooleanStorage(STORAGE_KEYS.vetroSlLabels, vetroSlLabels);
@@ -5168,6 +7586,7 @@ if (elements.vetroSlLabels) {
   });
 }
 elements.vetroColor.addEventListener("change", () => {
+  if (!canEditVetroAppearance()) return;
   rememberUndoState();
   vetroColor = elements.vetroColor.value;
   localStorage.setItem("vetroColor", vetroColor);
@@ -5185,6 +7604,10 @@ elements.vetroOpacity.addEventListener("input", () => {
   scheduleEmployeeDashboardSync();
 });
 elements.vetroToggle.addEventListener("change", async () => {
+  if (!canEditVetroAppearance()) {
+    elements.vetroToggle.checked = vetroVisible;
+    return;
+  }
   try {
     rememberUndoState();
     vetroVisible = elements.vetroToggle.checked;
@@ -5195,10 +7618,159 @@ elements.vetroToggle.addEventListener("change", async () => {
     console.error(error);
   }
 });
+if (elements.vitruviLayerFilter) {
+  elements.vitruviLayerFilter.addEventListener("input", (event) => {
+    if (!isSiteOwner()) return;
+    if (event.target.matches(".vitruvi-layer-color")) {
+      rememberUndoState();
+      setVitruviLayerColorOverride(event.target.dataset.vitruviLayerColor, event.target.value);
+      return;
+    }
+    if (event.target.matches(".vitruvi-layer-color-hex")) {
+      const layerId = event.target.dataset.vitruviLayerColorHex;
+      const value = normalizeHexColor(event.target.value);
+      event.target.classList.toggle("invalid", Boolean(event.target.value.trim()) && !value);
+      if (value) {
+        rememberUndoState();
+        setVitruviLayerColorOverride(layerId, value);
+      }
+      return;
+    }
+    if (event.target.matches(".vitruvi-layer-size")) {
+      rememberUndoState();
+      const range = vitruviLayerSizeRange(event.target.dataset.vitruviLayerSize);
+      vitruviLayerSizeOverrides[event.target.dataset.vitruviLayerSize] = clampNumber(event.target.value, range.min, range.max, vitruviLayerSizeDefault(event.target.dataset.vitruviLayerSize));
+      vitruviLayerSizeOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerSizes, vitruviLayerSizeOverrides, (layerId, value) => Number.isFinite(Number(value)));
+      renderVitruviLayer();
+      scheduleDashboardStateSave();
+      return;
+    }
+    if (event.target.matches(".vitruvi-layer-opacity")) {
+      rememberUndoState();
+      vitruviLayerOpacityOverrides[event.target.dataset.vitruviLayerOpacity] = percentToOpacity(event.target.value, vitruviOpacity);
+      vitruviLayerOpacityOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerOpacities, vitruviLayerOpacityOverrides, (layerId, value) => Number.isFinite(Number(value)));
+      renderVitruviLayer();
+      scheduleDashboardStateSave();
+    }
+  });
+  elements.vitruviLayerFilter.addEventListener("change", (event) => {
+    if (!isSiteOwner()) return;
+    if (event.target.matches(".vitruvi-layer-color")) return;
+    if (event.target.matches(".vitruvi-layer-color-hex")) {
+      const layerId = event.target.dataset.vitruviLayerColorHex;
+      const value = normalizeHexColor(event.target.value);
+      if (value) {
+        rememberUndoState();
+        setVitruviLayerColorOverride(layerId, value);
+      } else {
+        event.target.value = colorForVitruviLayer(layerId);
+        event.target.classList.remove("invalid");
+      }
+      return;
+    }
+    if (event.target.matches(".vitruvi-layer-style")) {
+      rememberUndoState();
+      vitruviLayerStyleOverrides[event.target.dataset.vitruviLayerStyle] = event.target.value;
+      vitruviLayerStyleOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerStyles, vitruviLayerStyleOverrides, (layerId, value) => vitruviLayerStyleValid(layerId, value));
+      renderVitruviLayer();
+      scheduleDashboardStateSave();
+      return;
+    }
+    if (event.target.matches(".vitruvi-layer-alias")) {
+      rememberUndoState();
+      const layerId = event.target.dataset.vitruviLayerAlias;
+      const value = event.target.value.trim();
+      if (value) vitruviLayerNameOverrides[layerId] = value;
+      else delete vitruviLayerNameOverrides[layerId];
+      vitruviLayerNameOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerNames, vitruviLayerNameOverrides, (id, item) => typeof item === "string");
+      populateVitruviFilters();
+      renderVitruviLayer();
+      scheduleDashboardStateSave();
+      return;
+    }
+    if (event.target.matches(".vitruvi-layer-note-input")) {
+      rememberUndoState();
+      const layerId = event.target.dataset.vitruviLayerNote;
+      const value = event.target.value.trim();
+      if (value) vitruviLayerNoteOverrides[layerId] = value;
+      else delete vitruviLayerNoteOverrides[layerId];
+      vitruviLayerNoteOverrides = normalizeObjectStorage(STORAGE_KEYS.vitruviLayerNotes, vitruviLayerNoteOverrides, (id, item) => typeof item === "string");
+      populateVitruviFilters();
+      renderVitruviLayer();
+      scheduleDashboardStateSave();
+      return;
+    }
+    rememberUndoState();
+    syncVitruviLayerSelection();
+    renderVitruviLayer();
+    scheduleDashboardStateSave();
+  });
+}
+if (elements.vitruviLayerAll) {
+  elements.vitruviLayerAll.addEventListener("click", () => {
+    if (!isSiteOwner()) return;
+    rememberUndoState();
+    setAllChecked(elements.vitruviLayerFilter, true);
+    syncVitruviLayerSelection();
+    renderVitruviLayer();
+    scheduleDashboardStateSave();
+  });
+}
+if (elements.vitruviLayerClear) {
+  elements.vitruviLayerClear.addEventListener("click", () => {
+    if (!isSiteOwner()) return;
+    rememberUndoState();
+    setAllChecked(elements.vitruviLayerFilter, false);
+    syncVitruviLayerSelection();
+    renderVitruviLayer();
+    scheduleDashboardStateSave();
+  });
+}
+if (elements.vitruviSearch) {
+  elements.vitruviSearch.addEventListener("input", () => {
+    if (!isSiteOwner()) return;
+    rememberUndoState();
+    vitruviSearch = elements.vitruviSearch.value.trim();
+    localStorage.setItem(STORAGE_KEYS.vitruviSearch, vitruviSearch);
+    renderVitruviLayer();
+    scheduleDashboardStateSave();
+  });
+}
+if (elements.vitruviOpacity) {
+  elements.vitruviOpacity.addEventListener("input", () => {
+    if (!isSiteOwner()) return;
+    rememberUndoState();
+    vitruviOpacity = percentToOpacity(elements.vitruviOpacity.value, vitruviOpacity);
+    localStorage.setItem(STORAGE_KEYS.vitruviOpacity, String(vitruviOpacity));
+    renderVitruviLayer();
+    if (vitruviLoaded) populateVitruviFilters();
+    scheduleDashboardStateSave();
+  });
+}
+if (elements.vitruviToggle) {
+  elements.vitruviToggle.addEventListener("change", async () => {
+    if (!isSiteOwner()) {
+      elements.vitruviToggle.checked = false;
+      return;
+    }
+    try {
+      rememberUndoState();
+      vitruviVisible = elements.vitruviToggle.checked;
+      writeBooleanStorage(STORAGE_KEYS.vitruviVisible, vitruviVisible);
+      await setVitruviVisible(vitruviVisible);
+    } catch (error) {
+      elements.vitruviStatus.textContent = "Error";
+      console.error(error);
+    }
+  });
+}
 elements.sidebarCollapse.addEventListener("click", () => {
   rememberUndoState();
   setSidebarCollapsed(!sidebarCollapsed);
 });
+if (elements.ticketList) {
+  elements.ticketList.addEventListener("scroll", applyTicketListScrolled, { passive: true });
+}
 if (elements.legendToggle) {
   elements.legendToggle.addEventListener("click", () => showMapLegendTemporarily(3200));
 }
@@ -5217,6 +7789,8 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function bootstrap() {
+  registerServiceWorker();
+  closeDashboardLayerDrawers();
   await loadMapConfig();
   await loadDashboardState().catch((error) => {
     console.warn("Unable to load dashboard state", error);
@@ -5231,10 +7805,16 @@ async function bootstrap() {
     elements.ticketList.innerHTML = `<div class="detail-content">${escapeHtml(error.message)}</div>`;
     throw error;
   }
-  if (window.location.hash === "#mobile") {
+  if (window.location.pathname === "/mobile" || window.location.hash === "#mobile") {
     setCurrentView("mobile");
   } else if (window.location.hash === "#sheet") {
     setCurrentView("sheet");
+  } else if (window.location.hash === "#live-tickets") {
+    setCurrentView("live-tickets");
+  } else if (window.location.hash === "#mobile-admin") {
+    setCurrentView("mobile-admin");
+  } else if (window.location.hash === "#activity") {
+    setCurrentView("activity");
   }
   dashboardStateReady = true;
   updateHistoryButtons();

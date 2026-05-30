@@ -5,9 +5,23 @@ __pycache__/
 .DS_Store
 
 # Runtime/cached data can include tickets, cookies, auth, TLS keys, or customer data.
-data/
+/data/
+
+# Generated map exports can include customer/location data.
+Google Earth/
 
 # Local editor/system files.
 .vscode/
 .idea/
 Thumbs.db
+
+# Local JavaScript dependencies.
+node_modules/
+
+# Android build outputs and local SDK config.
+android-auto/.gradle/
+android-auto/build/
+android-auto/app/build/
+android-auto/media-test/build/
+android-auto/local.properties
+android-auto/*.jks

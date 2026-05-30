@@ -139,6 +139,7 @@ def main() -> int:
     parser.add_argument("--inbox-dir", default="data/inbox")
     parser.add_argument("--limit", type=int, default=0, help="Maximum missing tickets to fetch. 0 means all missing.")
     parser.add_argument("--include-existing", action="store_true", help="Refetch tickets that already have cached GeoCall pages.")
+    parser.add_argument("--ticket-number", action="append", default=[], help="Specific ticket number to fetch, even if no ticket file exists locally. Can be repeated.")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -150,7 +151,11 @@ def main() -> int:
         headers = read_curl_headers(sys.stdin.read())
     existing = load_geocall_details(Path(args.downloads_dir), data_dir)
     tickets = load_tickets(Path(args.downloads_dir), data_dir, Path(args.inbox_dir))
-    queue = [ticket.ticket_number for ticket in tickets if args.include_existing or ticket.ticket_number not in existing]
+    explicit_tickets = [ticket.strip() for ticket in args.ticket_number if ticket and ticket.strip()]
+    if explicit_tickets:
+        queue = explicit_tickets
+    else:
+        queue = [ticket.ticket_number for ticket in tickets if args.include_existing or ticket.ticket_number not in existing]
     if args.limit > 0:
         queue = queue[: args.limit]
 

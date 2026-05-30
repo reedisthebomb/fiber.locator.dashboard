@@ -2,15 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Fiber Locator</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260521133500">
+    <link rel="icon" type="image/png" href="/favicon.ico?v=20260522170500">
+    <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260522170500">
+    <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260522170500">
+    <link rel="manifest" href="/manifest.webmanifest?v=20260522173500">
+    <meta name="theme-color" content="#07131f">
+    <meta name="apple-mobile-web-app-title" content="Fiber Locator">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="stylesheet" href="/static/styles.css?v=20260530114500">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
-        <img src="/static/assets/tcw-logo.png" alt="TCW">
+        <img id="appBrandLogo" src="/static/assets/tcw-logo.png?v=20260523093000" alt="TCW">
         <div>
           <h1>Fiber Locator</h1>
         </div>
@@ -28,14 +36,18 @@
           <summary aria-label="More options">...</summary>
           <div class="more-menu-panel">
             <button id="showSheetView" type="button">Dig Tickets</button>
+            <button id="showLiveTicketsView" type="button">Live tickets</button>
             <button id="showMobileView" type="button">Fiber Locator Mobile</button>
             <button id="showDashboardView" type="button">Dashboard</button>
+            <button id="showMobileAdminView" type="button" hidden>Mobile app config</button>
+            <button id="showActivityView" type="button" hidden>Activity</button>
             <button id="showEmployeeView" type="button">Employee Profile</button>
             <button id="showAdminView" type="button">Admin Profile</button>
             <div class="settings-flyout" id="settingsFlyout">
               <button id="showSettingsMenu" type="button" aria-expanded="false">Settings</button>
               <div id="settingsPanel" class="settings-panel" hidden>
                 <strong>Settings</strong>
+                <button id="deployAppUpdate" type="button">Deploy / update app</button>
                 <button id="refreshOneDriveStatus" type="button">Check OneDrive</button>
                 <button id="connectOneDrive" type="button">Connect / change OneDrive</button>
                 <div id="oneDriveStatus" class="settings-status">OneDrive status not checked.</div>
@@ -64,8 +76,9 @@
             View
             <select id="savedViewSelect"></select>
           </label>
+          <button id="saveDashboardState" type="button">Save dashboard</button>
           <button id="saveView" type="button">Save view</button>
-          <button id="saveEmployeeDashboard" type="button">Save to employee dashboard</button>
+          <button id="saveEmployeeDashboard" type="button" hidden>Save mobile app config</button>
           <span id="savedViewStatus">No saved view selected</span>
         </div>
         <div id="employeeBar" class="employeebar" hidden>
@@ -88,13 +101,26 @@
           <button id="refresh">Refresh</button>
         </div>
         <div class="layer-drawers">
-          <details>
+          <details id="vetroDrawer">
             <summary><span>Vetro</span><span id="vetroStatus">Off</span></summary>
             <div class="layerbar layerbar-controls">
               <div class="vetro-refresh-panel">
                 <button id="updateVetro" type="button">Update VETRO</button>
+                <details id="vetroCaptureTool" class="vetro-capture-tool" hidden>
+                  <summary>DevTools capture</summary>
+                  <label>
+                    HAR or copied cURL
+                    <textarea id="vetroCaptureText" rows="7" placeholder="Paste a fresh VETRO HAR or Copy as cURL text from DevTools"></textarea>
+                  </label>
+                  <div class="vetro-capture-actions">
+                    <input id="vetroCaptureFile" type="file" accept=".har,.json,.txt,.curl,text/plain,application/json">
+                    <button id="saveVetroCapture" type="button">Save capture</button>
+                  </div>
+                  <small id="vetroCaptureStatus">Only visible to site_owner.</small>
+                </details>
                 <div class="vetro-refresh-progress" id="vetroRefreshProgress" hidden>
                   <span id="vetroRefreshStatus">Idle</span>
+                  <a id="vetroLoginLink" class="vetro-login-link" href="https://auth.vetro.io/login?redirect=https://app.vetro.io/fibermap/map" target="_blank" rel="noopener noreferrer" hidden>Open VETRO login</a>
                   <div class="vetro-progress-track"><i id="vetroRefreshBar"></i></div>
                 </div>
               </div>
@@ -133,7 +159,7 @@
               </label>
             </div>
           </details>
-          <details>
+          <details id="ticketsDrawer">
             <summary><span>Tickets</span></summary>
             <div class="layerbar layerbar-controls">
               <input id="polygonColor" type="hidden" value="#1f7a4d">
@@ -148,12 +174,13 @@
               </label>
             </div>
           </details>
-          <details>
+          <details id="mapDrawer">
             <summary><span>Map</span></summary>
             <div class="layerbar layerbar-controls">
               <label>
                 Base map
                 <select id="mapStyle">
+                  <option value="locator-dark-detail">Dark locator detail + addresses</option>
                   <option value="standard">Standard streets</option>
                   <option value="contrast">High contrast streets</option>
                   <option value="detailed">Detailed streets + buildings</option>
@@ -162,6 +189,19 @@
                   <option value="terrain">Terrain</option>
                   <option value="satellite">Satellite</option>
                   <option value="hybrid">Hybrid imagery + labels</option>
+                  <option value="openfree-bright">OpenFreeMap bright</option>
+                  <option value="openfree-liberty">OpenFreeMap liberty</option>
+                  <option value="openfree-positron">OpenFreeMap positron</option>
+                  <option value="openfree-dark">OpenFreeMap dark</option>
+                  <option value="openfree-fiord">OpenFreeMap fiord</option>
+                  <option value="mapbox-streets">Mapbox streets</option>
+                  <option value="mapbox-outdoors">Mapbox outdoors</option>
+                  <option value="mapbox-light">Mapbox light</option>
+                  <option value="mapbox-dark">Mapbox dark</option>
+                  <option value="mapbox-satellite">Mapbox satellite</option>
+                  <option value="mapbox-satellite-streets">Mapbox satellite streets</option>
+                  <option value="mapbox-navigation-day">Mapbox navigation day</option>
+                  <option value="mapbox-navigation-night">Mapbox navigation night</option>
                   <option value="google-roadmap">Google roadmap</option>
                   <option value="google-satellite">Google satellite</option>
                   <option value="google-hybrid">Google satellite + roads</option>
@@ -180,8 +220,18 @@
         <div id="map"></div>
         <form id="mapSearchForm" class="map-search" role="search">
           <input id="mapSearch" type="search" placeholder="Search map, address, intersection, coordinates">
+          <button id="locateMe" type="button">Locate</button>
           <button type="submit">Go</button>
         </form>
+        <div class="measure-control" aria-label="Measure distance">
+          <button id="measureToggle" type="button" aria-pressed="false">Measure</button>
+          <button id="measureClear" type="button">Clear</button>
+          <select id="measureUnit" aria-label="Measure unit">
+            <option value="feet">Feet</option>
+            <option value="miles">Miles</option>
+          </select>
+          <span id="measureStatus">Off</span>
+        </div>
         <div id="mapLegend" class="priority-legend map-legend" aria-label="Ticket priority legend"></div>
         <button id="legendToggle" class="legend-toggle" type="button" aria-label="Show legend" title="Show legend">Legend</button>
         <aside id="detail" class="detail">
@@ -211,28 +261,166 @@
       <div id="sheetTableWrap" class="sheet-table-wrap"></div>
     </section>
 
+    <section id="liveTicketsView" class="live-tickets-view" hidden>
+      <header class="live-tickets-header">
+        <div>
+          <h2>Live tickets</h2>
+          <p id="liveTicketsSummary">Tickets still waiting on submitted action.</p>
+        </div>
+        <label class="live-tickets-search">
+          <span>Search live tickets</span>
+          <input id="liveTicketsSearch" type="search" placeholder="Search ticket, address, county, contractor">
+        </label>
+        <button id="liveTicketsBackToDashboard" type="button">Dashboard</button>
+      </header>
+      <div class="live-tickets-shell">
+        <div id="liveTicketsList" class="live-tickets-list"></div>
+        <article id="liveTicketDetail" class="live-ticket-detail">
+          <div class="live-ticket-empty">Select a live ticket</div>
+        </article>
+      </div>
+    </section>
+
     <section id="mobileView" class="mobile-view" hidden>
       <header class="mobile-header">
-        <img src="/static/assets/tcw-logo.png" alt="TCW">
+        <img id="mobileBrandLogo" src="/static/assets/tcw-logo.png?v=20260523093000" alt="TCW">
         <div>
-          <h2>Fiber Locator</h2>
+          <h2>Fiber Locator Field</h2>
           <p id="mobileSummary">0 active tickets</p>
         </div>
         <div class="mobile-profile-pill">
           <img id="mobileProfileAvatar" alt="" hidden>
           <span id="mobileProfileInitials">FL</span>
         </div>
-        <button id="mobileBackToDashboard" type="button">Dashboard</button>
       </header>
       <div class="mobile-searchbar">
         <input id="mobileSearch" type="search" placeholder="Search ticket, road, county, contractor">
+        <button id="mobileLocateMe" type="button">Live location</button>
         <button id="mobileRefresh" type="button">Refresh</button>
       </div>
+      <nav class="mobile-panel-tabs" aria-label="Mobile app sections">
+        <button type="button" class="active" data-mobile-panel="tickets">Tickets <span id="mobileOpenCount">0</span></button>
+        <button type="button" data-mobile-panel="map">Map <span id="mobileMapCount">0</span></button>
+        <button type="button" data-mobile-panel="done">Done <span id="mobileDoneCount">0</span></button>
+        <button type="button" data-mobile-panel="dig">Dig Tickets <span id="mobileDigCount">0</span></button>
+      </nav>
       <div class="mobile-shell">
         <div id="mobileTicketList" class="mobile-ticket-list"></div>
+        <section id="mobileMapPanel" class="mobile-map-panel" hidden>
+          <div class="mobile-map-toolbar">
+            <div>
+              <strong>Field map</strong>
+              <span id="mobileLiveStatus">One Call polygons and fiber layers</span>
+            </div>
+            <button id="mobileMapTickets" type="button">Tickets</button>
+            <button id="mobileMapFitAll" type="button">All</button>
+            <button id="mobileFollowLocation" type="button">Follow me</button>
+            <button id="mobileMeasureToggle" type="button" aria-pressed="false">Measure</button>
+            <button id="mobileMeasureClear" type="button">Clear</button>
+            <select id="mobileMeasureUnit" aria-label="Measure unit">
+              <option value="feet">Feet</option>
+              <option value="miles">Miles</option>
+            </select>
+            <span id="mobileMeasureStatus">Off</span>
+          </div>
+          <div id="mobileFieldMap" class="mobile-field-map"></div>
+        </section>
         <article id="mobileTicketDetail" class="mobile-ticket-detail">
           <div class="mobile-empty">Select a ticket</div>
         </article>
+      </div>
+    </section>
+
+    <section id="activityView" class="activity-view" hidden>
+      <header class="activity-header">
+        <div>
+          <h2>Activity</h2>
+          <p>Recent dashboard sign-ins, saves, ticket actions, refreshes, and uploads.</p>
+        </div>
+        <div class="activity-actions">
+          <button id="refreshActivity" type="button">Refresh</button>
+          <button id="activityBackToDashboard" type="button">Dashboard</button>
+        </div>
+      </header>
+      <div id="activityList" class="activity-list"></div>
+    </section>
+
+    <section id="mobileAdminView" class="mobile-admin-view" hidden>
+      <header class="mobile-admin-header">
+        <div>
+          <h2>Mobile App Config</h2>
+          <p>Publish the field app view, create employee logins, and send setup links.</p>
+        </div>
+        <div class="mobile-admin-actions">
+          <a id="openMobileAppLink" href="/mobile" target="_blank" rel="noopener noreferrer">Open mobile app</a>
+          <button id="mobileAdminBackToDashboard" type="button">Dashboard</button>
+        </div>
+      </header>
+      <div class="mobile-admin-grid">
+        <section class="mobile-admin-card mobile-admin-publish">
+          <h3>What employees see</h3>
+          <p>The mobile app uses the current admin filters, visible tickets, VETRO layers, map style, ticket colors, and published employee state.</p>
+          <div class="mobile-admin-statline">
+            <span><strong id="mobileConfigOpenCount">0</strong> open</span>
+            <span><strong id="mobileConfigMapCount">0</strong> mapped</span>
+            <span><strong id="mobileConfigDoneCount">0</strong> done</span>
+          </div>
+          <div class="mobile-admin-preview">
+            <div>
+              <span>Field app starts at</span>
+              <strong id="mobileConfigStartMode">Tickets</strong>
+            </div>
+            <div>
+              <span>Saved mobile config</span>
+              <strong id="mobileConfigSavedAt">Not published yet</strong>
+            </div>
+          </div>
+          <button id="publishMobileConfig" type="button">Publish current dashboard to mobile app</button>
+          <p id="mobileConfigStatus" class="mobile-admin-status">Only administrator and site_owner can publish this.</p>
+        </section>
+
+        <section class="mobile-admin-card">
+          <h3>Download mobile app</h3>
+          <div class="install-steps">
+            <div>
+              <strong>iPhone / iPad</strong>
+              <ol>
+                <li>Open <span id="mobileInstallUrlIos">/mobile</span> in Safari.</li>
+                <li>Tap Share.</li>
+                <li>Tap Add to Home Screen.</li>
+                <li>Name it Fiber Locator and tap Add.</li>
+              </ol>
+            </div>
+            <div>
+              <strong>Android</strong>
+              <ol>
+                <li>Open <span id="mobileInstallUrlAndroid">/mobile</span> in Chrome.</li>
+                <li>Tap the three-dot menu.</li>
+                <li>Tap Install app or Add to Home screen.</li>
+                <li>Open Fiber Locator from the app icon.</li>
+              </ol>
+            </div>
+          </div>
+          <button id="copyMobileAppLink" type="button">Copy mobile app link</button>
+        </section>
+
+        <section class="mobile-admin-card employee-admin-card">
+          <h3>Employee logins</h3>
+          <form id="employeeInviteForm" class="employee-invite-form">
+            <label>
+              Name
+              <input id="employeeDisplayName" type="text" maxlength="120" placeholder="Employee name">
+            </label>
+            <label>
+              Username
+              <input id="employeeUsername" type="text" maxlength="80" placeholder="first.last">
+            </label>
+            <button type="submit">Create setup link</button>
+          </form>
+          <p id="employeeInviteStatus" class="mobile-admin-status">Create a one-time link, then text or email it to the employee.</p>
+          <div id="employeeInviteLink" class="employee-invite-link" hidden></div>
+          <div id="employeeAccessList" class="employee-access-list"></div>
+        </section>
       </div>
     </section>
 
@@ -260,6 +448,7 @@
         </label>
         <p>Photos are centered, cropped square, and shown inside the round profile icon.</p>
         <div class="profile-modal-actions">
+          <button id="profileLogout" class="profile-logout" type="button">Log out</button>
           <button id="clearProfilePhoto" type="button">Clear photo</button>
           <button id="saveProfileEditor" type="button">Done</button>
         </div>
@@ -267,6 +456,9 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="/static/app.js?v=20260521153500"></script>
+    <link href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css" rel="stylesheet">
+    <script src="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
+    <script src="/static/app.js?v=20260530114500"></script>
   </body>
 </html>
