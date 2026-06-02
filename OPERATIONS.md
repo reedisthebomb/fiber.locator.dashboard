@@ -9,8 +9,10 @@ This repository is the main project brain for the Fiber Locator dashboard. Every
 The current live dashboard target from the latest handoff is:
 
 ```text
-http://5.78.214.184:8765/
+https://fiber-locator.5-78-214-184.sslip.io/
 ```
+
+Caddy terminates HTTPS on ports 80/443 and proxies to the dashboard on `127.0.0.1:8765`. The old direct public `:8765` listener should stay closed.
 
 Older Kali/home-server notes are still useful background, but the cloud target should be revalidated first before new production work.
 
@@ -181,7 +183,7 @@ After every substantial change:
 
 1. run `python3 -m py_compile server.py`
 2. run `node --check static/app.js`
-3. verify the app in a browser or with an HTTP smoke test
+3. verify the app in a browser or with HTTPS/API smoke tests
 4. update `README.md`, `PROJECT_OVERVIEW.md`, `HANDOFF.md`, or this file when behavior/process changes
 5. commit and push to the GitHub repository
 

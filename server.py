@@ -19,7 +19,7 @@ import threading
 import secrets
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email import policy
 from email.parser import BytesParser
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -55,6 +55,8 @@ VETRO_REFRESH_STATE = {
     "percent": 0,
     "logs": [],
 }
+ADMIN_GEOCALL_LOCK = threading.Lock()
+ADMIN_GEOCALL_CURL_TTL = timedelta(hours=6)
 ACTIVE_TICKET_COUNTIES = {"UNION", "COLUMBIA"}
 ACTIVE_TICKET_MIN_WORK_BEGIN = date(2026, 5, 8)
 AUTH_SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
@@ -176,6 +178,7 @@ def load_auth_users(path: Path) -> dict[str, dict[str, str]]:
                 "password_sha256": password_hash,
                 "role": str(item.get("role") or "admin").strip() or "admin",
                 "display_name": str(item.get("display_name") or username).strip() or username,
+                "profile": item.get("profile") if isinstance(item.get("profile"), dict) else {},
             }
     return users
 
@@ -195,6 +198,117 @@ def verify_credentials(username: str, password: str, users: dict[str, dict[str, 
 def auth_user_role(username: str, users: dict[str, dict[str, str]]) -> str:
     role = str((users.get(username) or {}).get("role") or "admin").strip().lower()
     return "employee" if role == "employee" else "admin"
+
+
+def clean_profile_text(value: object, max_length: int = 160) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())[:max_length]
+
+
+def clean_profile_payload(data: dict) -> dict:
+    profile = {
+        "display_name": clean_profile_text(data.get("display_name") or data.get("displayName"), 120),
+        "email": clean_profile_text(data.get("email"), 180),
+        "phone": clean_profile_text(data.get("phone"), 80),
+        "company": clean_profile_text(data.get("company"), 140),
+        "title": clean_profile_text(data.get("title"), 120),
+        "address": clean_profile_text(data.get("address"), 220),
+    }
+    avatar_data = str(data.get("avatar_data") or data.get("avatarData") or "").strip()
+    if avatar_data.startswith("data:image/") and len(avatar_data) <= 700_000:
+        profile["avatar_data"] = avatar_data
+    elif data.get("clear_avatar") or data.get("clearAvatar"):
+        profile["avatar_data"] = ""
+    return profile
+
+
+def public_auth_profile(username: str, record: dict | None) -> dict:
+    record = record or {}
+    profile = record.get("profile") if isinstance(record.get("profile"), dict) else {}
+    display_name = clean_profile_text(profile.get("display_name") or record.get("display_name") or username, 120)
+    return {
+        "username": username,
+        "role": auth_user_role(username, {username: record}) if record else "admin",
+        "display_name": display_name,
+        "email": clean_profile_text(profile.get("email"), 180),
+        "phone": clean_profile_text(profile.get("phone"), 80),
+        "company": clean_profile_text(profile.get("company"), 140),
+        "title": clean_profile_text(profile.get("title"), 120),
+        "address": clean_profile_text(profile.get("address"), 220),
+        "avatar_data": str(profile.get("avatar_data") or ""),
+    }
+
+
+def update_auth_profile(path: Path, username: str, data: dict) -> tuple[dict | None, str]:
+    profile_update = clean_profile_payload(data)
+    with STATE_LOCK:
+        payload = load_auth_payload(path)
+        users = payload.setdefault("users", [])
+        if not isinstance(users, list):
+            return None, "Auth users file is invalid."
+        target = None
+        for item in users:
+            if isinstance(item, dict) and str(item.get("username") or "") == username:
+                target = item
+                break
+        if target is None:
+            return None, "Account not found."
+        profile = target.setdefault("profile", {})
+        if not isinstance(profile, dict):
+            profile = {}
+            target["profile"] = profile
+        for key, value in profile_update.items():
+            if key == "avatar_data" and value == "":
+                profile.pop("avatar_data", None)
+            elif value or key == "avatar_data":
+                profile[key] = value
+            elif key in profile:
+                profile.pop(key, None)
+        if profile.get("display_name"):
+            target["display_name"] = profile["display_name"]
+        target["profile_updated_at"] = dashboard_now_iso()
+        save_auth_payload(path, payload)
+        return public_auth_profile(username, target), ""
+
+
+def create_account_request(path: Path, data: dict, ip: str = "") -> tuple[dict | None, str]:
+    profile = clean_profile_payload(data)
+    display_name = profile.get("display_name", "")
+    email = profile.get("email", "")
+    if not display_name:
+        return None, "Name is required."
+    if not email or "@" not in email:
+        return None, "A valid email is required."
+    request_record = {
+        "id": secrets.token_urlsafe(12),
+        "display_name": display_name,
+        "email": email,
+        "phone": profile.get("phone", ""),
+        "company": profile.get("company", ""),
+        "title": profile.get("title", ""),
+        "address": profile.get("address", ""),
+        "message": clean_profile_text(data.get("message"), 500),
+        "status": "pending",
+        "requested_at": dashboard_now_iso(),
+        "request_ip": clean_profile_text(ip, 80),
+    }
+    with STATE_LOCK:
+        payload = load_auth_payload(path)
+        requests = payload.setdefault("account_requests", [])
+        if not isinstance(requests, list):
+            requests = []
+            payload["account_requests"] = requests
+        for item in requests:
+            if (
+                isinstance(item, dict)
+                and str(item.get("email") or "").strip().lower() == email.lower()
+                and str(item.get("status") or "pending") == "pending"
+            ):
+                item.update({key: value for key, value in request_record.items() if key not in {"id", "requested_at"}})
+                save_auth_payload(path, payload)
+                return item, ""
+        requests.append(request_record)
+        save_auth_payload(path, payload)
+    return request_record, ""
 
 
 def auth_token_hash(token: str) -> str:
@@ -269,6 +383,7 @@ def employee_access_payload(path: Path) -> dict:
         "role": str(item.get("role") or "admin").strip() or "admin",
         "created_at": str(item.get("created_at") or ""),
         "password_set_at": str(item.get("password_set_at") or ""),
+        "profile": public_auth_profile(username, item),
       })
     invites = []
     for item in payload.get("employee_invites", []):
@@ -286,7 +401,12 @@ def employee_access_payload(path: Path) -> dict:
       })
     users.sort(key=lambda item: (item.get("role") != "admin", item.get("display_name", "").lower()))
     invites.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-    return {"users": users, "invites": invites}
+    account_requests = [
+        item for item in payload.get("account_requests", [])
+        if isinstance(item, dict) and str(item.get("status") or "pending") == "pending"
+    ]
+    account_requests.sort(key=lambda item: item.get("requested_at", ""), reverse=True)
+    return {"users": users, "invites": invites, "account_requests": account_requests}
 
 
 def create_employee_invite(path: Path, username: str, display_name: str, created_by: str) -> tuple[dict | None, str]:
@@ -332,6 +452,40 @@ def dashboard_now() -> datetime:
 
 def dashboard_now_iso(timespec: str = "seconds") -> str:
     return dashboard_now().isoformat(timespec=timespec)
+
+
+def geocall_request_cache_dir(data_dir: Path) -> Path:
+    return data_dir / "private" / "geocall_requests"
+
+
+def geocall_saved_curl_path(data_dir: Path) -> Path:
+    return geocall_request_cache_dir(data_dir) / "latest_admin_geocall.curl"
+
+
+def save_admin_geocall_curl(data_dir: Path, curl_text: str) -> Path:
+    private_dir = geocall_request_cache_dir(data_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    path = geocall_saved_curl_path(data_dir)
+    path.write_text(curl_text, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
+
+
+def reusable_admin_geocall_curl(data_dir: Path) -> tuple[Path | None, str]:
+    path = geocall_saved_curl_path(data_dir)
+    if not path.exists() or not path.is_file():
+        return None, "No saved GeoCall cURL is available. Paste a fresh Copy as cURL request."
+    try:
+        age = dashboard_now() - datetime.fromtimestamp(path.stat().st_mtime, DASHBOARD_TIME_ZONE)
+    except OSError:
+        return None, "Saved GeoCall cURL could not be read. Paste a fresh Copy as cURL request."
+    if age > ADMIN_GEOCALL_CURL_TTL:
+        hours = int(ADMIN_GEOCALL_CURL_TTL.total_seconds() // 3600)
+        return None, f"Saved GeoCall cURL is older than {hours} hours. Paste a fresh Copy as cURL request."
+    return path, ""
 
 
 def create_auth_session(username: str) -> str:
@@ -398,7 +552,7 @@ def read_audit_events(data_dir: Path, limit: int = 300) -> list[dict]:
     except FileNotFoundError:
         return []
     events = []
-    for line in lines[-max(1, min(1000, limit)):]:
+    for line in lines[-max(1, min(50000, limit)):]:
         try:
             item = json.loads(line)
         except json.JSONDecodeError:
@@ -925,6 +1079,7 @@ TICKET_WORKFLOW_KEYS = {
     "ticketActions",
     "ticketActionUpdatedAt",
     "ticketDescriptions",
+    "ticketMarkedBy",
 }
 
 
@@ -943,6 +1098,13 @@ def ticket_workflow_from_state(state: dict) -> dict:
             if text:
                 descriptions[str(ticket_number)] = text
         workflow["ticketDescriptions"] = descriptions
+    if "ticketMarkedBy" in state and isinstance(state.get("ticketMarkedBy"), dict):
+        marked_by = {}
+        for ticket_number, username in state.get("ticketMarkedBy", {}).items():
+            text = str(username or "").strip()
+            if text:
+                marked_by[str(ticket_number)] = text[:120]
+        workflow["ticketMarkedBy"] = marked_by
     return workflow
 
 
@@ -955,6 +1117,10 @@ def merge_ticket_workflow(existing: dict, incoming: dict) -> dict:
         merged["ticketDescriptions"] = ticket_workflow_from_state(incoming).get("ticketDescriptions", {})
     elif "ticketDescriptions" in merged:
         merged["ticketDescriptions"] = ticket_workflow_from_state(merged).get("ticketDescriptions", {})
+    if isinstance(incoming, dict) and "ticketMarkedBy" in incoming:
+        merged["ticketMarkedBy"] = ticket_workflow_from_state(incoming).get("ticketMarkedBy", {})
+    elif "ticketMarkedBy" in merged:
+        merged["ticketMarkedBy"] = ticket_workflow_from_state(merged).get("ticketMarkedBy", {})
     return merged
 
 
@@ -998,6 +1164,10 @@ def get_effective_dashboard_state(username: str, role: str = "admin") -> dict:
         employee_writable_keys = {
             "hiddenTickets",
             "archivedTickets",
+            "ticketActions",
+            "ticketActionUpdatedAt",
+            "ticketDescriptions",
+            "ticketMarkedBy",
             "ticketListCheckpoint",
             "showHiddenTickets",
             "ticketSearch",
@@ -1022,6 +1192,7 @@ def filter_employee_user_state(state: dict) -> dict:
         "ticketActions",
         "ticketActionUpdatedAt",
         "ticketDescriptions",
+        "ticketMarkedBy",
         "ticketListCheckpoint",
         "showHiddenTickets",
         "ticketSearch",
@@ -1565,6 +1736,52 @@ def employee_setup_page_html(token: str, message: str = "", username: str = "") 
     <button type="submit"{disabled}>Create password</button>
     <div class="hint">After setup, use this password on the normal Fiber Locator login page.</div>
   </form>
+</body>
+</html>"""
+
+
+def privacy_policy_page_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fiber Locator Privacy Policy</title>
+  <style>
+    body { margin: 0; font-family: Arial, Helvetica, sans-serif; color: #111827; background: #f8fafc; }
+    main { max-width: 780px; margin: 0 auto; padding: 32px 18px 48px; line-height: 1.55; }
+    h1 { margin: 0 0 8px; font-size: 30px; }
+    h2 { margin-top: 28px; font-size: 18px; }
+    p, li { font-size: 15px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Fiber Locator Privacy Policy</h1>
+    <p><strong>Effective date:</strong> 2026-06-01</p>
+    <p>Fiber Locator is a private field-work application for authorized locating crews. The app connects to the Fiber Locator dashboard to help users review assigned One Call tickets, view ticket maps, submit completion information, and upload supporting field attachments.</p>
+    <h2>Information The App Handles</h2>
+    <ul>
+      <li>Account login information, such as username and password.</li>
+      <li>Session cookies used to keep authorized users signed in.</li>
+      <li>Ticket workflow information, including ticket numbers, ticket details, ticket status, locate actions, notes, and timestamps.</li>
+      <li>User-selected photos or videos uploaded as ticket attachments.</li>
+      <li>Device location permission for the map's optional Locate me feature.</li>
+      <li>Profile information entered by the user, such as name, email, phone, company, title, address, and profile photo.</li>
+    </ul>
+    <p>The current Locate me feature is used to show the user's position on the in-app map. It is not uploaded to the Fiber Locator dashboard by the current Android app build.</p>
+    <h2>How Information Is Used</h2>
+    <p>Information is used to provide the app's field workflow, including authentication, account access review, profile management, ticket review, map display, ticket completion, attachment upload, and dashboard synchronization.</p>
+    <h2>Sharing</h2>
+    <p>Fiber Locator does not sell user data. Data is used for the private Fiber Locator dashboard workflow and is not intended for public sharing.</p>
+    <p>The app may load map tiles or related map resources from configured map providers to display map backgrounds and field context.</p>
+    <h2>Data Retention</h2>
+    <p>Ticket workflow data, account records, profile details, and attachments are retained according to the Fiber Locator dashboard's operational needs. Authorized administrators may remove or correct records when required.</p>
+    <h2>Security</h2>
+    <p>Access to live ticket data requires an authorized Fiber Locator account. The production dashboard connection uses HTTPS for login, ticket sync, notes, profile updates, and attachments.</p>
+    <h2>Contact</h2>
+    <p>For privacy or account questions, contact the Fiber Locator administrator at the support email provided in the Google Play listing.</p>
+  </main>
 </body>
 </html>"""
 
@@ -2343,23 +2560,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/privacy-policy":
+            body = privacy_policy_page_html().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return
         if parsed.path == "/mobile":
-            if not self.is_authenticated():
-                self.redirect("/login?next=/mobile")
-                return
-            original_path = self.path
-            self.path = "/"
-            try:
-                super().do_HEAD()
-            finally:
-                self.path = original_path
+            self.redirect("/")
             return
         super().do_HEAD()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path in {"/favicon.ico", "/manifest.webmanifest", "/static/service-worker.js", "/static/fiberlocatorfinal.png", "/static/fiberlocatorwhitebackgroud.png"}:
+        if parsed.path in {"/favicon.ico", "/manifest.webmanifest", "/static/service-worker.js", "/static/fiberlocatorfinal.png", "/static/fiberlocatorwhitebackgroud.png", "/android-auto/app/build/outputs/apk/release/app-release.apk"}:
             self.send_public_asset(parsed.path)
+            return
+        if parsed.path == "/privacy-policy":
+            self.send_privacy_policy()
             return
         if parsed.path == "/login":
             if self.is_authenticated():
@@ -2377,16 +2596,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if not self.is_authenticated():
             self.unauthorized(parsed)
             return
-        if parsed.path in {"/", "/mobile"}:
+        if parsed.path == "/mobile":
+            self.redirect("/")
+            return
+        if parsed.path == "/":
             self.audit_event("page_view", {"path": parsed.path})
-            if parsed.path == "/mobile":
-                original_path = self.path
-                self.path = "/"
-                try:
-                    super().do_GET()
-                finally:
-                    self.path = original_path
-                return
         if parsed.path == "/api/tickets":
             self.send_tickets()
             return
@@ -2407,6 +2621,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/employees":
             self.send_employee_access()
+            return
+        if parsed.path == "/api/account/profile":
+            self.send_account_profile()
             return
         if parsed.path == "/api/map-config":
             self.send_map_config()
@@ -2457,6 +2674,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         finally:
             self.path = original_path
 
+    def send_privacy_policy(self) -> None:
+        body = privacy_policy_page_html().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/login":
@@ -2464,6 +2689,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/employee-setup":
             self.handle_employee_setup()
+            return
+        if parsed.path == "/api/account/request":
+            self.create_account_access_request()
             return
         if not self.is_authenticated():
             self.unauthorized(parsed)
@@ -2488,6 +2716,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/employees/invite":
             self.create_employee_access_invite()
+            return
+        if parsed.path == "/api/admin/geocall-fetch":
+            self.admin_fetch_geocall_tickets()
+            return
+        if parsed.path == "/api/account/profile":
+            self.update_account_profile()
             return
         if parsed.path == "/api/vetro-refresh":
             self.start_vetro_refresh()
@@ -2657,7 +2891,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def auth_cookie(self, token: str, max_age: int) -> str:
-        secure = "; Secure" if isinstance(self.request, ssl.SSLSocket) else ""
+        forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+        secure = "; Secure" if isinstance(self.request, ssl.SSLSocket) or forwarded_proto == "https" else ""
         return f"onecall_auth={token}; HttpOnly{secure}; SameSite=Lax; Path=/; Max-Age={max_age}"
 
     def send_tickets(self) -> None:
@@ -2694,11 +2929,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         username = self.current_username()
         role = self.current_user_role() if username else "admin"
         state = get_effective_dashboard_state(username, role) if username else {}
+        profile = public_auth_profile(username, self.auth_users.get(username) or {}) if username else {}
         self.send_json({
             "ok": True,
             "username": username,
             "role": role,
-            "displayName": str((self.auth_users.get(username) or {}).get("display_name") or username),
+            "displayName": str(profile.get("display_name") or username),
+            "profile": profile,
             "state": state,
             "locatorDefault": get_locator_default_state(),
             "viewPresets": get_view_presets(),
@@ -2712,7 +2949,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": True, "employeeDashboard": get_employee_dashboard_state()})
 
     def send_audit_events(self) -> None:
-        if self.current_username() not in AUDIT_VIEW_USERS:
+        username = self.current_username()
+        if username not in AUDIT_VIEW_USERS and not self.can_write_shared_dashboard(username):
             self.send_response(403)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
@@ -2776,6 +3014,178 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.__class__.auth_users = load_auth_users(AUTH_FILE)
         self.audit_event("employee_invite_created", {"username": invite.get("username")}, username=username)
         self.send_json({"ok": True, "invite": invite, "invite_url": invite_url, **employee_access_payload(AUTH_FILE)})
+
+    def admin_fetch_geocall_tickets(self) -> None:
+        username = self.current_username()
+        if not username or not self.can_write_shared_dashboard(username):
+            self.shared_dashboard_write_denied(username, "admin_geocall_fetch")
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        if content_length <= 0 or content_length > 1_200_000:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Ticket fetch request is empty or too large."}).encode("utf-8"))
+            return
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(payload) if payload else {}
+        except json.JSONDecodeError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        raw_tickets = str(data.get("ticket_numbers") or data.get("ticketNumbers") or "")
+        ticket_numbers = []
+        seen = set()
+        for ticket_number in TICKET_RE.findall(raw_tickets):
+            if ticket_number in seen:
+                continue
+            seen.add(ticket_number)
+            ticket_numbers.append(ticket_number)
+        if not ticket_numbers:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Enter at least one valid ticket number like 260529-1101."}).encode("utf-8"))
+            return
+        if len(ticket_numbers) > 75:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Fetch 75 or fewer tickets at a time."}).encode("utf-8"))
+            return
+        curl_text = str(data.get("curl") or data.get("curlText") or "").strip()
+        if curl_text and "-H" not in curl_text and "-b" not in curl_text:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Paste a valid GeoCall Copy as cURL request, or leave cURL blank to reuse the saved one."}).encode("utf-8"))
+            return
+        if not ADMIN_GEOCALL_LOCK.acquire(blocking=False):
+            self.send_response(409)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "A GeoCall ticket fetch is already running."}).encode("utf-8"))
+            return
+        curl_path = None
+        used_saved_curl = False
+        try:
+            root = Path(__file__).resolve().parent
+            if curl_text:
+                curl_path = save_admin_geocall_curl(self.data_dir, curl_text)
+            else:
+                curl_path, message = reusable_admin_geocall_curl(self.data_dir)
+                used_saved_curl = True
+                if not curl_path:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"ok": False, "message": message}).encode("utf-8"))
+                    return
+            command = [
+                sys.executable,
+                str(root / "tools" / "fetch_geocall_details_from_fetch.py"),
+                "--curl-file",
+                str(curl_path),
+                "--downloads-dir",
+                str(self.downloads_dir),
+                "--data-dir",
+                str(self.data_dir),
+                "--inbox-dir",
+                str(self.inbox_dir),
+            ]
+            for ticket_number in ticket_numbers:
+                command += ["--ticket-number", ticket_number]
+            process = subprocess.run(command, cwd=str(root), text=True, capture_output=True, timeout=240, check=False)
+            tickets = load_tickets(self.downloads_dir, self.data_dir, self.inbox_dir)
+            loaded = {ticket.ticket_number: ticket for ticket in tickets}
+            fetched = [ticket for ticket in ticket_numbers if ticket in loaded and (loaded[ticket].polygon or loaded[ticket].portal_html_available)]
+            missing = [ticket for ticket in ticket_numbers if ticket not in fetched]
+            self.audit_event(
+                "admin_geocall_fetch",
+                {"requested": len(ticket_numbers), "fetched": len(fetched), "missing": missing[:20], "exit_code": process.returncode, "reused_saved_curl": used_saved_curl},
+                username=username,
+            )
+            self.send_json({
+                "ok": process.returncode == 0 or bool(fetched),
+                "requested": ticket_numbers,
+                "fetched": fetched,
+                "missing": missing,
+                "exit_code": process.returncode,
+                "stdout": process.stdout[-4000:],
+                "stderr": process.stderr[-4000:],
+                "reused_saved_curl": used_saved_curl,
+                "message": f"Fetched {len(fetched)} of {len(ticket_numbers)} requested ticket(s){' using saved GeoCall cURL' if used_saved_curl else ''}.",
+            })
+        except subprocess.TimeoutExpired:
+            self.send_response(504)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "GeoCall fetch timed out. Try fewer tickets or a fresher cURL."}).encode("utf-8"))
+        finally:
+            ADMIN_GEOCALL_LOCK.release()
+
+    def create_account_access_request(self) -> None:
+        if not AUTH_FILE:
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Account requests are not enabled."}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(payload) if payload else {}
+        except json.JSONDecodeError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        request_record, message = create_account_request(AUTH_FILE, data, self.client_ip())
+        if not request_record:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": message or "Unable to submit account request."}).encode("utf-8"))
+            return
+        self.audit_event("account_request_created", {"email": request_record.get("email")}, username="account_request")
+        self.send_json({"ok": True, "message": "Account request submitted.", "request": request_record})
+
+    def send_account_profile(self) -> None:
+        username = self.current_username()
+        if not username:
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Login required"}).encode("utf-8"))
+            return
+        self.send_json({"ok": True, "profile": public_auth_profile(username, self.auth_users.get(username) or {})})
+
+    def update_account_profile(self) -> None:
+        username = self.current_username()
+        if not username or not AUTH_FILE:
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Login required"}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(payload) if payload else {}
+        except json.JSONDecodeError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        profile, message = update_auth_profile(AUTH_FILE, username, data)
+        if not profile:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": message or "Unable to update profile."}).encode("utf-8"))
+            return
+        self.__class__.auth_users = load_auth_users(AUTH_FILE)
+        self.audit_event("account_profile_saved", {"fields": sorted(clean_profile_payload(data).keys())}, username=username)
+        self.send_json({"ok": True, "profile": profile})
 
     def update_state(self) -> None:
         username = self.current_username()
@@ -3567,7 +3977,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def send_map_config(self) -> None:
         self.send_json({
-            "googleMapsTileApiKey": os.environ.get("GOOGLE_MAPS_TILE_API_KEY", ""),
             "mapboxAccessToken": os.environ.get("MAPBOX_ACCESS_TOKEN", ""),
         })
 
@@ -3634,6 +4043,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        if self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower() == "https":
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         super().end_headers()
 
 

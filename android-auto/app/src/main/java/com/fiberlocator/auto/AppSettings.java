@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 public final class AppSettings {
-    public static final String DEFAULT_DASHBOARD_URL = "http://5.78.214.184:8765";
+    public static final String DEFAULT_DASHBOARD_URL = "https://fiber-locator.5-78-214-184.sslip.io";
     private static final String PREFS = "fiber_locator_settings";
     private static String sessionCookie = "";
 
@@ -36,6 +36,15 @@ public final class AppSettings {
 
     public static boolean rememberMe(Context context) {
         return prefs(context).getBoolean("remember_me", false);
+    }
+
+    public static String dashboardMode(Context context) {
+        String mode = value(context, "dashboard_mode");
+        return "tcw".equals(mode) ? "tcw" : "main";
+    }
+
+    public static void saveDashboardMode(Context context, String mode) {
+        prefs(context).edit().putString("dashboard_mode", "tcw".equals(mode) ? "tcw" : "main").apply();
     }
 
     public static void save(Context context, String dashboardUrl, String username, String password, String authCookie) {

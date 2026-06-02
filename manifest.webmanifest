@@ -11,13 +11,13 @@
   "theme_color": "#07131f",
   "icons": [
     {
-      "src": "/static/fiberlocatorfinal.png?v=20260522170500",
+      "src": "/static/fiberlocatorfinal.png?v=20260602143000",
       "sizes": "1254x1254",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/static/fiberlocatorwhitebackgroud.png?v=20260522170500",
+      "src": "/static/fiberlocatorwhitebackgroud.png?v=20260602143000",
       "sizes": "1254x1254",
       "type": "image/png",
       "purpose": "any"

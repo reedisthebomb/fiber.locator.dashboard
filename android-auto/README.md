@@ -7,7 +7,7 @@ This is a native Android companion for the Fiber Locator dashboard. It uses the 
 - Phone setup screen for the dashboard URL and login details.
 - Android Auto `Live tickets` list loaded from `/api/tickets`.
 - Ticket detail screen with a `Navigate` action using `CarContext.ACTION_NAVIGATE`.
-- Defaults to the cloud dashboard at `http://5.78.214.184:8765`.
+- Defaults to the cloud dashboard at `https://fiber-locator.5-78-214-184.sslip.io`.
 
 ## Build
 

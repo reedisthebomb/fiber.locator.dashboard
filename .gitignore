@@ -13,6 +13,7 @@ Google Earth/
 # Local editor/system files.
 .vscode/
 .idea/
+.serena/
 Thumbs.db
 
 # Local JavaScript dependencies.
@@ -21,7 +22,9 @@ node_modules/
 # Android build outputs and local SDK config.
 android-auto/.gradle/
 android-auto/build/
+android-auto/app/bin/
 android-auto/app/build/
+android-auto/media-test/bin/
 android-auto/media-test/build/
 android-auto/local.properties
 android-auto/*.jks

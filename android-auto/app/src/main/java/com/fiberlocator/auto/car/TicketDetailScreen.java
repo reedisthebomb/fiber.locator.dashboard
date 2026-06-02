@@ -26,16 +26,17 @@ public class TicketDetailScreen extends Screen {
     @Override
     public Template onGetTemplate() {
         Action navigate = new Action.Builder()
-            .setTitle("Navigate")
+            .setTitle("Google Maps")
             .setOnClickListener(this::navigate)
             .build();
 
         Pane.Builder pane = new Pane.Builder().addAction(navigate);
+        addRow(pane, "Status", TicketCarStyle.statusLine(ticket));
         addRow(pane, "Location", ticket.locationLine());
-        addRow(pane, "County", ticket.county);
         addRow(pane, "Due", ticket.dueLine());
-        addRow(pane, "Contractor", first(ticket.contractor, ticket.caller));
-        if (ticket.hasCoordinates) addRow(pane, "Coordinates", ticket.latitude + ", " + ticket.longitude);
+        addRow(pane, "Work", join(first(ticket.workType, ticket.messageType), ticket.nearestIntersection));
+        addRow(pane, "Contractor", join(first(ticket.contractor, ticket.caller), ticket.doneFor));
+        addRow(pane, "Contact", first(ticket.contactPhone, ticket.companyPhone, ticket.contactEmail));
 
         return new PaneTemplate.Builder(pane.build())
             .setTitle(ticket.title())
@@ -52,9 +53,9 @@ public class TicketDetailScreen extends Screen {
         }
     }
 
-    private static void addRow(Pane.Builder pane, String title, String text) {
-        if (text == null || text.trim().isEmpty()) return;
-        pane.addRow(new Row.Builder().setTitle(title).addText(text.trim()).build());
+    private static void addRow(Pane.Builder pane, String title, CharSequence text) {
+        if (text == null || text.toString().trim().isEmpty()) return;
+        pane.addRow(new Row.Builder().setTitle(title).addText(text).build());
     }
 
     private static String first(String... values) {
@@ -62,5 +63,15 @@ public class TicketDetailScreen extends Screen {
             if (value != null && !value.trim().isEmpty()) return value.trim();
         }
         return "";
+    }
+
+    private static String join(String... values) {
+        StringBuilder out = new StringBuilder();
+        for (String value : values) {
+            if (value == null || value.trim().isEmpty()) continue;
+            if (out.length() > 0) out.append(" | ");
+            out.append(value.trim());
+        }
+        return out.toString();
     }
 }

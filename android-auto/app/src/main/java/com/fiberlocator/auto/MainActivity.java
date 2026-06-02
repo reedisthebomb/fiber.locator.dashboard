@@ -1,13 +1,19 @@
 package com.fiberlocator.auto;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Base64;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -15,8 +21,12 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
@@ -38,15 +48,26 @@ import com.fiberlocator.auto.data.TicketRepository.TicketAction;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 public class MainActivity extends Activity {
     private static final int PICK_ATTACHMENTS = 4107;
+    private static final int LOCATION_PERMISSION_REQUEST = 4108;
+    private static final int PICK_PROFILE_PHOTO = 4109;
+    private static final String SECURE_MAP_ORIGIN = "https://appassets.androidplatform.net/";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -64,10 +85,16 @@ public class MainActivity extends Activity {
     private DashboardSnapshot snapshot;
     private Ticket activeTicket;
     private TextView attachmentStatus;
+    private TextView profileStatus;
+    private ImageView profilePhotoPreview;
+    private String pendingProfileAvatarData = "";
     private String screen = "login";
     private String pendingScreen = "";
     private String activeTicketNumber = "";
+    private String pendingGeolocationOrigin = "";
+    private GeolocationPermissions.Callback pendingGeolocationCallback;
     private boolean refreshRunning = false;
+    private boolean tcwDashboardMode = false;
 
     private final int bg = Color.rgb(15, 23, 42);
     private final int surface = Color.rgb(17, 24, 39);
@@ -120,6 +147,18 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != LOCATION_PERMISSION_REQUEST) return;
+        boolean granted = hasLocationPermission();
+        if (pendingGeolocationCallback != null && !pendingGeolocationOrigin.isEmpty()) {
+            pendingGeolocationCallback.invoke(pendingGeolocationOrigin, granted, granted);
+        }
+        pendingGeolocationOrigin = "";
+        pendingGeolocationCallback = null;
+    }
+
+    @Override
     protected void onDestroy() {
         executor.shutdownNow();
         super.onDestroy();
@@ -143,6 +182,24 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == PICK_PROFILE_PHOTO) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                try {
+                    pendingProfileAvatarData = profileImageDataUri(data.getData());
+                    if (profilePhotoPreview != null) profilePhotoPreview.setImageURI(data.getData());
+                    if (profileStatus != null) {
+                        profileStatus.setTextColor(muted);
+                        profileStatus.setText("Profile photo selected.");
+                    }
+                } catch (Exception error) {
+                    if (profileStatus != null) {
+                        profileStatus.setTextColor(danger);
+                        profileStatus.setText(error.getMessage());
+                    }
+                }
+            }
+            return;
+        }
         if (requestCode != PICK_ATTACHMENTS || resultCode != RESULT_OK || data == null) return;
         if (data.getClipData() != null) {
             for (int index = 0; index < data.getClipData().getItemCount(); index++) {
@@ -165,7 +222,7 @@ public class MainActivity extends Activity {
         ImageView logo = logoView(AppSettings.username(this));
         logo.getLayoutParams().height = dp(150);
         TextView heading = text("Fiber Locator", 30, ink, true);
-        TextView sub = text("Sign in with your dashboard login.", 15, muted, false);
+        TextView sub = text("Employee login for live ticket access.", 15, muted, false);
         EditText username = input("Username", AppSettings.username(this), InputType.TYPE_CLASS_TEXT);
         EditText password = input("Password", AppSettings.password(this), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         CheckBox remember = new CheckBox(this);
@@ -175,6 +232,7 @@ public class MainActivity extends Activity {
         remember.setChecked(AppSettings.rememberMe(this));
         TextView status = text(message, 13, message.isEmpty() ? muted : danger, false);
         Button signIn = primaryButton("Sign in");
+        Button createAccount = secondaryButton("Create account request");
         username.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
@@ -208,6 +266,7 @@ public class MainActivity extends Activity {
                 }
             });
         });
+        createAccount.setOnClickListener(view -> showAccountRequest());
 
         page.addView(logo);
         page.addView(heading);
@@ -217,11 +276,75 @@ public class MainActivity extends Activity {
         page.addView(password);
         page.addView(remember);
         page.addView(signIn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        page.addView(createAccount, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        page.addView(status);
+        setContentView(page);
+    }
+
+    private void showAccountRequest() {
+        screen = "account_request";
+        LinearLayout page = column(dp(22), dp(26), dp(22), dp(26));
+        page.setGravity(Gravity.CENTER_VERTICAL);
+        page.setBackgroundColor(bg);
+        TextView heading = text("Create account", 28, ink, true);
+        TextView sub = text("Request employee access. An admin must approve the account before live tickets are available.", 14, muted, false);
+        EditText name = input("Full name", "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
+        EditText email = input("Email", "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        EditText phone = input("Phone", "", InputType.TYPE_CLASS_PHONE);
+        EditText company = input("Company", "", InputType.TYPE_CLASS_TEXT);
+        EditText titleField = input("Title / role", "", InputType.TYPE_CLASS_TEXT);
+        EditText message = input("Message", "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        message.setMinLines(3);
+        message.setSingleLine(false);
+        TextView status = text("", 13, muted, false);
+        Button submit = primaryButton("Submit request");
+        Button back = secondaryButton("Back to employee login");
+        submit.setOnClickListener(view -> {
+            submit.setEnabled(false);
+            status.setTextColor(muted);
+            status.setText("Submitting request...");
+            executor.execute(() -> {
+                try {
+                    JSONObject request = new JSONObject();
+                    request.put("display_name", name.getText().toString());
+                    request.put("email", email.getText().toString());
+                    request.put("phone", phone.getText().toString());
+                    request.put("company", company.getText().toString());
+                    request.put("title", titleField.getText().toString());
+                    request.put("message", message.getText().toString());
+                    repository.submitAccountRequest(request);
+                    runOnUiThread(() -> {
+                        submit.setEnabled(true);
+                        status.setTextColor(accent);
+                        status.setText("Request submitted. An admin will create your employee login.");
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> {
+                        submit.setEnabled(true);
+                        status.setTextColor(danger);
+                        status.setText(error.getMessage());
+                    });
+                }
+            });
+        });
+        back.setOnClickListener(view -> showLogin(""));
+        page.addView(heading);
+        page.addView(sub);
+        page.addView(spacer(16));
+        page.addView(name);
+        page.addView(email);
+        page.addView(phone);
+        page.addView(company);
+        page.addView(titleField);
+        page.addView(message);
+        page.addView(submit, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        page.addView(back, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         page.addView(status);
         setContentView(page);
     }
 
     private void showAppShell() {
+        tcwDashboardMode = "tcw".equals(AppSettings.dashboardMode(this));
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(bg);
@@ -269,6 +392,29 @@ public class MainActivity extends Activity {
         refreshTickets(true);
     }
 
+    private void setDashboardMode(boolean tcwMode) {
+        tcwDashboardMode = tcwMode;
+        AppSettings.saveDashboardMode(this, tcwMode ? "tcw" : "main");
+        activeTicket = null;
+        activeTicketNumber = "";
+        if ("map".equals(screen)) showMap(null);
+        else showTickets();
+    }
+
+    private List<Ticket> visibleTickets() {
+        if (snapshot == null) return new ArrayList<>();
+        List<Ticket> out = new ArrayList<>();
+        for (Ticket ticket : snapshot.tickets) {
+            boolean tcw = isTcwDmi(ticket);
+            if (tcwDashboardMode) {
+                if (tcw && !ticketDueDayIsPast(ticket)) out.add(ticket);
+            } else if (!tcw) {
+                out.add(ticket);
+            }
+        }
+        return out;
+    }
+
     private Button navButton(String label) {
         Button button = new Button(this);
         button.setAllCaps(false);
@@ -299,8 +445,9 @@ public class MainActivity extends Activity {
         activeTicketNumber = "";
         pendingScreen = "";
         chrome.setVisibility(View.VISIBLE);
-        title.setText("Tickets");
-        subtitle.setText(snapshot == null ? "Loading live tickets" : snapshot.tickets.size() + " open tickets");
+        title.setText(tcwDashboardMode ? "One-Calls Done For TCW" : "Tickets");
+        List<Ticket> visible = visibleTickets();
+        subtitle.setText(snapshot == null ? "Loading live tickets" : visible.size() + (tcwDashboardMode ? " TCW ticket(s)" : " open tickets"));
         selectNav(ticketsNav);
         renderTickets();
     }
@@ -313,19 +460,25 @@ public class MainActivity extends Activity {
         LinearLayout tools = new LinearLayout(this);
         tools.setOrientation(LinearLayout.HORIZONTAL);
         tools.setGravity(Gravity.CENTER_VERTICAL);
-        TextView count = text(snapshot == null ? "Loading app view" : snapshot.tickets.size() + " live tickets", 15, ink, true);
+        List<Ticket> visible = visibleTickets();
+        TextView count = text(snapshot == null ? "Loading app view" : visible.size() + (tcwDashboardMode ? " One-Calls Done For TCW" : " live tickets"), 15, ink, true);
         tools.addView(count, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Button refresh = secondaryButton("Refresh");
-        refresh.setOnClickListener(view -> refreshTickets(true));
+        refresh.setOnClickListener(view -> {
+            refresh.setEnabled(false);
+            refresh.setText("Updating...");
+            progress.setVisibility(View.VISIBLE);
+            refreshTickets(true);
+        });
         tools.addView(refresh);
         list.addView(tools);
         list.addView(spacer(8));
         if (snapshot == null) {
             list.addView(emptyState("Loading from the cloud dashboard."));
-        } else if (snapshot.tickets.isEmpty()) {
-            list.addView(emptyState("No open tickets match the published mobile view."));
+        } else if (visible.isEmpty()) {
+            list.addView(emptyState(tcwDashboardMode ? "No One-Calls Done For TCW are due or pending review." : "No open tickets match the published mobile view."));
         } else {
-            for (Ticket ticket : snapshot.tickets) list.addView(ticketRow(ticket));
+            for (Ticket ticket : visible) list.addView(ticketRow(ticket));
         }
         content.addView(scroll);
     }
@@ -394,14 +547,16 @@ public class MainActivity extends Activity {
         Button navigate = primaryButton("Navigate with Google Maps");
         navigate.setOnClickListener(view -> openNavigation(ticket));
         page.addView(navigate, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        page.addView(primaryButton("View map of this ticket"), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        ((Button) page.getChildAt(page.getChildCount() - 1)).setOnClickListener(view -> showMap(ticket));
-        Button dashboard = secondaryButton("View on dashboard");
+        Button dashboard = secondaryButton("See on dashboard map");
         dashboard.setOnClickListener(view -> showMap(ticket));
         page.addView(dashboard, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        Button complete = primaryButton("Complete ticket");
-        complete.setOnClickListener(view -> showCompletionForm(ticket));
-        page.addView(complete, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        if (tcwDashboardMode && isTcwDmi(ticket)) {
+            page.addView(text("Read-only TCW ticket. It stays on this dashboard through the due date.", 14, muted, false));
+        } else {
+            Button complete = primaryButton("Complete ticket");
+            complete.setOnClickListener(view -> showCompletionForm(ticket));
+            page.addView(complete, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        }
         content.addView(scroll);
     }
 
@@ -428,14 +583,12 @@ public class MainActivity extends Activity {
         selectNav(mapNav);
         content.removeAllViews();
         WebView map = new WebView(this);
-        WebSettings settings = map.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        map.setWebViewClient(new WebViewClient());
+        configureLocationWebView(map);
+        map.setWebViewClient(new MapWebViewClient());
         String cookie = AppSettings.authCookie(this);
         if (!cookie.isEmpty()) CookieManager.getInstance().setCookie(AppSettings.dashboardUrl(this), cookie);
         map.addJavascriptInterface(new MapBridge(), "FiberLocator");
-        map.loadDataWithBaseURL(AppSettings.dashboardUrl(this), mapHtml(focus), "text/html", "UTF-8", null);
+        map.loadDataWithBaseURL(webMapOrigin(), mapHtml(focus), "text/html", "UTF-8", null);
         content.addView(map, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
@@ -445,16 +598,16 @@ public class MainActivity extends Activity {
         String focusNumber = focus == null ? "" : focus.ticketNumber;
         return "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             + "<link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\">"
-            + "<style>:root{--vetro-scale:1}html,body,#map{height:100%;margin:0;background:#eef2f5}.leaflet-container{font-family:sans-serif}.opacity{position:fixed;z-index:1000;left:8px;top:70px;bottom:70px;width:38px;border-radius:20px;background:rgba(15,23,42,.72);display:flex;align-items:center;justify-content:center}.opacity input{writing-mode:bt-lr;-webkit-appearance:slider-vertical;width:30px;height:100%;accent-color:#38bdf8}.mwrap{position:relative;width:var(--s);height:var(--s)}.m{position:absolute;left:0;top:0;width:100%;height:100%;background:var(--c);border:2px solid var(--b);opacity:calc(var(--vetro-scale) * var(--o))}.circle{border-radius:50%}.square{}.diamond{transform:rotate(45deg)}.pin{border-radius:50% 50% 50% 0;transform:rotate(-45deg)}.house{clip-path:polygon(50% 0,100% 42%,100% 100%,0 100%,0 42%)}</style></head>"
-            + "<body><div id=\"map\"></div><div class=\"opacity\"><input id=\"vetroOpacity\" type=\"range\" min=\"0\" max=\"100\" value=\"72\" orient=\"vertical\" aria-label=\"Vetro opacity\"></div><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><script>"
+            + "<style>:root{--vetro-scale:1}html,body,#map{height:100%;margin:0;background:#eef2f5}.leaflet-container{font-family:sans-serif}.locate{position:fixed;z-index:1000;right:10px;top:10px;border:0;border-radius:8px;background:#0f172a;color:#f8fafc;padding:10px 12px;font:700 14px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)}.locate.active{background:#0369a1}.locate.error{background:#991b1b}.satellite-toggle{position:fixed;z-index:1000;left:10px;top:75%;transform:translateY(-50%);border:0;border-radius:9px;background:#0f172a;color:#f8fafc;padding:11px 12px;font:800 13px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.28)}.satellite-toggle.active{background:#166534}.measure{position:fixed;z-index:1000;left:10px;bottom:12px;display:flex;gap:8px;align-items:center;background:rgba(15,23,42,.84);color:#f8fafc;border-radius:10px;padding:8px;box-shadow:0 6px 18px rgba(15,23,42,.25)}.measure button{border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:9px 10px;font:700 13px sans-serif}.measure button.active{background:#15803d}.measure span{min-width:82px;font:700 13px sans-serif}.measure-dot{width:12px;height:12px;border-radius:50%;background:#facc15;border:2px solid #111827}.user-dot{width:18px;height:18px;border-radius:50%;background:#38bdf8;border:3px solid #fff;box-shadow:0 0 0 10px rgba(56,189,248,.22),0 2px 10px rgba(15,23,42,.35)}.mwrap{position:relative;width:var(--s);height:var(--s)}.m{position:absolute;left:0;top:0;width:100%;height:100%;background:var(--c);border:2px solid var(--b);opacity:calc(var(--vetro-scale) * var(--o))}.circle{border-radius:50%}.square{}.diamond{transform:rotate(45deg)}.pin{border-radius:50% 50% 50% 0;transform:rotate(-45deg)}.house{clip-path:polygon(50% 0,100% 42%,100% 100%,0 100%,0 42%)}</style></head>"
+            + "<body><div id=\"map\"></div><button id=\"locateMe\" class=\"locate\" type=\"button\">Location off</button><button id=\"satelliteToggle\" class=\"satellite-toggle\" type=\"button\">Satellite</button><div class=\"measure\"><button id=\"measureToggle\" type=\"button\">Measure</button><button id=\"measureClear\" type=\"button\">Clear</button><span id=\"measureStatus\">0 ft</span></div><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><script>"
             + "const tickets=" + json + ";const state=" + stateJson + ";const focus=" + JSONObject.quote(focusNumber) + ";"
-            + "let vetroOpacityScale=1;let vetroLayers=[];"
+            + "let vetroOpacityScale=1;let vetroLayers=[];let locationWatch=null;let userMarker=null;let accuracyCircle=null;let measuring=false;let measurePoints=[];let measureLayer=L.layerGroup();let baseLayer=null;let currentBaseKey='';"
             + "const map=L.map('map',{zoomControl:false,preferCanvas:true}).setView([33.23,-92.67],12);"
             + "const TILE_STYLES={standard:{url:'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',subdomains:'abc',maxZoom:20},contrast:{url:'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',subdomains:'abcd',maxZoom:20},detailed:{url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',maxZoom:20},light:{url:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',subdomains:'abcd',maxZoom:20},dark:{url:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',subdomains:'abcd',maxZoom:20},terrain:{url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',subdomains:'abc',maxZoom:17},satellite:{url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',maxZoom:20},hybrid:{layers:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}','https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}','https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'],maxZoom:20},'mapbox-streets':{provider:'mapbox',styleId:'streets-v12'},'mapbox-outdoors':{provider:'mapbox',styleId:'outdoors-v12'},'mapbox-light':{provider:'mapbox',styleId:'light-v11'},'mapbox-dark':{provider:'mapbox',styleId:'dark-v11'},'mapbox-satellite':{provider:'mapbox',styleId:'satellite-v9'},'mapbox-satellite-streets':{provider:'mapbox',styleId:'satellite-streets-v12'},'mapbox-navigation-day':{provider:'mapbox',styleId:'navigation-day-v1'},'mapbox-navigation-night':{provider:'mapbox',styleId:'navigation-night-v1'}};"
             + "function savedBase(){const s=String(state.baseMapStyle||state.baseMap||state.mapStyle||'standard');return TILE_STYLES[s]?s:'standard';}"
             + "function back(l){try{if(l&&l.bringToBack)l.bringToBack();else if(l&&l.eachLayer)l.eachLayer(x=>x.bringToBack&&x.bringToBack());}catch(e){}}"
-            + "async function addBase(){const key=savedBase();const tile=TILE_STYLES[key];try{let layer;if(tile.provider==='mapbox'){const r=await fetch('/api/map-config',{credentials:'include'});const c=r.ok?await r.json():{};const token=String(c.mapboxAccessToken||'');if(!token)throw new Error('missing mapbox token');layer=L.tileLayer(`https://api.mapbox.com/styles/v1/mapbox/${tile.styleId}/tiles/512/{z}/{x}/{y}?access_token=${encodeURIComponent(token)}`,{maxZoom:22,tileSize:512,zoomOffset:-1,attribution:''});}else if(Array.isArray(tile.layers)){layer=L.layerGroup(tile.layers.map(u=>L.tileLayer(u,{maxZoom:tile.maxZoom||20,attribution:''})));}else{layer=L.tileLayer(tile.url,{maxZoom:tile.maxZoom||20,subdomains:tile.subdomains||'abc',attribution:''});}layer.addTo(map);back(layer);}catch(e){const t=TILE_STYLES.standard;const l=L.tileLayer(t.url,{maxZoom:20,subdomains:t.subdomains,attribution:''}).addTo(map);back(l);}}"
-            + "addBase();"
+            + "async function setBase(key){const tile=TILE_STYLES[key]||TILE_STYLES.standard;try{let layer;if(tile.provider==='mapbox'){const r=await fetch('/api/map-config',{credentials:'include'});const c=r.ok?await r.json():{};const token=String(c.mapboxAccessToken||'');if(!token)throw new Error('missing mapbox token');layer=L.tileLayer(`https://api.mapbox.com/styles/v1/mapbox/${tile.styleId}/tiles/512/{z}/{x}/{y}?access_token=${encodeURIComponent(token)}`,{maxZoom:22,tileSize:512,zoomOffset:-1,attribution:''});}else if(Array.isArray(tile.layers)){layer=L.layerGroup(tile.layers.map(u=>L.tileLayer(u,{maxZoom:tile.maxZoom||20,attribution:''})));}else{layer=L.tileLayer(tile.url,{maxZoom:tile.maxZoom||20,subdomains:tile.subdomains||'abc',attribution:''});}if(baseLayer)map.removeLayer(baseLayer);layer.addTo(map);baseLayer=layer;currentBaseKey=key;document.getElementById('satelliteToggle').classList.toggle('active',key==='mapbox-satellite-streets');back(layer);}catch(e){if(key!=='standard')return setBase('standard');}}"
+            + "setBase(savedBase());document.getElementById('satelliteToggle').addEventListener('click',()=>setBase(currentBaseKey==='mapbox-satellite-streets'?savedBase():'mapbox-satellite-streets'));"
             + "function prop(p,...n){p=p||{};for(const k of n){if(p[k]!=null&&p[k]!== '')return String(p[k]);}const l={};Object.keys(p).forEach(k=>l[k.toLowerCase()]=p[k]);for(const k of n){const v=l[k.toLowerCase()];if(v!=null&&v!=='')return String(v);}return '';}"
             + "function vetroId(f){return prop(f.properties,'layer_id','Layer_ID');}"
             + "function vitId(f){return prop(f.properties,'vitruvi_layer','vitruvi_layer_label','category_name','geojson_layer','Category','category')||'Vitruvi';}"
@@ -467,14 +620,25 @@ public class MainActivity extends Activity {
             + "function pass(list,val){return !Array.isArray(list)||!list.length||list.includes(String(val||''));}"
             + "function vetroPass(x){const p=x.properties||{};return pass(state.vetroLayerFilterSelected,vetroId(x))&&pass(state.vetroPlanFilterSelected,prop(p,'plan'))&&pass(state.vetroBuildFilterSelected,prop(p,'build','Build'))&&pass(state.vetroPlacementFilterSelected,prop(p,'placement','Placement'))&&pass(state.vetroStatusFilterSelected,prop(p,'status_id'))&&pass(state.vetroGeometryFilterSelected,x.geometry&&x.geometry.type)&&pass(state.vetroFiberFilterSelected,prop(p,'Fiber_Capacity','Fiber Capacity'))&&pass(state.vetroRouteFilterSelected,prop(p,'Bore_Plow','Bore Plow'))&&pass(state.vetroPointFilterSelected,prop(p,'HH_Size','Size'));}"
             + "function vitPass(x){return pass(state.vitruviLayerFilterSelected,vitId(x));}"
-            + "const bounds=[];tickets.forEach(t=>{const color=t.id===focus?'#b42318':'#00695c';"
-            + "if(t.polygon){const p=L.geoJSON(t.polygon,{style:{color,weight:3,fillColor:color,fillOpacity:.18}}).addTo(map);p.on('click',()=>FiberLocator.openTicket(t.id));try{bounds.push(p.getBounds())}catch(e){}}"
-            + "if(t.lat&&t.lon){const m=L.circleMarker([t.lat,t.lon],{radius:6,color,fillColor:color,fillOpacity:.9}).addTo(map);m.on('click',()=>FiberLocator.openTicket(t.id));bounds.push(L.latLng(t.lat,t.lon));}});"
+            + "measureLayer.addTo(map);function fmtMeasure(m){const ft=m*3.28084;if(ft<5280)return Math.round(ft).toLocaleString()+' ft';return (ft/5280).toFixed(2)+' mi';}"
+            + "function redrawMeasure(){measureLayer.clearLayers();let total=0;for(let i=0;i<measurePoints.length;i++){L.marker(measurePoints[i],{icon:L.divIcon({className:'',iconSize:[16,16],iconAnchor:[8,8],html:'<div class=\"measure-dot\"></div>'})}).addTo(measureLayer);if(i>0){total+=measurePoints[i-1].distanceTo(measurePoints[i]);}}if(measurePoints.length>1)L.polyline(measurePoints,{color:'#facc15',weight:4,opacity:.95}).addTo(measureLayer);document.getElementById('measureStatus').textContent=fmtMeasure(total);}"
+            + "function addMeasurePoint(ll){measurePoints.push(ll);redrawMeasure();}"
+            + "document.getElementById('measureToggle').addEventListener('click',()=>{measuring=!measuring;document.getElementById('measureToggle').classList.toggle('active',measuring);});"
+            + "document.getElementById('measureClear').addEventListener('click',()=>{measurePoints=[];redrawMeasure();});map.on('click',e=>{if(measuring)addMeasurePoint(e.latlng);});"
+            + "const bounds=[];tickets.forEach(t=>{const color=t.color||'#00695c';"
+            + "if(t.polygon){const p=L.geoJSON(t.polygon,{style:{color,weight:t.id===focus?5:3,fillColor:color,fillOpacity:.11}}).addTo(map);p.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});try{bounds.push(p.getBounds())}catch(e){}}"
+            + "if(t.lat&&t.lon){const m=L.circleMarker([t.lat,t.lon],{radius:6,color,fillColor:color,fillOpacity:.9}).addTo(map);m.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});bounds.push(L.latLng(t.lat,t.lon));}});"
             + "async function layer(url,kind){try{const r=await fetch(url,{credentials:'include'});if(!r.ok)return;const g=await r.json();let f=Array.isArray(g.features)?g.features:[];"
             + "if(kind==='vetro'){if(state.vetroVisible===false)return;f=f.filter(vetroPass);}if(kind==='vitruvi'){if(state.vitruviVisible!==true)return;f=f.filter(vitPass);}"
             + "const group=L.geoJSON({type:'FeatureCollection',features:f},{style:x=>{const id=kind==='vetro'?vetroId(x):vitId(x);const geom=x.geometry&&String(x.geometry.type)||'';const c=color(kind,id,kind==='vetro'?(state.vetroColor||'#2563eb'):'#f97316');const raw=num(kind==='vetro'?state.vetroLayerOpacityOverrides:state.vitruviLayerOpacityOverrides,id,kind==='vetro'?(Number(state.vetroOpacity)||.72):.82,0,1);const op=kind==='vetro'?raw*vetroOpacityScale:raw;const sz=num(kind==='vetro'?state.vetroLayerSizeOverrides:state.vitruviLayerSizeOverrides,id,kind==='vetro'?3:3,1,18);const st={color:c,fillColor:c,weight:geom.startsWith('Line')?sz:1,opacity:op,fillOpacity:op*.32,radius:sz,baseOpacity:raw};const sn=styleName(kind,id,geom);if(geom.startsWith('Line')){st.fillOpacity=0;if(sn==='dashed')st.dashArray='8 6';if(sn==='dotted')st.dashArray='2 6';}return st;},pointToLayer:(x,ll)=>{const id=kind==='vetro'?vetroId(x):vitId(x);const c=color(kind,id,kind==='vetro'?(state.vetroColor||'#2563eb'):'#f97316');const raw=num(kind==='vetro'?state.vetroLayerOpacityOverrides:state.vitruviLayerOpacityOverrides,id,kind==='vetro'?(Number(state.vetroOpacity)||.72):.82,0,1);const op=kind==='vetro'?raw*vetroOpacityScale:raw;const sz=num(kind==='vetro'?state.vetroLayerSizeOverrides:state.vitruviLayerSizeOverrides,id,8,4,28);const marker=L.marker(ll,{icon:icon(styleName(kind,id,'Point'),c,sz*2,op)});marker.options.baseOpacity=raw;return marker;}}).addTo(map);if(kind==='vetro'){vetroLayers.push(group);applyVetroOpacity();}}catch(e){}}"
             + "layer('/api/vetro','vetro');layer('/api/vitruvi','vitruvi');"
-            + "document.getElementById('vetroOpacity').addEventListener('input',e=>{vetroOpacityScale=Number(e.target.value)/100;document.documentElement.style.setProperty('--vetro-scale',String(vetroOpacityScale));applyVetroOpacity();});"
+            + "function setLocate(text,cls){const b=document.getElementById('locateMe');b.textContent=text;b.className='locate '+(cls||'');}"
+            + "function updateLocation(pos){const lat=pos.coords.latitude,lon=pos.coords.longitude,acc=pos.coords.accuracy||0;const ll=[lat,lon];if(!userMarker){userMarker=L.marker(ll,{zIndexOffset:10000,icon:L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],html:'<div class=\"user-dot\"></div>'})}).addTo(map);accuracyCircle=L.circle(ll,{radius:acc,color:'#0284c7',weight:1,fillColor:'#38bdf8',fillOpacity:.14,opacity:.5}).addTo(map);map.setView(ll,17);}else{userMarker.setLatLng(ll);accuracyCircle.setLatLng(ll).setRadius(acc);map.panTo(ll,{animate:true,duration:.35});}setLocate(acc?('Live ±'+Math.round(acc)+'m'):'Live','active');}"
+            + "function locationError(e){setLocate(e&&e.code===1?'Permission denied':'Location unavailable','error');}"
+            + "function startLocation(){if(!navigator.geolocation){setLocate('No GPS','error');return;}if(locationWatch!=null)return;setLocate('Locating...','active');locationWatch=navigator.geolocation.watchPosition(updateLocation,locationError,{enableHighAccuracy:true,maximumAge:1500,timeout:15000});}"
+            + "function stopLocation(){if(locationWatch!=null&&navigator.geolocation){navigator.geolocation.clearWatch(locationWatch);}locationWatch=null;setLocate('Location off','');}"
+            + "function toggleLocation(){if(locationWatch==null)startLocation();else stopLocation();}"
+            + "document.getElementById('locateMe').addEventListener('click',toggleLocation);window.addEventListener('pagehide',stopLocation);window.addEventListener('beforeunload',stopLocation);"
             + "if(focus){const item=tickets.find(t=>t.id===focus);if(item&&item.lat&&item.lon)map.setView([item.lat,item.lon],16);}"
             + "else if(bounds.length){let b=L.latLngBounds([]);bounds.forEach(x=>b.extend(x));map.fitBounds(b,{padding:[18,18],maxZoom:14});}"
             + "</script></body></html>";
@@ -483,7 +647,7 @@ public class MainActivity extends Activity {
     private JSONArray ticketsMapJson() {
         JSONArray out = new JSONArray();
         if (snapshot == null) return out;
-        for (Ticket ticket : snapshot.tickets) {
+        for (Ticket ticket : visibleTickets()) {
             JSONObject item = new JSONObject();
             try {
                 item.put("id", ticket.ticketNumber);
@@ -492,6 +656,7 @@ public class MainActivity extends Activity {
                     item.put("lon", ticket.longitude);
                 }
                 if (ticket.polygon != null) item.put("polygon", ticket.polygon);
+                item.put("color", colorHex(ticketStroke(ticket)));
                 out.put(item);
             } catch (Exception ignored) {
             }
@@ -499,7 +664,15 @@ public class MainActivity extends Activity {
         return out;
     }
 
+    private String colorHex(int color) {
+        return String.format(Locale.US, "#%06X", 0xFFFFFF & color);
+    }
+
     private void showCompletionForm(Ticket ticket) {
+        if (tcwDashboardMode && isTcwDmi(ticket)) {
+            showTicketDetail(ticket);
+            return;
+        }
         screen = "complete";
         activeTicket = ticket;
         activeTicketNumber = ticket.ticketNumber;
@@ -596,7 +769,7 @@ public class MainActivity extends Activity {
                     refreshRunning = false;
                     snapshot = loaded;
                     progress.setVisibility(View.GONE);
-                    if (subtitle != null) subtitle.setText(loaded.tickets.size() + " open tickets | synced " + DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
+                    if (subtitle != null) subtitle.setText(visibleTickets().size() + (tcwDashboardMode ? " TCW ticket(s)" : " open tickets") + " | synced " + DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
                     if ("tickets".equals(screen)) renderTickets();
                     else restoreRequestedScreen();
                 });
@@ -639,8 +812,6 @@ public class MainActivity extends Activity {
             else showTicketDetail(ticket);
         } else if ("map".equals(target)) {
             showMap(findTicket(activeTicketNumber));
-        } else if ("dig".equals(target)) {
-            showDigTickets();
         } else if ("profile".equals(target)) {
             showProfile();
         }
@@ -648,7 +819,7 @@ public class MainActivity extends Activity {
 
     private Ticket findTicket(String ticketNumber) {
         if (snapshot == null || ticketNumber == null || ticketNumber.isEmpty()) return null;
-        for (Ticket ticket : snapshot.tickets) {
+        for (Ticket ticket : visibleTickets()) {
             if (ticket.ticketNumber.equals(ticketNumber)) return ticket;
         }
         return null;
@@ -656,13 +827,14 @@ public class MainActivity extends Activity {
 
     private void showOverflowMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add("Dig Tickets");
+        menu.getMenu().add(tcwDashboardMode ? "Main Dashboard" : "One-Calls Done For TCW");
         menu.getMenu().add("Profile");
         menu.getMenu().add("Refresh");
         menu.getMenu().add("Log out");
         menu.setOnMenuItemClickListener(item -> {
             String label = String.valueOf(item.getTitle());
-            if ("Dig Tickets".equals(label)) showDigTickets();
+            if ("One-Calls Done For TCW".equals(label)) setDashboardMode(true);
+            else if ("Main Dashboard".equals(label)) setDashboardMode(false);
             else if ("Profile".equals(label)) showProfile();
             else if ("Refresh".equals(label)) refreshTickets(true);
             else if ("Log out".equals(label)) {
@@ -693,17 +865,95 @@ public class MainActivity extends Activity {
         activeTicketNumber = "";
         chrome.setVisibility(View.VISIBLE);
         title.setText("Profile");
-        subtitle.setText("Dashboard profile options");
+        subtitle.setText("Account details");
         selectNav(menuNav);
-        openDashboardWebView("/#profile");
+        renderProfileEditor(null, "Loading profile...");
+        executor.execute(() -> {
+            try {
+                JSONObject profile = repository.loadProfile();
+                runOnUiThread(() -> renderProfileEditor(profile, ""));
+            } catch (Exception error) {
+                runOnUiThread(() -> renderProfileEditor(null, error.getMessage()));
+            }
+        });
+    }
+
+    private void renderProfileEditor(JSONObject profile, String message) {
+        content.removeAllViews();
+        pendingProfileAvatarData = "";
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout page = column(dp(14), dp(14), dp(14), dp(120));
+        scroll.addView(page);
+        profilePhotoPreview = new ImageView(this);
+        profilePhotoPreview.setAdjustViewBounds(true);
+        profilePhotoPreview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        LinearLayout.LayoutParams photoParams = new LinearLayout.LayoutParams(dp(112), dp(112));
+        photoParams.gravity = Gravity.CENTER_HORIZONTAL;
+        photoParams.setMargins(0, 0, 0, dp(12));
+        profilePhotoPreview.setLayoutParams(photoParams);
+        String avatar = profile == null ? "" : profile.optString("avatar_data", "");
+        if (!avatar.isEmpty()) setProfilePreviewFromDataUri(avatar);
+        else profilePhotoPreview.setImageResource(logoResource(AppSettings.username(this)));
+
+        EditText displayName = input("Display name", profile == null ? "" : profile.optString("display_name", ""), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
+        EditText email = input("Email", profile == null ? "" : profile.optString("email", ""), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        EditText phone = input("Phone", profile == null ? "" : profile.optString("phone", ""), InputType.TYPE_CLASS_PHONE);
+        EditText company = input("Company", profile == null ? "" : profile.optString("company", ""), InputType.TYPE_CLASS_TEXT);
+        EditText titleField = input("Title / role", profile == null ? "" : profile.optString("title", ""), InputType.TYPE_CLASS_TEXT);
+        EditText address = input("Address", profile == null ? "" : profile.optString("address", ""), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        address.setMinLines(2);
+        address.setSingleLine(false);
+        profileStatus = text(message == null ? "" : message, 13, message == null || message.isEmpty() || message.startsWith("Loading") ? muted : danger, false);
+        Button choosePhoto = secondaryButton("Choose profile photo");
+        Button save = primaryButton("Save profile");
+        choosePhoto.setOnClickListener(view -> pickProfilePhoto());
+        save.setOnClickListener(view -> {
+            save.setEnabled(false);
+            profileStatus.setTextColor(muted);
+            profileStatus.setText("Saving profile...");
+            executor.execute(() -> {
+                try {
+                    JSONObject update = new JSONObject();
+                    update.put("display_name", displayName.getText().toString());
+                    update.put("email", email.getText().toString());
+                    update.put("phone", phone.getText().toString());
+                    update.put("company", company.getText().toString());
+                    update.put("title", titleField.getText().toString());
+                    update.put("address", address.getText().toString());
+                    if (!pendingProfileAvatarData.isEmpty()) update.put("avatar_data", pendingProfileAvatarData);
+                    JSONObject saved = repository.saveProfile(update);
+                    runOnUiThread(() -> {
+                        save.setEnabled(true);
+                        profileStatus.setTextColor(accent);
+                        profileStatus.setText("Profile saved.");
+                        renderProfileEditor(saved, "Profile saved.");
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> {
+                        save.setEnabled(true);
+                        profileStatus.setTextColor(danger);
+                        profileStatus.setText(error.getMessage());
+                    });
+                }
+            });
+        });
+        page.addView(profilePhotoPreview);
+        page.addView(choosePhoto, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        page.addView(displayName);
+        page.addView(email);
+        page.addView(phone);
+        page.addView(company);
+        page.addView(titleField);
+        page.addView(address);
+        page.addView(save, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
+        page.addView(profileStatus);
+        content.addView(scroll);
     }
 
     private void openDashboardWebView(String path) {
         content.removeAllViews();
         WebView web = new WebView(this);
-        WebSettings settings = web.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
+        configureLocationWebView(web);
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
@@ -718,6 +968,100 @@ public class MainActivity extends Activity {
         if (!cookie.isEmpty()) CookieManager.getInstance().setCookie(AppSettings.dashboardUrl(this), cookie);
         web.loadUrl(AppSettings.dashboardUrl(this) + path);
         content.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void pickProfilePhoto() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        startActivityForResult(intent, PICK_PROFILE_PHOTO);
+    }
+
+    private String profileImageDataUri(Uri uri) throws Exception {
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) throw new IllegalStateException("Unable to open profile photo.");
+            Bitmap source = BitmapFactory.decodeStream(in);
+            if (source == null) throw new IllegalStateException("Unable to read profile photo.");
+            int width = source.getWidth();
+            int height = source.getHeight();
+            int max = Math.max(width, height);
+            Bitmap output = source;
+            if (max > 512) {
+                float scale = 512f / max;
+                output = Bitmap.createScaledBitmap(source, Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)), true);
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            output.compress(Bitmap.CompressFormat.JPEG, 82, bytes);
+            if (bytes.size() > 650_000) throw new IllegalStateException("Profile photo is too large. Choose a smaller image.");
+            return "data:image/jpeg;base64," + Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP);
+        }
+    }
+
+    private void setProfilePreviewFromDataUri(String value) {
+        try {
+            int comma = value.indexOf(',');
+            if (comma < 0) return;
+            byte[] bytes = Base64.decode(value.substring(comma + 1), Base64.DEFAULT);
+            Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            if (bitmap != null && profilePhotoPreview != null) profilePhotoPreview.setImageBitmap(bitmap);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void configureLocationWebView(WebView web) {
+        WebSettings settings = web.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setGeolocationEnabled(true);
+        if (!AppSettings.dashboardUrl(this).startsWith("https://")) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+                if (hasLocationPermission()) {
+                    callback.invoke(origin, true, true);
+                    return;
+                }
+                pendingGeolocationOrigin = origin == null ? "" : origin;
+                pendingGeolocationCallback = callback;
+                if (shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)) {
+                    new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Location access")
+                        .setMessage("Allow Fiber Locator to show your exact position on the map while this screen is open.")
+                        .setPositiveButton("Allow", (dialog, which) -> requestLocationPermission())
+                        .setNegativeButton("Not now", (dialog, which) -> denyPendingGeolocation())
+                        .show();
+                } else {
+                    requestLocationPermission();
+                }
+            }
+        });
+    }
+
+    private String webMapOrigin() {
+        String dashboardUrl = AppSettings.dashboardUrl(this);
+        return dashboardUrl.startsWith("https://") ? dashboardUrl : SECURE_MAP_ORIGIN;
+    }
+
+    private boolean hasLocationPermission() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestLocationPermission() {
+        requestPermissions(
+            new String[] {Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION},
+            LOCATION_PERMISSION_REQUEST
+        );
+    }
+
+    private void denyPendingGeolocation() {
+        if (pendingGeolocationCallback != null && !pendingGeolocationOrigin.isEmpty()) {
+            pendingGeolocationCallback.invoke(pendingGeolocationOrigin, false, false);
+        }
+        pendingGeolocationOrigin = "";
+        pendingGeolocationCallback = null;
     }
 
     private int logoResource(String username) {
@@ -766,7 +1110,7 @@ public class MainActivity extends Activity {
         String due = ticketDueStatus(ticket);
         if ("due-today".equals(due)) return Color.rgb(255, 128, 128);
         if ("due-next".equals(due)) return Color.rgb(214, 166, 0);
-        if ("due-later".equals(due)) return Color.rgb(58, 176, 86);
+        if ("due-later".equals(due)) return Color.rgb(21, 128, 61);
         return line;
     }
 
@@ -801,17 +1145,37 @@ public class MainActivity extends Activity {
 
     private Date parseTicketDate(String value) {
         if (value == null || value.trim().isEmpty()) return null;
-        String clean = value.trim();
+        String clean = value.trim().replace(" at ", " ");
         try {
             String[] parts = clean.contains("-") ? clean.split("-") : clean.split("/");
-            if (parts.length != 3) return null;
-            if (clean.contains("-")) return new Date(Integer.parseInt(parts[0]) - 1900, Integer.parseInt(parts[1]) - 1, Integer.parseInt(parts[2]));
-            int year = Integer.parseInt(parts[2]);
-            if (year < 100) year += 2000;
-            return new Date(year - 1900, Integer.parseInt(parts[0]) - 1, Integer.parseInt(parts[1]));
+            if (parts.length >= 3) {
+                String dayPart = parts[2].trim().split("\\s+")[0].replaceAll("[^0-9]", "");
+                if (clean.contains("-") && parts[0].trim().length() == 4) {
+                    return new Date(Integer.parseInt(parts[0].trim()) - 1900, Integer.parseInt(parts[1].trim()) - 1, Integer.parseInt(dayPart));
+                }
+                int year = Integer.parseInt(dayPart);
+                if (year < 100) year += 2000;
+                return new Date(year - 1900, Integer.parseInt(parts[0].trim()) - 1, Integer.parseInt(parts[1].trim()));
+            }
         } catch (Exception ignored) {
-            return null;
         }
+        String[] formats = new String[] {
+            "MMMM d, yyyy h:mm a",
+            "MMM d, yyyy h:mm a",
+            "MMMM d, yyyy",
+            "MMM d, yyyy",
+            "MMMM d yyyy h:mm a",
+            "MMM d yyyy h:mm a",
+            "MMMM d yyyy",
+            "MMM d yyyy"
+        };
+        for (String format : formats) {
+            try {
+                return new SimpleDateFormat(format, Locale.US).parse(clean);
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     private Date startOfToday() {
@@ -831,13 +1195,23 @@ public class MainActivity extends Activity {
         return left.getYear() == right.getYear() && left.getMonth() == right.getMonth() && left.getDate() == right.getDate();
     }
 
+    private boolean ticketDueDayIsPast(Ticket ticket) {
+        Date due = parseTicketDate(ticket.workDate);
+        if (due == null) return false;
+        Date dueDay = new Date(due.getYear(), due.getMonth(), due.getDate());
+        return dueDay.before(startOfToday());
+    }
+
     private boolean isEmergency(Ticket ticket) {
         return priorityText(ticket).contains("EMERGENCY");
     }
 
     private boolean isRemark(Ticket ticket) {
         String text = priorityText(ticket);
-        return text.contains("REMARK") || text.contains("RECALL") || text.contains("SECOND REQUEST");
+        return text.matches(".*\\bRECALL\\b.*")
+            || text.matches(".*\\bSECOND\\s+REQUEST\\b.*")
+            || text.matches(".*\\b24\\s*(HOUR|HR)\\s+PRIORITY\\b.*")
+            || text.matches(".*\\bTWENTY\\s+FOUR\\s+HOUR\\s+PRIORITY\\b.*");
     }
 
     private boolean isRenewal(Ticket ticket) {
@@ -962,6 +1336,48 @@ public class MainActivity extends Activity {
                     }
                 }
             });
+        }
+    }
+
+    private final class MapWebViewClient extends WebViewClient {
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            Uri uri = request == null ? null : request.getUrl();
+            if (uri == null || !"appassets.androidplatform.net".equals(uri.getHost())) {
+                return super.shouldInterceptRequest(view, request);
+            }
+            String path = uri.getPath();
+            if (path == null || !path.startsWith("/api/")) {
+                return super.shouldInterceptRequest(view, request);
+            }
+            return proxyDashboardApi(path);
+        }
+    }
+
+    private WebResourceResponse proxyDashboardApi(String path) {
+        try {
+            URL url = new URL(AppSettings.dashboardUrl(this) + path);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(8000);
+            connection.setReadTimeout(12000);
+            String cookie = AppSettings.authCookie(this);
+            if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);
+            int code = connection.getResponseCode();
+            String contentType = connection.getContentType();
+            if (contentType == null || contentType.trim().isEmpty()) contentType = "application/json";
+            String mimeType = contentType.split(";", 2)[0].trim();
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Cache-Control", "no-store");
+            return new WebResourceResponse(
+                mimeType,
+                "UTF-8",
+                code,
+                connection.getResponseMessage() == null ? "OK" : connection.getResponseMessage(),
+                headers,
+                code >= 400 && connection.getErrorStream() != null ? connection.getErrorStream() : connection.getInputStream()
+            );
+        } catch (Exception error) {
+            return null;
         }
     }
 }

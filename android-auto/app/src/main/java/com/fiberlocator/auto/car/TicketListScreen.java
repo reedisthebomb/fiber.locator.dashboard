@@ -7,7 +7,6 @@ import androidx.annotation.NonNull;
 import androidx.car.app.CarContext;
 import androidx.car.app.Screen;
 import androidx.car.app.model.Action;
-import androidx.car.app.model.ActionStrip;
 import androidx.car.app.model.CarLocation;
 import androidx.car.app.model.ItemList;
 import androidx.car.app.model.ListTemplate;
@@ -41,10 +40,42 @@ public class TicketListScreen extends Screen {
     @NonNull
     @Override
     public Template onGetTemplate() {
-        if (!loading && error.isEmpty() && !tickets.isEmpty()) {
-            return ticketMapTemplate();
+        if (!loading && error.isEmpty() && !tickets.isEmpty()) return ticketMapTemplate();
+        return listTemplateForCurrentState();
+    }
+
+    private Template ticketMapTemplate() {
+        ItemList.Builder list = new ItemList.Builder();
+        Place anchor = null;
+        for (Ticket ticket : tickets) {
+            if (!ticket.hasCoordinates) continue;
+            Place place = new Place.Builder(CarLocation.create(ticket.latitude, ticket.longitude))
+                .setMarker(new PlaceMarker.Builder()
+                    .setLabel(TicketCarStyle.mapLabel(ticket))
+                    .setColor(TicketCarStyle.markerColor(ticket))
+                    .build())
+                .build();
+            if (anchor == null) anchor = place;
+            Row.Builder row = new Row.Builder()
+                .setTitle(TicketCarStyle.title(ticket))
+                .addText(TicketCarStyle.statusLine(ticket))
+                .addText(join(ticket.locationLine(), TicketCarStyle.detailLine(ticket)))
+                .setMetadata(new Metadata.Builder().setPlace(place).build())
+                .setOnClickListener(() -> getScreenManager().push(new TicketDetailScreen(getCarContext(), ticket)));
+            list.addItem(row.build());
         }
 
+        if (anchor == null) return listTemplateForCurrentState();
+
+        return new PlaceListMapTemplate.Builder()
+            .setTitle("Live tickets")
+            .setHeaderAction(Action.APP_ICON)
+            .setAnchor(anchor)
+            .setItemList(list.build())
+            .build();
+    }
+
+    private Template listTemplateForCurrentState() {
         ItemList.Builder list = new ItemList.Builder();
         if (loading) {
             list.addItem(new Row.Builder().setTitle("Loading tickets...").build());
@@ -54,73 +85,18 @@ public class TicketListScreen extends Screen {
                 .addText(error)
                 .build());
         } else if (tickets.isEmpty()) {
-            list.addItem(new Row.Builder().setTitle("No navigable tickets found").build());
+            list.addItem(new Row.Builder().setTitle("No live tickets found").build());
         } else {
             for (Ticket ticket : tickets) {
                 Row.Builder row = new Row.Builder()
-                    .setTitle(ticket.title())
-                    .addText(ticket.locationLine());
-                String summary = ticket.summaryLine();
-                if (!summary.isEmpty()) row.addText(summary);
+                    .setTitle(TicketCarStyle.title(ticket))
+                    .addText(TicketCarStyle.statusLine(ticket))
+                    .addText(join(ticket.locationLine(), TicketCarStyle.detailLine(ticket)));
                 row.setOnClickListener(() -> getScreenManager().push(new TicketDetailScreen(getCarContext(), ticket)));
                 list.addItem(row.build());
             }
         }
 
-        Action refresh = new Action.Builder()
-            .setTitle("Refresh")
-            .setOnClickListener(this::reload)
-            .build();
-
-        return new ListTemplate.Builder()
-            .setSingleList(list.build())
-            .setTitle("Live tickets")
-            .setHeaderAction(Action.APP_ICON)
-            .addAction(refresh)
-            .build();
-    }
-
-    private Template ticketMapTemplate() {
-        ItemList.Builder list = new ItemList.Builder();
-        Place anchor = null;
-        for (Ticket ticket : tickets) {
-            if (!ticket.hasCoordinates) continue;
-            Place place = new Place.Builder(CarLocation.create(ticket.latitude, ticket.longitude))
-                .setMarker(new PlaceMarker.Builder().setLabel(ticket.title()).build())
-                .build();
-            if (anchor == null) anchor = place;
-            Row.Builder row = new Row.Builder()
-                .setTitle(ticket.title())
-                .addText(ticket.locationLine())
-                .setMetadata(new Metadata.Builder().setPlace(place).build())
-                .setOnClickListener(() -> getScreenManager().push(new TicketDetailScreen(getCarContext(), ticket)));
-            String summary = ticket.summaryLine();
-            if (!summary.isEmpty()) row.addText(summary);
-            list.addItem(row.build());
-        }
-
-        if (anchor == null) {
-            return noMappedTicketsTemplate();
-        }
-
-        Action refresh = new Action.Builder()
-            .setTitle("Refresh")
-            .setOnClickListener(this::reload)
-            .build();
-
-        return new PlaceListMapTemplate.Builder()
-            .setTitle("Live tickets")
-            .setHeaderAction(Action.APP_ICON)
-            .setCurrentLocationEnabled(true)
-            .setAnchor(anchor)
-            .setItemList(list.build())
-            .setActionStrip(new ActionStrip.Builder().addAction(refresh).build())
-            .build();
-    }
-
-    private Template noMappedTicketsTemplate() {
-        ItemList.Builder list = new ItemList.Builder()
-            .addItem(new Row.Builder().setTitle("No mapped tickets found").build());
         return new ListTemplate.Builder()
             .setSingleList(list.build())
             .setTitle("Live tickets")
@@ -150,5 +126,15 @@ public class TicketListScreen extends Screen {
                 });
             }
         });
+    }
+
+    private static String join(String... values) {
+        StringBuilder out = new StringBuilder();
+        for (String value : values) {
+            if (value == null || value.trim().isEmpty()) continue;
+            if (out.length() > 0) out.append(" | ");
+            out.append(value.trim());
+        }
+        return out.toString();
     }
 }

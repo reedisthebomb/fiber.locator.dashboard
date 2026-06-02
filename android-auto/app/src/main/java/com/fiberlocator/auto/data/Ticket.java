@@ -148,10 +148,11 @@ public final class Ticket {
 
     public Uri navigationUri() {
         if (hasCoordinates) {
-            return Uri.parse("google.navigation:q=" + latitude + "," + longitude + "&mode=d");
+            String label = Uri.encode(title());
+            return Uri.parse("geo:" + latitude + "," + longitude + "?q=" + latitude + "," + longitude + "(" + label + ")");
         }
         String query = join(first(address, street), place, county, "AR");
-        return Uri.parse("google.navigation:q=" + Uri.encode(query) + "&mode=d");
+        return Uri.parse("geo:0,0?q=" + Uri.encode(query));
     }
 
     public Uri googleMapsUri() {

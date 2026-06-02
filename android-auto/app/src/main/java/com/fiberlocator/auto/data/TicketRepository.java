@@ -32,7 +32,7 @@ public final class TicketRepository {
         new TicketAction("located", "Located", true),
         new TicketAction("locate-delayed", "Locate delayed", false),
         new TicketAction("clear", "Clear", true),
-        new TicketAction("ticket-canceled-by-customer", "Ticket canceled", true),
+        new TicketAction("ticket-canceled-by-customer", "Caller canceled ticket", true),
         new TicketAction("in-conflict", "In conflict", true),
         new TicketAction("cannot-locate", "Cannot locate", true),
         new TicketAction("partially-located-large-project", "Partially located", true),
@@ -87,7 +87,7 @@ public final class TicketRepository {
                 if (!countyFilterAll && !selectedCounties.isEmpty() && !selectedCounties.contains(ticket.county)) continue;
                 if (!showHidden && hiddenTickets.contains(ticket.ticketNumber)) continue;
                 if (!matchesSearch(ticket, search)) continue;
-                if (!ticket.actions.isEmpty()) continue;
+                if (hasDashboardHiddenAction(ticket.actions)) continue;
                 if (ticket.hasCoordinates || !ticket.locationLine().isEmpty()) out.add(ticket);
             }
         }
@@ -108,6 +108,22 @@ public final class TicketRepository {
 
     public void saveTicketActions(DashboardSnapshot snapshot, String ticketNumber, List<String> actionKeys) throws Exception {
         saveTicketCompletion(snapshot, ticketNumber, actionKeys, null, Collections.emptyList());
+    }
+
+    public JSONObject loadProfile() throws Exception {
+        JSONObject payload = requestJson("/api/account/profile", "GET", null);
+        JSONObject profile = payload.optJSONObject("profile");
+        return profile == null ? new JSONObject() : profile;
+    }
+
+    public JSONObject saveProfile(JSONObject profile) throws Exception {
+        JSONObject payload = requestJson("/api/account/profile", "POST", profile == null ? "{}" : profile.toString());
+        JSONObject saved = payload.optJSONObject("profile");
+        return saved == null ? new JSONObject() : saved;
+    }
+
+    public JSONObject submitAccountRequest(JSONObject request) throws Exception {
+        return requestJson("/api/account/request", "POST", request == null ? "{}" : request.toString());
     }
 
     public void saveTicketCompletion(DashboardSnapshot snapshot, String ticketNumber, List<String> actionKeys, String description, List<Uri> attachments) throws Exception {
@@ -444,6 +460,15 @@ public final class TicketRepository {
             }
         }
         return out;
+    }
+
+    private static boolean hasDashboardHiddenAction(List<String> actions) {
+        if (actions == null || actions.isEmpty()) return false;
+        for (String key : actions) {
+            TicketAction action = action(key);
+            if (action != null && action.hidesFromDashboard) return true;
+        }
+        return false;
     }
 
     private static JSONObject actionsToJson(Map<String, List<String>> actions) throws Exception {

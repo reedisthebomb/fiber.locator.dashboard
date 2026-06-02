@@ -4,21 +4,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Fiber Locator</title>
-    <link rel="icon" type="image/png" href="/favicon.ico?v=20260522170500">
-    <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260522170500">
-    <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260522170500">
-    <link rel="manifest" href="/manifest.webmanifest?v=20260522173500">
+    <link rel="icon" type="image/png" href="/favicon.ico?v=20260602143000">
+    <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260602143000">
+    <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260602143000">
     <meta name="theme-color" content="#07131f">
     <meta name="apple-mobile-web-app-title" content="Fiber Locator">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/styles.css?v=20260530114500">
+    <link rel="stylesheet" href="/static/styles.css?v=20260602143000">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
-        <img id="appBrandLogo" src="/static/assets/tcw-logo.png?v=20260523093000" alt="TCW">
+        <img id="appBrandLogo" src="/static/assets/tcw-logo.png?v=20260602143000" alt="Fiber Locator">
         <div>
           <h1>Fiber Locator</h1>
         </div>
@@ -37,9 +36,9 @@
           <div class="more-menu-panel">
             <button id="showSheetView" type="button">Dig Tickets</button>
             <button id="showLiveTicketsView" type="button">Live tickets</button>
-            <button id="showMobileView" type="button">Fiber Locator Mobile</button>
+            <button id="showTcwDashboardView" type="button">One-Calls Done For TCW</button>
             <button id="showDashboardView" type="button">Dashboard</button>
-            <button id="showMobileAdminView" type="button" hidden>Mobile app config</button>
+            <button id="showMobileAdminView" type="button" hidden>Admin console</button>
             <button id="showActivityView" type="button" hidden>Activity</button>
             <button id="showEmployeeView" type="button">Employee Profile</button>
             <button id="showAdminView" type="button">Admin Profile</button>
@@ -47,7 +46,6 @@
               <button id="showSettingsMenu" type="button" aria-expanded="false">Settings</button>
               <div id="settingsPanel" class="settings-panel" hidden>
                 <strong>Settings</strong>
-                <button id="deployAppUpdate" type="button">Deploy / update app</button>
                 <button id="refreshOneDriveStatus" type="button">Check OneDrive</button>
                 <button id="connectOneDrive" type="button">Connect / change OneDrive</button>
                 <div id="oneDriveStatus" class="settings-status">OneDrive status not checked.</div>
@@ -78,7 +76,8 @@
           </label>
           <button id="saveDashboardState" type="button">Save dashboard</button>
           <button id="saveView" type="button">Save view</button>
-          <button id="saveEmployeeDashboard" type="button" hidden>Save mobile app config</button>
+          <button id="saveSharedFieldDefault" type="button" hidden>Save employee dashboard default</button>
+          <button id="saveEmployeeDashboard" type="button" hidden>Save employee dashboard config</button>
           <span id="savedViewStatus">No saved view selected</span>
         </div>
         <div id="employeeBar" class="employeebar" hidden>
@@ -129,6 +128,48 @@
                 Search
                 <input id="vetroSearch" type="search" placeholder="ID, address, note, Vetro ID">
               </label>
+              <section id="appVetroStyleEditor" class="app-vetro-style-editor" aria-label="App VETRO style editor">
+                <div class="app-vetro-style-head">
+                  <div>
+                    <strong>App VETRO Style</strong>
+                    <span id="appVetroStyleSummary">Load VETRO to tune app layer sizes.</span>
+                  </div>
+                  <button id="appVetroSaveView" type="button">Save to app view</button>
+                </div>
+                <label>
+                  Layer
+                  <select id="appVetroLayerSelect"></select>
+                </label>
+                <div class="app-vetro-slider-grid">
+                  <label>
+                    <span id="appVetroSizeLabel">Size</span>
+                    <input id="appVetroLayerSize" type="range" min="1" max="28" step="1" value="12">
+                    <input id="appVetroSizeValue" class="app-vetro-size-input" type="number" min="1" max="28" step="1" value="12" aria-label="Layer size value">
+                  </label>
+                  <label>
+                    <span>Opacity</span>
+                    <input id="appVetroLayerOpacity" type="range" min="0" max="100" step="1" value="85">
+                    <input id="appVetroOpacityValue" class="app-vetro-number-input" type="number" min="0" max="100" step="1" value="85" aria-label="Layer opacity percent">
+                  </label>
+                </div>
+                <div class="app-vetro-inline-controls">
+                  <label>
+                    Color
+                    <input id="appVetroLayerColor" type="color" value="#00a5ff">
+                  </label>
+                  <label>
+                    Style
+                    <select id="appVetroLayerStyle"></select>
+                  </label>
+                </div>
+                <div class="app-vetro-presets">
+                  <button type="button" data-app-vetro-preset="field">Field app</button>
+                  <button type="button" data-app-vetro-preset="satellite">Satellite</button>
+                  <button type="button" data-app-vetro-preset="thin">Thin</button>
+                  <button type="button" data-app-vetro-preset="bold">Bold</button>
+                  <button type="button" data-app-vetro-preset="reset">Reset</button>
+                </div>
+              </section>
               <label>
                 Layer
                 <span class="multi-filter">
@@ -202,9 +243,6 @@
                   <option value="mapbox-satellite-streets">Mapbox satellite streets</option>
                   <option value="mapbox-navigation-day">Mapbox navigation day</option>
                   <option value="mapbox-navigation-night">Mapbox navigation night</option>
-                  <option value="google-roadmap">Google roadmap</option>
-                  <option value="google-satellite">Google satellite</option>
-                  <option value="google-hybrid">Google satellite + roads</option>
                 </select>
               </label>
             </div>
@@ -220,7 +258,6 @@
         <div id="map"></div>
         <form id="mapSearchForm" class="map-search" role="search">
           <input id="mapSearch" type="search" placeholder="Search map, address, intersection, coordinates">
-          <button id="locateMe" type="button">Locate</button>
           <button type="submit">Go</button>
         </form>
         <div class="measure-control" aria-label="Measure distance">
@@ -232,6 +269,7 @@
           </select>
           <span id="measureStatus">Off</span>
         </div>
+        <button id="dashboardSatelliteToggle" class="dashboard-satellite-toggle" type="button" aria-pressed="false">Satellite</button>
         <div id="mapLegend" class="priority-legend map-legend" aria-label="Ticket priority legend"></div>
         <button id="legendToggle" class="legend-toggle" type="button" aria-label="Show legend" title="Show legend">Legend</button>
         <aside id="detail" class="detail">
@@ -283,7 +321,7 @@
 
     <section id="mobileView" class="mobile-view" hidden>
       <header class="mobile-header">
-        <img id="mobileBrandLogo" src="/static/assets/tcw-logo.png?v=20260523093000" alt="TCW">
+        <img id="mobileBrandLogo" src="/static/assets/tcw-logo.png?v=20260602143000" alt="Fiber Locator">
         <div>
           <h2>Fiber Locator Field</h2>
           <p id="mobileSummary">0 active tickets</p>
@@ -295,14 +333,12 @@
       </header>
       <div class="mobile-searchbar">
         <input id="mobileSearch" type="search" placeholder="Search ticket, road, county, contractor">
-        <button id="mobileLocateMe" type="button">Live location</button>
         <button id="mobileRefresh" type="button">Refresh</button>
       </div>
       <nav class="mobile-panel-tabs" aria-label="Mobile app sections">
         <button type="button" class="active" data-mobile-panel="tickets">Tickets <span id="mobileOpenCount">0</span></button>
         <button type="button" data-mobile-panel="map">Map <span id="mobileMapCount">0</span></button>
         <button type="button" data-mobile-panel="done">Done <span id="mobileDoneCount">0</span></button>
-        <button type="button" data-mobile-panel="dig">Dig Tickets <span id="mobileDigCount">0</span></button>
       </nav>
       <div class="mobile-shell">
         <div id="mobileTicketList" class="mobile-ticket-list"></div>
@@ -314,7 +350,6 @@
             </div>
             <button id="mobileMapTickets" type="button">Tickets</button>
             <button id="mobileMapFitAll" type="button">All</button>
-            <button id="mobileFollowLocation" type="button">Follow me</button>
             <button id="mobileMeasureToggle" type="button" aria-pressed="false">Measure</button>
             <button id="mobileMeasureClear" type="button">Clear</button>
             <select id="mobileMeasureUnit" aria-label="Measure unit">
@@ -334,11 +369,14 @@
     <section id="activityView" class="activity-view" hidden>
       <header class="activity-header">
         <div>
-          <h2>Activity</h2>
-          <p>Recent dashboard sign-ins, saves, ticket actions, refreshes, and uploads.</p>
+          <h2>App and Dashboard Log</h2>
+          <p>Dashboard sign-ins, saves, ticket actions, refreshes, uploads, and app activity.</p>
         </div>
         <div class="activity-actions">
           <button id="refreshActivity" type="button">Refresh</button>
+          <button id="downloadActivityExcel" type="button">Download Excel</button>
+          <button id="downloadActivityCsv" type="button">Download CSV</button>
+          <button id="downloadActivityJson" type="button">Download JSON</button>
           <button id="activityBackToDashboard" type="button">Dashboard</button>
         </div>
       </header>
@@ -348,60 +386,31 @@
     <section id="mobileAdminView" class="mobile-admin-view" hidden>
       <header class="mobile-admin-header">
         <div>
-          <h2>Mobile App Config</h2>
-          <p>Publish the field app view, create employee logins, and send setup links.</p>
+          <h2>Admin Console</h2>
+          <p>Configure shared dashboard behavior, employees, account requests, logs, and missing ticket imports.</p>
         </div>
         <div class="mobile-admin-actions">
-          <a id="openMobileAppLink" href="/mobile" target="_blank" rel="noopener noreferrer">Open mobile app</a>
+          <button id="adminOpenActivityLog" type="button">App and Dashboard Log</button>
           <button id="mobileAdminBackToDashboard" type="button">Dashboard</button>
         </div>
       </header>
       <div class="mobile-admin-grid">
-        <section class="mobile-admin-card mobile-admin-publish">
-          <h3>What employees see</h3>
-          <p>The mobile app uses the current admin filters, visible tickets, VETRO layers, map style, ticket colors, and published employee state.</p>
-          <div class="mobile-admin-statline">
-            <span><strong id="mobileConfigOpenCount">0</strong> open</span>
-            <span><strong id="mobileConfigMapCount">0</strong> mapped</span>
-            <span><strong id="mobileConfigDoneCount">0</strong> done</span>
-          </div>
-          <div class="mobile-admin-preview">
-            <div>
-              <span>Field app starts at</span>
-              <strong id="mobileConfigStartMode">Tickets</strong>
-            </div>
-            <div>
-              <span>Saved mobile config</span>
-              <strong id="mobileConfigSavedAt">Not published yet</strong>
-            </div>
-          </div>
-          <button id="publishMobileConfig" type="button">Publish current dashboard to mobile app</button>
-          <p id="mobileConfigStatus" class="mobile-admin-status">Only administrator and site_owner can publish this.</p>
-        </section>
-
-        <section class="mobile-admin-card">
-          <h3>Download mobile app</h3>
-          <div class="install-steps">
-            <div>
-              <strong>iPhone / iPad</strong>
-              <ol>
-                <li>Open <span id="mobileInstallUrlIos">/mobile</span> in Safari.</li>
-                <li>Tap Share.</li>
-                <li>Tap Add to Home Screen.</li>
-                <li>Name it Fiber Locator and tap Add.</li>
-              </ol>
-            </div>
-            <div>
-              <strong>Android</strong>
-              <ol>
-                <li>Open <span id="mobileInstallUrlAndroid">/mobile</span> in Chrome.</li>
-                <li>Tap the three-dot menu.</li>
-                <li>Tap Install app or Add to Home screen.</li>
-                <li>Open Fiber Locator from the app icon.</li>
-              </ol>
-            </div>
-          </div>
-          <button id="copyMobileAppLink" type="button">Copy mobile app link</button>
+        <section class="mobile-admin-card admin-ticket-fetch-card">
+          <h3>Add missing One Call tickets</h3>
+          <p>Paste ticket numbers and a fresh Arkansas One Call GeoCall Copy as cURL request. The server will reuse the newest valid cURL for a few hours, fetch printable ticket pages and polygons, then the dashboard can refresh from the new cache.</p>
+          <form id="adminTicketFetchForm" class="admin-ticket-fetch-form">
+            <label>
+              Ticket numbers
+              <textarea id="adminTicketNumbers" rows="5" placeholder="260529-1101&#10;260529-1594"></textarea>
+            </label>
+            <label>
+              Fresh GeoCall cURL
+              <textarea id="adminGeocallCurl" rows="8" placeholder="Paste once to refresh the reusable GeoCall session, or leave blank to reuse the last saved cURL"></textarea>
+            </label>
+            <button type="submit">Fetch ticket pages and polygons</button>
+          </form>
+          <p id="adminTicketFetchStatus" class="mobile-admin-status">Only administrator and site_owner can run this. The newest cURL is kept in private server storage for short reuse.</p>
+          <pre id="adminTicketFetchLog" class="admin-ticket-fetch-log" hidden></pre>
         </section>
 
         <section class="mobile-admin-card employee-admin-card">
@@ -459,6 +468,6 @@
     <link href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css" rel="stylesheet">
     <script src="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
-    <script src="/static/app.js?v=20260530114500"></script>
+    <script src="/static/app.js?v=20260602143000"></script>
   </body>
 </html>

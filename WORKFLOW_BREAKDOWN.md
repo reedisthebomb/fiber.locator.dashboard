@@ -346,8 +346,8 @@ ssh root@5.78.214.184 'systemctl restart onecall-dashboard && systemctl is-activ
 Then smoke test:
 
 ```sh
-curl -I http://5.78.214.184:8765/
-curl -s http://5.78.214.184:8765/api/tickets
+curl -I https://fiber-locator.5-78-214-184.sslip.io/
+curl -s https://fiber-locator.5-78-214-184.sslip.io/api/tickets
 ```
 
 If auth is enabled, unauthenticated API routes should return an auth failure and browser testing should include a real login.

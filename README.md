@@ -38,7 +38,7 @@ Dashboard login is enabled when `data/dashboard_auth.json` exists on the server.
 Current live cloud dashboard:
 
 ```text
-http://5.78.214.184:8765/
+https://fiber-locator.5-78-214-184.sslip.io/
 ```
 
 Older home-server deployment notes are still retained here:

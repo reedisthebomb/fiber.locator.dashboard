@@ -37,15 +37,15 @@ body {
 
 .brand {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: 58px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-width: 0;
 }
 
 .brand img {
-  width: 88px;
-  height: 42px;
+  width: 52px;
+  height: 52px;
   object-fit: contain;
   padding: 2px;
   border-radius: 10px;
@@ -246,6 +246,7 @@ body:not(.employee-mode) #showAdminView,
 body.employee-mode #showEmployeeView,
 body.employee-mode #showAdminView,
 body.employee-mode #showActivityView,
+body.employee-mode #showMobileAdminView,
 body.employee-mode .settings-flyout {
   display: none;
 }
@@ -817,6 +818,152 @@ body.ticket-list-scrolled .layer-drawers {
   font-weight: 900;
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.app-vetro-style-editor {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.68);
+  border-radius: 8px;
+  background: rgba(14, 116, 144, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.app-vetro-style-editor[hidden] {
+  display: none;
+}
+
+.app-vetro-style-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.app-vetro-style-head div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.app-vetro-style-head strong {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.app-vetro-style-head span {
+  color: #bae6fd;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.app-vetro-style-head button,
+.app-vetro-presets button {
+  min-height: 28px;
+  border: 1px solid rgba(125, 211, 252, 0.55);
+  border-radius: 6px;
+  background: #0f766e;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.app-vetro-style-head button {
+  flex: 0 0 auto;
+  padding: 0 8px;
+}
+
+.app-vetro-style-head button:disabled,
+.app-vetro-presets button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.app-vetro-style-editor > label,
+.app-vetro-inline-controls label,
+.app-vetro-slider-grid label {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: #dbeafe;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.app-vetro-style-editor select,
+.app-vetro-style-editor input[type="color"] {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--ink);
+}
+
+.app-vetro-style-editor input[type="color"] {
+  padding: 2px;
+}
+
+.app-vetro-slider-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.app-vetro-slider-grid label {
+  grid-template-columns: 62px minmax(86px, 1fr) 42px;
+}
+
+.app-vetro-slider-grid input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: #22d3ee;
+}
+
+.app-vetro-slider-grid output {
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 900;
+  text-align: right;
+}
+
+.app-vetro-size-input,
+.app-vetro-number-input {
+  width: 42px;
+  height: 28px;
+  min-width: 0;
+  padding: 0 4px;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.app-vetro-inline-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: 8px;
+}
+
+.app-vetro-presets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.app-vetro-presets button {
+  padding: 0 4px;
 }
 
 .layerbar-controls label {
@@ -1424,8 +1571,8 @@ select,
 }
 
 .defaultbar {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   padding: 10px;
@@ -1435,6 +1582,7 @@ select,
 
 .defaultbar label {
   display: grid;
+  flex: 1 1 170px;
   gap: 4px;
   min-width: 0;
   font-size: 13px;
@@ -1446,7 +1594,7 @@ select,
 }
 
 .defaultbar span {
-  grid-column: 1 / -1;
+  flex: 1 0 100%;
   min-height: 14px;
   color: var(--muted);
   font-size: 11px;
@@ -1485,9 +1633,13 @@ body.employee-mode .layer-drawers details:nth-child(2) .layerbar-controls > labe
   display: none;
 }
 
-body.employee-mode .layer-drawers details:first-child .layerbar-controls > label.employee-allowed-control,
 body.employee-mode .layer-drawers details:nth-child(2) .layerbar-controls > label.employee-allowed-control {
   display: grid;
+}
+
+body.employee-mode .vetro-refresh-panel,
+body.employee-mode .layer-drawers details:first-child .layerbar-controls > label.employee-allowed-control {
+  display: none;
 }
 
 body.employee-mode .vetro-layer-appearance,
@@ -1604,10 +1756,37 @@ button {
   box-shadow: 0 0 0 1px rgba(255, 179, 179, 0.36), 0 3px 12px rgba(0, 0, 0, 0.18);
 }
 
+.ticket-card.ticket-due-later:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority):not(.ticket-remark-priority):not(.ticket-renewal-priority) {
+  background:
+    linear-gradient(135deg, rgba(141, 245, 165, 0.22), rgba(141, 245, 165, 0.06) 56%, rgba(141, 245, 165, 0.16)),
+    var(--panel);
+}
+
+.ticket-card.ticket-due-next:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority):not(.ticket-remark-priority):not(.ticket-renewal-priority) {
+  background:
+    linear-gradient(135deg, rgba(250, 204, 21, 0.26), rgba(250, 204, 21, 0.07) 56%, rgba(250, 204, 21, 0.18)),
+    var(--panel);
+}
+
+.ticket-card.ticket-due-today:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority):not(.ticket-remark-priority):not(.ticket-renewal-priority) {
+  background:
+    linear-gradient(135deg, rgba(255, 179, 179, 0.28), rgba(255, 179, 179, 0.08) 56%, rgba(255, 179, 179, 0.2)),
+    var(--panel);
+}
+
 .ticket-card.ticket-actioned {
   border: 3px solid #ff2b2b;
   background: linear-gradient(90deg, rgba(255, 43, 43, 0.2), var(--panel) 42%);
   box-shadow: 0 0 0 1px rgba(255, 43, 43, 0.4), 0 3px 12px rgba(0, 0, 0, 0.2);
+}
+
+.ticket-card.ticket-emergency-priority:not(.ticket-tcw-dmi-work) {
+  border: 3px solid #ff0033;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(255, 0, 51, 0.42), transparent 58%),
+    linear-gradient(135deg, rgba(255, 0, 51, 0.28), rgba(255, 0, 51, 0.08) 52%, rgba(255, 0, 51, 0.24)),
+    var(--panel);
+  box-shadow: 0 0 0 1px rgba(255, 0, 51, 0.48), 0 3px 14px rgba(255, 0, 51, 0.18);
 }
 
 .ticket-card.ticket-remark-priority:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority) {
@@ -1653,7 +1832,13 @@ button {
 }
 
 .ticket-date-heading span:first-child {
-  color: var(--ink);
+  padding: 3px 8px;
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  border-radius: 6px;
+  background: rgba(250, 204, 21, 0.14);
+  color: #fde68a;
+  font-weight: 900;
+  letter-spacing: 0;
 }
 
 .ticket-group-summary {
@@ -1930,9 +2115,36 @@ button {
   box-shadow: 0 0 0 1px rgba(255, 179, 179, 0.55), 0 12px 30px rgba(0, 0, 0, 0.24);
 }
 
+.detail.ticket-due-later:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority):not(.ticket-remark-priority):not(.ticket-renewal-priority) {
+  background:
+    linear-gradient(135deg, rgba(141, 245, 165, 0.2), rgba(141, 245, 165, 0.05) 58%, rgba(141, 245, 165, 0.14)),
+    var(--panel);
+}
+
+.detail.ticket-due-next:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority):not(.ticket-remark-priority):not(.ticket-renewal-priority) {
+  background:
+    linear-gradient(135deg, rgba(250, 204, 21, 0.24), rgba(250, 204, 21, 0.06) 58%, rgba(250, 204, 21, 0.16)),
+    var(--panel);
+}
+
+.detail.ticket-due-today:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority):not(.ticket-remark-priority):not(.ticket-renewal-priority) {
+  background:
+    linear-gradient(135deg, rgba(255, 179, 179, 0.24), rgba(255, 179, 179, 0.06) 58%, rgba(255, 179, 179, 0.18)),
+    var(--panel);
+}
+
 .detail.ticket-actioned {
   border: 3px solid #ff2b2b;
   box-shadow: 0 0 0 1px rgba(255, 43, 43, 0.55), 0 12px 30px rgba(0, 0, 0, 0.24);
+}
+
+.detail.ticket-emergency-priority:not(.ticket-tcw-dmi-work) {
+  border: 3px solid #ff0033;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(255, 0, 51, 0.34), transparent 54%),
+    linear-gradient(135deg, rgba(255, 0, 51, 0.18), rgba(255, 0, 51, 0.05) 58%, rgba(255, 0, 51, 0.15)),
+    var(--panel);
+  box-shadow: 0 0 0 1px rgba(255, 0, 51, 0.55), 0 12px 30px rgba(0, 0, 0, 0.24);
 }
 
 .detail.ticket-remark-priority:not(.ticket-tcw-dmi-work):not(.ticket-emergency-priority) {
@@ -2005,13 +2217,64 @@ button {
 }
 .legend-due-today i { background: #ffb3b3; }
 .legend-due-next i { background: #facc15; }
-.legend-due-later i { background: #8df5a5; }
+.legend-due-later i { background: #15803d; }
 .legend-actioned i { background: #aeb7c2; }
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.62);
+}
+
+.confirm-card {
+  display: grid;
+  gap: 14px;
+  width: min(380px, 100%);
+  padding: 18px;
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.36);
+}
+
+.confirm-card p {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.confirm-card div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.confirm-card button {
+  min-height: 38px;
+  border: 1px solid #94a3b8;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.confirm-card [data-confirm-yes] {
+  border-color: #166534;
+  background: #166534;
+  color: #ffffff;
+}
 
 .map-legend {
   position: absolute;
   left: 12px;
-  bottom: 24px;
+  bottom: 52px;
   z-index: 900;
   width: min(320px, calc(100% - 24px));
   pointer-events: none;
@@ -2027,14 +2290,36 @@ button {
   transform: translateY(0);
 }
 
+.dashboard-satellite-toggle {
+  position: absolute;
+  left: 12px;
+  top: 75%;
+  z-index: 904;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgba(226, 232, 240, 0.72);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.88);
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 900;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.28);
+  cursor: pointer;
+}
+
+.dashboard-satellite-toggle.active {
+  border-color: #bbf7d0;
+  background: #166534;
+}
+
 .map-search {
   position: absolute;
   top: 12px;
   left: 50%;
   z-index: 902;
   display: grid;
-  grid-template-columns: minmax(220px, 420px) 64px 44px;
-  width: min(590px, calc(100% - 112px));
+  grid-template-columns: minmax(220px, 420px) 44px;
+  width: min(526px, calc(100% - 112px));
   transform: translateX(-50%);
   border: 1px solid rgba(57, 71, 89, 0.74);
   border-radius: 999px;
@@ -2328,7 +2613,8 @@ button {
 }
 
 .mobile-admin-view {
-  min-height: calc(100vh - 54px);
+  height: calc(100vh - 54px);
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background:
@@ -2404,7 +2690,10 @@ button {
   grid-template-columns: minmax(300px, 1fr) minmax(300px, 0.9fr);
   gap: 14px;
   padding: 14px 18px 20px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .mobile-admin-card {
@@ -2421,6 +2710,59 @@ button {
 .mobile-admin-publish,
 .employee-admin-card {
   grid-row: span 2;
+  min-height: 0;
+}
+
+.employee-admin-card {
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  max-height: calc(100vh - 170px);
+  overflow: hidden;
+}
+
+.admin-ticket-fetch-card {
+  grid-column: 1 / -1;
+}
+
+.admin-ticket-fetch-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.45fr) minmax(280px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.admin-ticket-fetch-form label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.admin-ticket-fetch-form textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  padding: 10px;
+  border: 1px solid #b6c2d0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #0f172a;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.admin-ticket-fetch-log {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #dbeafe;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
 }
 
 .mobile-admin-statline {
@@ -2521,6 +2863,11 @@ button {
 .employee-access-list {
   display: grid;
   gap: 10px;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .employee-access-group {
@@ -2580,6 +2927,8 @@ button {
 
 .activity-actions {
   display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -3000,7 +3349,8 @@ button {
 
 .sheet-table th,
 .sheet-table td {
-  max-width: 360px;
+  min-width: 140px;
+  max-width: 380px;
   padding: 8px 10px;
   border-right: 1px solid #334155;
   border-bottom: 1px solid #334155;
@@ -3010,6 +3360,31 @@ button {
   text-align: left;
   vertical-align: top;
   white-space: nowrap;
+}
+
+.sheet-table th {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: #e2e8f0;
+  color: #0f172a;
+  box-shadow: inset 0 -2px 0 #334155;
+}
+
+.sheet-table th:first-child,
+.sheet-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 7;
+}
+
+.sheet-table th:first-child {
+  z-index: 9;
+}
+
+.sheet-table td:first-child {
+  background: #f8fafc;
+  box-shadow: inset -2px 0 0 #334155;
 }
 
 .sheet-table td {
@@ -3317,6 +3692,26 @@ button {
 
 .ticket-action-checks.staged {
   gap: 9px;
+}
+
+.ticket-action-checks .ticket-action-description {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #d4dce7;
+}
+
+.ticket-action-description textarea {
+  width: 100%;
+  min-height: 74px;
+  resize: vertical;
+  border: 1px solid #c7d0db;
+  border-radius: 7px;
+  padding: 8px;
+  background: #ffffff;
+  color: #17202b;
+  font: 13px/1.35 Arial, Helvetica, sans-serif;
 }
 
 .ticket-action-submit-row {
@@ -3641,6 +4036,47 @@ button {
     0 3px 12px rgba(0, 0, 0, 0.2) !important;
 }
 
+.ticket-card.ticket-tcw-review-needed,
+.detail.ticket-tcw-review-needed {
+  border-color: #dc2626 !important;
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.25), rgba(255, 106, 0, 0.08) 58%, rgba(220, 38, 38, 0.18)), var(--panel) !important;
+  box-shadow:
+    0 0 0 2px rgba(220, 38, 38, 0.72),
+    0 0 22px rgba(220, 38, 38, 0.55),
+    0 12px 30px rgba(0, 0, 0, 0.24) !important;
+}
+
+.tcw-review-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 8px;
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.tcw-review-box p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.tcw-review-alert {
+  color: #fecaca !important;
+}
+
+.tcw-review-box button {
+  min-height: 36px;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  background: #991b1b;
+  color: #ffffff;
+  font-weight: 900;
+  cursor: pointer;
+}
+
 .detail.ticket-tcw-dmi-work,
 .detail.ticket-emergency-priority.ticket-tcw-dmi-work,
 .detail.ticket-remark-priority.ticket-tcw-dmi-work {
@@ -3708,7 +4144,7 @@ button {
   top: 0;
   z-index: 1800;
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) auto;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px;
@@ -3720,8 +4156,8 @@ button {
 }
 
 .mobile-header img {
-  width: 88px;
-  height: 42px;
+  width: 52px;
+  height: 52px;
   object-fit: contain;
   padding: 2px;
   border-radius: 10px;
@@ -4461,12 +4897,13 @@ body.mobile-map-open .mobile-detail-back {
   }
 
   .mobile-header {
-    grid-template-columns: 72px minmax(0, 1fr) 42px;
+    grid-template-columns: 54px minmax(0, 1fr) 42px;
     min-height: calc(58px + env(safe-area-inset-top, 0px));
   }
 
   .mobile-header img {
-    width: 68px;
+    width: 48px;
+    height: 48px;
   }
 
   .mobile-header h2 {
@@ -4821,6 +5258,10 @@ body.mobile-map-open .mobile-detail-back {
   }
 
   .layerbar-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-ticket-fetch-form {
     grid-template-columns: 1fr;
   }
 }

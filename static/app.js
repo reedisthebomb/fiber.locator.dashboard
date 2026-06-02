@@ -20,6 +20,7 @@ let mobileUserLocationAccuracy = null;
 let locationWatchId = null;
 let liveLocationEnabled = false;
 let mobilePanel = localStorage.getItem("mobilePanel") || "tickets";
+let dashboardTicketMode = localStorage.getItem("dashboardTicketMode") === "tcw" ? "tcw" : "main";
 let measureTool = null;
 let mobileMeasureTool = null;
 let vetroGeojson = null;
@@ -43,8 +44,7 @@ let historicalDigTicketSearch = "";
 let attachmentCache = {};
 let attachmentLoadingTickets = new Set();
 let settingsCloseTimer = null;
-let mapConfig = { googleMapsTileApiKey: "", mapboxAccessToken: "" };
-const googleTileSessions = {};
+let mapConfig = { mapboxAccessToken: "" };
 const maplibreStyleCache = {};
 const undoStack = [];
 const redoStack = [];
@@ -52,7 +52,7 @@ const MAX_HISTORY = 40;
 const SELECTED_POLYGON_NEARBY_PIXELS = 96;
 const NEARBY_POLYGON_DIM_OPACITY = 0.035;
 const NEARBY_POLYGON_DIM_STROKE_OPACITY = 0.12;
-const DEFAULT_BRAND_LOGO = "/static/assets/tcw-logo.png?v=20260523093000";
+const DEFAULT_BRAND_LOGO = "/static/assets/tcw-logo.png?v=20260602143000";
 const JAMES_BRAND_LOGO = "/static/james-fiber-locator-logo.png?v=20260528190500";
 const STORAGE_KEYS = {
   hiddenTickets: "hiddenTickets",
@@ -60,6 +60,8 @@ const STORAGE_KEYS = {
   ticketActions: "ticketActions",
   ticketActionUpdatedAt: "ticketActionUpdatedAt",
   ticketDescriptions: "ticketDescriptions",
+  ticketMarkedBy: "ticketMarkedBy",
+  tcwClearedTickets: "tcwClearedTickets",
   ticketListCheckpoint: "ticketListCheckpoint",
   showHidden: "showHiddenTickets",
   countyFilterAll: "countyFilterAll",
@@ -280,38 +282,15 @@ const MAP_TILE_STYLES = {
     styleId: "navigation-night-v1",
     attribution: "&copy; Mapbox &copy; OpenStreetMap",
   },
-  "google-roadmap": {
-    label: "Google roadmap",
-    group: "Google",
-    provider: "google",
-    mapType: "roadmap",
-    attribution: "Map data &copy; Google",
-  },
-  "google-satellite": {
-    label: "Google satellite",
-    group: "Google",
-    provider: "google",
-    mapType: "satellite",
-    attribution: "Map data &copy; Google",
-  },
-  "google-hybrid": {
-    label: "Google satellite + roads",
-    group: "Google",
-    provider: "google",
-    mapType: "satellite",
-    layerTypes: ["layerRoadmap"],
-    overlay: false,
-    attribution: "Map data &copy; Google",
-  },
 };
 
-const MAP_STYLE_GROUPS = ["Recommended", "Open maps", "Free vector", "Mapbox", "Google"];
+const MAP_STYLE_GROUPS = ["Recommended", "Open maps", "Free vector", "Mapbox"];
 
 const TICKET_ACTIONS = [
   { key: "located", label: "Located", hidesFromDashboard: true },
   { key: "locate-delayed", label: "Locate delayed", hidesFromDashboard: false },
   { key: "clear", label: "Clear", hidesFromDashboard: true },
-  { key: "ticket-canceled-by-customer", label: "TICKET CANCELED BY customer", hidesFromDashboard: true },
+  { key: "ticket-canceled-by-customer", label: "Caller canceled ticket", hidesFromDashboard: true },
   { key: "in-conflict", label: "In conflict", hidesFromDashboard: true },
   { key: "cannot-locate", label: "Cannot locate", hidesFromDashboard: true },
   { key: "partially-located-large-project", label: "Partially located/large project", hidesFromDashboard: true },
@@ -452,12 +431,11 @@ async function loadMapConfig() {
     if (!response.ok) throw new Error(`Map config failed: ${response.status}`);
     const payload = await response.json();
     mapConfig = {
-      googleMapsTileApiKey: String(payload.googleMapsTileApiKey || ""),
       mapboxAccessToken: String(payload.mapboxAccessToken || ""),
     };
   } catch (error) {
     console.warn("Unable to load map config", error);
-    mapConfig = { googleMapsTileApiKey: "", mapboxAccessToken: "" };
+    mapConfig = { mapboxAccessToken: "" };
   }
 }
 
@@ -590,10 +568,13 @@ function activityDetailsText(details) {
   }
 }
 
+let activityEvents = [];
+
 function renderActivity(events = []) {
   if (!elements.activityList) return;
+  activityEvents = Array.isArray(events) ? events : [];
   if (!events.length) {
-    elements.activityList.innerHTML = '<div class="detail-content">No activity recorded yet.</div>';
+    elements.activityList.innerHTML = '<div class="detail-content">No app or dashboard activity recorded yet.</div>';
     return;
   }
   elements.activityList.innerHTML = events
@@ -610,11 +591,60 @@ function renderActivity(events = []) {
 
 async function loadActivity() {
   if (!elements.activityList) return;
-  elements.activityList.innerHTML = '<div class="detail-content">Loading activity...</div>';
-  const response = await fetch("/api/audit?limit=300");
-  if (!response.ok) throw new Error(`Activity load failed: ${response.status}`);
+  elements.activityList.innerHTML = '<div class="detail-content">Loading app and dashboard log...</div>';
+  const response = await fetch("/api/audit?limit=50000");
+  if (!response.ok) throw new Error(`Log load failed: ${response.status}`);
   const payload = await response.json();
   renderActivity(Array.isArray(payload.events) ? payload.events : []);
+}
+
+function downloadActivityLog(format = "csv") {
+  const events = Array.isArray(activityEvents) ? activityEvents : [];
+  if (!events.length) {
+    showSavedToast("No log entries to download");
+    return;
+  }
+  const rows = [["time", "username", "event", "ip", "details"]];
+  for (const item of events) {
+    rows.push([
+      item.time || "",
+      item.username || "anonymous",
+      item.event || "event",
+      item.ip || "",
+      activityDetailsText(item.details),
+    ]);
+  }
+  let body = "";
+  let type = "text/csv";
+  let extension = "csv";
+  if (format === "json") {
+    body = JSON.stringify(events, null, 2);
+    type = "application/json";
+    extension = "json";
+  } else if (format === "excel") {
+    const header = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
+        <head><meta charset="utf-8"></head>
+        <body><table>`;
+    const tableRows = rows.map((row, index) => `<tr>${row.map((value) => {
+      const cell = escapeHtml(String(value ?? "")).replace(/\n/g, "<br>");
+      return index === 0 ? `<th>${cell}</th>` : `<td>${cell}</td>`;
+    }).join("")}</tr>`).join("");
+    body = `${header}${tableRows}</table></body></html>`;
+    type = "application/vnd.ms-excel";
+    extension = "xls";
+  } else {
+    body = rows.map((row) => row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  }
+  const blob = new Blob([body], { type: `${type};charset=utf-8` });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `fiber-app-dashboard-log-${new Date().toISOString().slice(0, 10)}.${extension}`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  showSavedToast("Log download started");
 }
 
 function updateHistoryButtons() {
@@ -803,6 +833,7 @@ function savedViewStatePayload() {
     ticketActions,
     ticketActionUpdatedAt,
     ticketDescriptions,
+    ticketMarkedBy,
     ticketListCheckpoint,
     showHiddenTickets,
     ticketSearch,
@@ -1148,7 +1179,7 @@ function updateDashboardMenuLabel() {
 }
 
 function applyAuditAccess(username = "") {
-  if (elements.showActivityView) elements.showActivityView.hidden = username !== "site_owner";
+  if (elements.showActivityView) elements.showActivityView.hidden = username !== "site_owner" && !canWriteEmployeeDashboard();
   if (elements.showMobileAdminView) elements.showMobileAdminView.hidden = !canWriteEmployeeDashboard();
   if (elements.vetroCaptureTool) elements.vetroCaptureTool.hidden = username !== "site_owner";
   if (elements.vitruviDrawer) elements.vitruviDrawer.hidden = username !== "site_owner";
@@ -1174,8 +1205,12 @@ function canEditVetroAppearance() {
 function applySharedDashboardAccess() {
   const canWrite = canWriteEmployeeDashboard();
   if (elements.saveEmployeeDashboard) {
-    elements.saveEmployeeDashboard.hidden = true;
+    elements.saveEmployeeDashboard.hidden = !canWrite;
     elements.saveEmployeeDashboard.disabled = !canWrite;
+  }
+  if (elements.saveSharedFieldDefault) {
+    elements.saveSharedFieldDefault.hidden = !canWrite;
+    elements.saveSharedFieldDefault.disabled = !canWrite;
   }
   if (elements.showMobileAdminView) elements.showMobileAdminView.hidden = !canWrite;
   if (elements.mobileSaveEmployeeDashboard) {
@@ -1222,18 +1257,21 @@ function setProfileMode(mode) {
 }
 
 function setCurrentView(view) {
-  currentView = view === "sheet" || view === "live-tickets" || view === "mobile" || view === "activity" || view === "mobile-admin" ? view : "dashboard";
+  if (view === "mobile-admin") view = "admin-console";
+  if (view === "admin-console" && !canWriteEmployeeDashboard()) view = "dashboard";
+  currentView = view === "sheet" || view === "live-tickets" || view === "mobile" || view === "activity" || view === "admin-console" ? view : "dashboard";
   document.body.classList.toggle("sheet-mode", currentView === "sheet");
   document.body.classList.toggle("live-tickets-mode", currentView === "live-tickets");
   document.body.classList.toggle("mobile-mode", currentView === "mobile");
   document.body.classList.toggle("activity-mode", currentView === "activity");
-  document.body.classList.toggle("mobile-admin-mode", currentView === "mobile-admin");
+  document.body.classList.toggle("mobile-admin-mode", currentView === "admin-console");
+  document.body.classList.toggle("admin-console-mode", currentView === "admin-console");
   document.body.classList.toggle("mobile-map-open", currentView === "mobile" && mobilePanel === "map");
   if (elements.sheetView) elements.sheetView.hidden = currentView !== "sheet";
   if (elements.liveTicketsView) elements.liveTicketsView.hidden = currentView !== "live-tickets";
   if (elements.mobileView) elements.mobileView.hidden = currentView !== "mobile";
   if (elements.activityView) elements.activityView.hidden = currentView !== "activity";
-  if (elements.mobileAdminView) elements.mobileAdminView.hidden = currentView !== "mobile-admin";
+  if (elements.mobileAdminView) elements.mobileAdminView.hidden = currentView !== "admin-console";
   if (currentView === "sheet") {
     if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
     historicalDigTicketSearch = ticketSearch;
@@ -1243,7 +1281,7 @@ function setCurrentView(view) {
     renderLiveTicketsView();
   } else if (currentView === "mobile") {
     renderMobileView();
-  } else if (currentView === "mobile-admin") {
+  } else if (currentView === "admin-console") {
     renderMobileAdminConfig();
     void loadEmployeeAccess();
   } else if (currentView === "activity") {
@@ -1259,6 +1297,24 @@ function setCurrentView(view) {
     else history.replaceState(null, "", `#${currentView}`);
   }
   closeMoreMenu();
+}
+
+function setDashboardTicketMode(mode) {
+  dashboardTicketMode = mode === "tcw" ? "tcw" : "main";
+  localStorage.setItem("dashboardTicketMode", dashboardTicketMode);
+  document.body.classList.toggle("tcw-dashboard-mode", dashboardTicketMode === "tcw");
+  if (elements.showTcwDashboardView) {
+    elements.showTcwDashboardView.textContent = dashboardTicketMode === "tcw" ? "Main Dashboard" : "One-Calls Done For TCW";
+  }
+  if (elements.sourcePath && tickets.length) {
+    const label = dashboardTicketMode === "tcw" ? "One-Calls Done For TCW" : "Fiber Locator";
+    elements.sourcePath.dataset.dashboardMode = label;
+  }
+  selectedTicket = null;
+  pendingSelectedTicketNumber = "";
+  localStorage.removeItem("selectedTicketNumber");
+  setCurrentView("dashboard");
+  render();
 }
 
 function captureTicketListScroll() {
@@ -1304,6 +1360,7 @@ function dashboardStatePayload({ employeeViewMode = currentView, applyCheckpoint
     ticketActions,
     ticketActionUpdatedAt,
     ticketDescriptions,
+    ticketMarkedBy,
     ticketListCheckpoint,
     showHiddenTickets,
     ticketSearch,
@@ -1368,6 +1425,7 @@ function ticketWorkflowStatePayload() {
     ticketActions,
     ticketActionUpdatedAt,
     ticketDescriptions,
+    ticketMarkedBy,
     ticketListCheckpoint,
   };
 }
@@ -1395,6 +1453,10 @@ function applyDashboardState(state) {
     if (state.ticketDescriptions && typeof state.ticketDescriptions === "object") {
       ticketDescriptions = normalizeTicketDescriptions(state.ticketDescriptions);
       writeJsonStorage(STORAGE_KEYS.ticketDescriptions, ticketDescriptions);
+    }
+    if (state.ticketMarkedBy && typeof state.ticketMarkedBy === "object") {
+      ticketMarkedBy = normalizeTicketMarkedBy(state.ticketMarkedBy);
+      writeJsonStorage(STORAGE_KEYS.ticketMarkedBy, ticketMarkedBy);
     }
     if ("ticketListCheckpoint" in state) {
       ticketListCheckpoint = normalizeTicketListCheckpoint(state.ticketListCheckpoint);
@@ -1705,6 +1767,63 @@ async function saveEmployeeDashboard({ enabled = true, state = dashboardStatePay
   return employeeDashboardConfig;
 }
 
+async function saveLocatorDefault({ enabled = true, state = dashboardStatePayload() } = {}) {
+  if (!canWriteEmployeeDashboard()) return locatorDefaultConfig;
+  const response = await fetch("/api/locator-default", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ enabled, state }),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to save locator default: ${response.status}`);
+  }
+  const payload = await response.json();
+  locatorDefaultConfig = payload.locatorDefault || { enabled, state };
+  return locatorDefaultConfig;
+}
+
+async function saveAppViewPreset(state) {
+  const response = await fetch("/api/view-presets", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      id: "app view",
+      name: "app view",
+      state,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to save app view: ${response.status}`);
+  }
+  const payload = await response.json();
+  viewPresets = normalizeViewPresets(payload.viewPresets || []);
+  selectedSavedViewId = String(payload.savedView?.id || "app view");
+  renderSavedViewControls();
+  return selectedSavedView();
+}
+
+async function saveSharedFieldDefault() {
+  if (!canWriteEmployeeDashboard()) {
+    showSavedToast("Shared dashboard access denied");
+    return;
+  }
+  const state = dashboardStatePayload({ employeeViewMode: "dashboard" });
+  if (elements.saveSharedFieldDefault) elements.saveSharedFieldDefault.disabled = true;
+  showSavedToast("Saving employee dashboard default...");
+  try {
+    employeeDashboardConfig = await saveEmployeeDashboard({ enabled: true, state, toast: false });
+    renderMobileAdminConfig();
+    showSavedToast("Employee dashboard default saved");
+    auditEvent("employee_dashboard_default_saved_client", { target: "web" });
+  } finally {
+    if (elements.saveSharedFieldDefault) elements.saveSharedFieldDefault.disabled = false;
+  }
+}
+
 function mobileAppUrl() {
   return `${window.location.origin}/mobile`;
 }
@@ -1751,6 +1870,7 @@ function renderEmployeeAccess(payload = {}) {
   if (!elements.employeeAccessList) return;
   const users = Array.isArray(payload.users) ? payload.users : [];
   const invites = Array.isArray(payload.invites) ? payload.invites : [];
+  const accountRequests = Array.isArray(payload.account_requests) ? payload.account_requests : [];
   const employeeUsers = users.filter((item) => item.role === "employee");
   const pendingInvites = invites.filter((item) => !item.used_at);
   const usedInvites = invites.filter((item) => item.used_at).slice(0, 8);
@@ -1760,6 +1880,9 @@ function renderEmployeeAccess(payload = {}) {
   const inviteRows = pendingInvites.length
     ? pendingInvites.map((item) => `<li><strong>${escapeHtml(item.display_name || item.username)}</strong><span>${escapeHtml(item.username)} · pending from ${escapeHtml(formatDashboardDateTime(item.created_at))}</span></li>`).join("")
     : "<li><strong>No pending invites</strong><span>New invite links appear here until they are used.</span></li>";
+  const requestRows = accountRequests.length
+    ? accountRequests.map((item) => `<li><strong>${escapeHtml(item.display_name || item.email || "Account request")}</strong><span>${escapeHtml(item.email || "")}${item.phone ? ` · ${escapeHtml(item.phone)}` : ""}${item.requested_at ? ` · ${escapeHtml(formatDashboardDateTime(item.requested_at))}` : ""}</span></li>`).join("")
+    : "<li><strong>No account requests</strong><span>Requests from the Android app login screen appear here.</span></li>";
   const usedRows = usedInvites.length
     ? `<div class="employee-used-invites"><strong>Recently used</strong><ul>${usedInvites.map((item) => `<li>${escapeHtml(item.username)} · ${escapeHtml(formatDashboardDateTime(item.used_at))}</li>`).join("")}</ul></div>`
     : "";
@@ -1771,6 +1894,10 @@ function renderEmployeeAccess(payload = {}) {
     <div class="employee-access-group">
       <h4>Pending setup links</h4>
       <ul>${inviteRows}</ul>
+    </div>
+    <div class="employee-access-group">
+      <h4>Account requests</h4>
+      <ul>${requestRows}</ul>
     </div>
     ${usedRows}
   `;
@@ -1832,6 +1959,56 @@ async function createEmployeeInvite(event) {
   }
 }
 
+async function runAdminTicketFetch(event) {
+  event.preventDefault();
+  if (!elements.adminTicketFetchForm || !canWriteEmployeeDashboard()) return;
+  const button = elements.adminTicketFetchForm.querySelector('button[type="submit"]');
+  if (button) button.disabled = true;
+  if (elements.adminTicketFetchStatus) elements.adminTicketFetchStatus.textContent = "Fetching GeoCall pages and polygons...";
+  if (elements.adminTicketFetchLog) {
+    elements.adminTicketFetchLog.hidden = true;
+    elements.adminTicketFetchLog.textContent = "";
+  }
+  try {
+    const response = await fetch("/api/admin/geocall-fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticket_numbers: elements.adminTicketNumbers?.value || "",
+        curl: elements.adminGeocallCurl?.value || "",
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.message || `Ticket fetch failed: ${response.status}`);
+    const fetched = Array.isArray(payload.fetched) ? payload.fetched : [];
+    const missing = Array.isArray(payload.missing) ? payload.missing : [];
+    if (elements.adminTicketFetchStatus) {
+      elements.adminTicketFetchStatus.textContent = `${payload.message || `Fetched ${fetched.length} ticket(s).`} Refreshing dashboard tickets...`;
+    }
+    if (elements.adminTicketFetchLog) {
+      const lines = [
+        fetched.length ? `Fetched: ${fetched.join(", ")}` : "Fetched: none",
+        missing.length ? `Still missing: ${missing.join(", ")}` : "Still missing: none",
+      ];
+      if (payload.stdout) lines.push("", payload.stdout.trim());
+      if (payload.stderr) lines.push("", payload.stderr.trim());
+      elements.adminTicketFetchLog.textContent = lines.filter((line) => line !== undefined).join("\n");
+      elements.adminTicketFetchLog.hidden = false;
+    }
+    if (elements.adminGeocallCurl) elements.adminGeocallCurl.value = "";
+    await loadTickets();
+    render();
+    renderMobileAdminConfig();
+    if (elements.adminTicketFetchStatus) elements.adminTicketFetchStatus.textContent = payload.message || `Fetched ${fetched.length} ticket(s).`;
+    showSavedToast("Ticket fetch complete");
+  } catch (error) {
+    if (elements.adminTicketFetchStatus) elements.adminTicketFetchStatus.textContent = error.message || "Ticket fetch failed.";
+    showSavedToast("Ticket fetch failed");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function copyText(text, successMessage = "Copied") {
   try {
     await navigator.clipboard.writeText(text);
@@ -1839,6 +2016,39 @@ async function copyText(text, successMessage = "Copied") {
   } catch (error) {
     window.prompt("Copy", text);
   }
+}
+
+function confirmYesNo(message, yesLabel = "Yes", noLabel = "No") {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "confirm-overlay";
+    overlay.innerHTML = `
+      <div class="confirm-card" role="dialog" aria-modal="true">
+        <p>${escapeHtml(message)}</p>
+        <div>
+          <button type="button" data-confirm-no>${escapeHtml(noLabel)}</button>
+          <button type="button" data-confirm-yes>${escapeHtml(yesLabel)}</button>
+        </div>
+      </div>
+    `;
+    const onKey = (event) => {
+      if (event.key !== "Escape") return;
+      finish(false);
+    };
+    const finish = (value) => {
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(value);
+    };
+    overlay.querySelector("[data-confirm-yes]")?.addEventListener("click", () => finish(true));
+    overlay.querySelector("[data-confirm-no]")?.addEventListener("click", () => finish(false));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(overlay);
+    overlay.querySelector("[data-confirm-yes]")?.focus();
+  });
 }
 
 function showSavedToast(message = "Saved") {
@@ -1912,6 +2122,8 @@ let archivedTickets = new Set(readJsonStorage(STORAGE_KEYS.archivedTickets, []))
 let ticketActions = normalizeTicketActions(readObjectStorage(STORAGE_KEYS.ticketActions));
 let ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(readObjectStorage(STORAGE_KEYS.ticketActionUpdatedAt));
 let ticketDescriptions = normalizeTicketDescriptions(readObjectStorage(STORAGE_KEYS.ticketDescriptions));
+let ticketMarkedBy = normalizeTicketMarkedBy(readObjectStorage(STORAGE_KEYS.ticketMarkedBy));
+let tcwClearedTickets = new Set(readJsonStorage(STORAGE_KEYS.tcwClearedTickets, []));
 let ticketListCheckpoint = normalizeTicketListCheckpoint(readJsonStorage(STORAGE_KEYS.ticketListCheckpoint, null));
 applyTicketListCheckpoint();
 let polygonColor = localStorage.getItem("polygonColor") || "#1f7a4d";
@@ -1923,7 +2135,7 @@ localStorage.removeItem("mapOpacity");
 let ticketOpacity = Number(localStorage.getItem(STORAGE_KEYS.ticketOpacity) || "1");
 let mapStyle = localStorage.getItem(STORAGE_KEYS.mapStyle) || "locator-dark-detail";
 if (!MAP_TILE_STYLES[mapStyle]) mapStyle = "locator-dark-detail";
-let lastStreetMapStyle = ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(mapStyle) || MAP_TILE_STYLES[mapStyle]?.imagery ? "contrast" : mapStyle;
+let lastStreetMapStyle = ["satellite", "hybrid"].includes(mapStyle) || MAP_TILE_STYLES[mapStyle]?.imagery ? "contrast" : mapStyle;
 let mapDataOverlay = localStorage.getItem(STORAGE_KEYS.mapDataOverlay) || "none";
 if (!isValidMapDataOverlay(mapDataOverlay)) mapDataOverlay = "none";
 let sheetSort = readJsonStorage(STORAGE_KEYS.sheetSort, { column: "Due Date", direction: "desc" });
@@ -1990,6 +2202,7 @@ let viewPresets = [];
 let selectedSavedViewId = localStorage.getItem(STORAGE_KEYS.savedViewSelected) || "";
 let employeeDashboardConfig = { enabled: false, state: {}, saved_at: "", saved_by: "" };
 let locatorProfile = normalizeProfile(readObjectStorage(STORAGE_KEYS.profile));
+let appVetroStyleLayerId = localStorage.getItem("appVetroStyleLayerId") || "";
 
 const elements = {
   sourcePath: document.querySelector("#sourcePath"),
@@ -2014,6 +2227,7 @@ const elements = {
   savedViewSelect: document.querySelector("#savedViewSelect"),
   saveDashboardState: document.querySelector("#saveDashboardState"),
   saveView: document.querySelector("#saveView"),
+  saveSharedFieldDefault: document.querySelector("#saveSharedFieldDefault"),
   saveEmployeeDashboard: document.querySelector("#saveEmployeeDashboard"),
   savedViewStatus: document.querySelector("#savedViewStatus"),
   employeeBar: document.querySelector("#employeeBar"),
@@ -2032,6 +2246,17 @@ const elements = {
   vetroLoginLink: document.querySelector("#vetroLoginLink"),
   vetroRefreshBar: document.querySelector("#vetroRefreshBar"),
   vetroSearch: document.querySelector("#vetroSearch"),
+  appVetroStyleEditor: document.querySelector("#appVetroStyleEditor"),
+  appVetroStyleSummary: document.querySelector("#appVetroStyleSummary"),
+  appVetroSaveView: document.querySelector("#appVetroSaveView"),
+  appVetroLayerSelect: document.querySelector("#appVetroLayerSelect"),
+  appVetroLayerSize: document.querySelector("#appVetroLayerSize"),
+  appVetroSizeLabel: document.querySelector("#appVetroSizeLabel"),
+  appVetroSizeValue: document.querySelector("#appVetroSizeValue"),
+  appVetroLayerOpacity: document.querySelector("#appVetroLayerOpacity"),
+  appVetroOpacityValue: document.querySelector("#appVetroOpacityValue"),
+  appVetroLayerColor: document.querySelector("#appVetroLayerColor"),
+  appVetroLayerStyle: document.querySelector("#appVetroLayerStyle"),
   vetroLayerFilter: document.querySelector("#vetroLayerFilter"),
   vetroLayerAll: document.querySelector("#vetroLayerAll"),
   vetroLayerClear: document.querySelector("#vetroLayerClear"),
@@ -2087,6 +2312,8 @@ const elements = {
   redoAction: document.querySelector("#redoAction"),
   showSheetView: document.querySelector("#showSheetView"),
   showLiveTicketsView: document.querySelector("#showLiveTicketsView"),
+  showTcwDashboardView: document.querySelector("#showTcwDashboardView"),
+  dashboardSatelliteToggle: document.querySelector("#dashboardSatelliteToggle"),
   showMobileView: document.querySelector("#showMobileView"),
   showDashboardView: document.querySelector("#showDashboardView"),
   showMobileAdminView: document.querySelector("#showMobileAdminView"),
@@ -2130,9 +2357,18 @@ const elements = {
   employeeInviteStatus: document.querySelector("#employeeInviteStatus"),
   employeeInviteLink: document.querySelector("#employeeInviteLink"),
   employeeAccessList: document.querySelector("#employeeAccessList"),
+  adminTicketFetchForm: document.querySelector("#adminTicketFetchForm"),
+  adminTicketNumbers: document.querySelector("#adminTicketNumbers"),
+  adminGeocallCurl: document.querySelector("#adminGeocallCurl"),
+  adminTicketFetchStatus: document.querySelector("#adminTicketFetchStatus"),
+  adminTicketFetchLog: document.querySelector("#adminTicketFetchLog"),
+  adminOpenActivityLog: document.querySelector("#adminOpenActivityLog"),
   activityView: document.querySelector("#activityView"),
   activityList: document.querySelector("#activityList"),
   refreshActivity: document.querySelector("#refreshActivity"),
+  downloadActivityCsv: document.querySelector("#downloadActivityCsv"),
+  downloadActivityExcel: document.querySelector("#downloadActivityExcel"),
+  downloadActivityJson: document.querySelector("#downloadActivityJson"),
   activityBackToDashboard: document.querySelector("#activityBackToDashboard"),
   mobileSummary: document.querySelector("#mobileSummary"),
   sheetSearch: document.querySelector("#sheetSearch"),
@@ -2416,7 +2652,7 @@ function jamesBrandingEnabled() {
 function applyUserBranding() {
   const jamesBranding = jamesBrandingEnabled();
   const logo = jamesBranding ? JAMES_BRAND_LOGO : DEFAULT_BRAND_LOGO;
-  const alt = jamesBranding ? "James Fiber Locator" : "TCW";
+  const alt = jamesBranding ? "James Fiber Locator" : "Fiber Locator";
   for (const image of [elements.appBrandLogo, elements.mobileBrandLogo]) {
     if (!image) continue;
     image.src = logo;
@@ -2516,7 +2752,7 @@ function slLabel(feature) {
 }
 
 function vetroMarkerIcon(shape, color, size, opacity = 1, label = "", outlineColor = "#111827") {
-  const markerSize = Math.max(8, Math.min(22, Number(size) || 13));
+  const markerSize = Math.max(4, Math.min(28, Number(size) || 13));
   const markerColor = hexToRgba(color, opacity);
   const markerBorder = hexToRgba(outlineColor, Math.max(0.45, clampNumber(opacity, 0, 1, 1)));
   return L.divIcon({
@@ -2528,8 +2764,8 @@ function vetroMarkerIcon(shape, color, size, opacity = 1, label = "", outlineCol
 }
 
 function slMarkerIcon(feature) {
-  const size = Math.max(8, Math.min(22, Number(vetroSlSize) || 13));
-  const markerSize = Math.max(8, Math.min(22, Number(size) || 13));
+  const size = Math.max(4, Math.min(28, Number(vetroSlSize) || 13));
+  const markerSize = Math.max(4, Math.min(28, Number(size) || 13));
   const markerColor = hexToRgba(vetroSlColor, vetroSlOpacity);
   const markerBorder = hexToRgba(vetroSlOutlineColor, Math.max(0.45, clampNumber(vetroSlOpacity, 0, 1, 1)));
   const label = vetroSlLabels ? slLabel(feature) : "";
@@ -2548,7 +2784,7 @@ function vetroLayerSizeDefault(layerId) {
 function vetroLayerSizeRange(layerId) {
   return vetroLayerStyleChoice(layerId) === "line"
     ? { label: "Line width", min: 1, max: 10, step: 1 }
-    : { label: "Size", min: 8, max: 28, step: 1 };
+    : { label: "Size", min: 4, max: 28, step: 1 };
 }
 
 function vetroLayerSize(layerId) {
@@ -2911,11 +3147,13 @@ async function deployAppUpdate() {
   }
 }
 
-function registerServiceWorker() {
+function unregisterWebAppServiceWorkers() {
   if (!("serviceWorker" in navigator)) return;
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/static/service-worker.js").catch((error) => {
-      console.warn("Service worker registration failed", error);
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      for (const registration of registrations) registration.unregister();
+    }).catch((error) => {
+      console.warn("Service worker cleanup failed", error);
     });
   });
 }
@@ -2938,58 +3176,6 @@ function setSidebarCollapsed(collapsed) {
   writeBooleanStorage(STORAGE_KEYS.sidebarCollapsed, sidebarCollapsed);
   applySidebarCollapsed();
   scheduleDashboardStateSave();
-}
-
-function googleSessionCacheKey(tile) {
-  return JSON.stringify({
-    mapType: tile.mapType,
-    layerTypes: tile.layerTypes || [],
-    overlay: Boolean(tile.overlay),
-  });
-}
-
-async function createGoogleTileSession(tile) {
-  if (!mapConfig.googleMapsTileApiKey) {
-    throw new Error("Google Maps Tile API key is not configured on this server.");
-  }
-  const cacheKey = googleSessionCacheKey(tile);
-  const cached = googleTileSessions[cacheKey];
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  if (cached?.session && (!cached.expiry || cached.expiry - nowSeconds > 3600)) {
-    return cached.session;
-  }
-  const body = {
-    mapType: tile.mapType,
-    language: "en-US",
-    region: "US",
-  };
-  if (tile.layerTypes) body.layerTypes = tile.layerTypes;
-  if (typeof tile.overlay === "boolean") body.overlay = tile.overlay;
-  const response = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(mapConfig.googleMapsTileApiKey)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const message = await response.text().catch(() => "");
-    throw new Error(`Google Maps session failed: ${response.status}${message ? ` ${message.slice(0, 160)}` : ""}`);
-  }
-  const payload = await response.json();
-  if (!payload.session) throw new Error("Google Maps session response did not include a session token.");
-  googleTileSessions[cacheKey] = {
-    session: payload.session,
-    expiry: Number(payload.expiry || 0),
-  };
-  return payload.session;
-}
-
-async function googleTileLayer(tile) {
-  const session = await createGoogleTileSession(tile);
-  return L.tileLayer(`https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${encodeURIComponent(session)}&key=${encodeURIComponent(mapConfig.googleMapsTileApiKey)}`, {
-    maxZoom: 20,
-    attribution: tile.attribution,
-    opacity: mapOpacity,
-  });
 }
 
 function mapboxTileLayer(tile) {
@@ -3109,26 +3295,7 @@ async function setMapTileStyle(style, save = true) {
     map.removeLayer(baseTileLayer);
   }
   const tile = MAP_TILE_STYLES[mapStyle];
-  if (tile.provider === "google") {
-    try {
-      baseTileLayer = await googleTileLayer(tile);
-      baseTileLayer.addTo(map);
-      bringBaseLayerToBack(baseTileLayer);
-    } catch (error) {
-      console.error(error);
-      mapStyle = "contrast";
-      localStorage.setItem(STORAGE_KEYS.mapStyle, mapStyle);
-      if (elements.mapStyle) elements.mapStyle.value = mapStyle;
-      baseTileLayer = L.tileLayer(MAP_TILE_STYLES.contrast.url, {
-        maxZoom: 20,
-        attribution: MAP_TILE_STYLES.contrast.attribution,
-        opacity: mapOpacity,
-        subdomains: MAP_TILE_STYLES.contrast.subdomains,
-      }).addTo(map);
-      bringBaseLayerToBack(baseTileLayer);
-      window.alert(`${error.message} Falling back to High contrast streets.`);
-    }
-  } else if (tile.provider === "maplibre") {
+  if (tile.provider === "maplibre") {
     try {
       baseTileLayer = await maplibreTileLayer(tile);
       baseTileLayer.addTo(map);
@@ -3186,25 +3353,40 @@ async function setMapTileStyle(style, save = true) {
     bringBaseLayerToBack(baseTileLayer);
   }
   scheduleMapDataOverlayRefresh();
+  syncDashboardSatelliteToggle();
   if (save) scheduleDashboardStateSave();
 }
 
 function isImageryMapStyle(style) {
-  return ["satellite", "hybrid", "google-satellite", "google-hybrid"].includes(style) || Boolean(MAP_TILE_STYLES[style]?.imagery);
+  return ["satellite", "hybrid"].includes(style) || Boolean(MAP_TILE_STYLES[style]?.imagery);
 }
 
 function preferredImageryMapStyle() {
   if (mapConfig.mapboxAccessToken) return "mapbox-satellite-streets";
-  return mapConfig.googleMapsTileApiKey ? "google-hybrid" : "hybrid";
+  return "hybrid";
 }
 
 function preferredStreetMapStyle() {
   return MAP_TILE_STYLES[lastStreetMapStyle] && !isImageryMapStyle(lastStreetMapStyle) ? lastStreetMapStyle : "locator-dark-detail";
 }
 
+function syncDashboardSatelliteToggle() {
+  if (!elements.dashboardSatelliteToggle) return;
+  const active = mapStyle === "mapbox-satellite-streets";
+  elements.dashboardSatelliteToggle.classList.toggle("active", active);
+  elements.dashboardSatelliteToggle.setAttribute("aria-pressed", active ? "true" : "false");
+  elements.dashboardSatelliteToggle.textContent = active ? "Streets" : "Satellite";
+}
+
 async function toggleMapView() {
   rememberUndoState();
   const nextStyle = isImageryMapStyle(mapStyle) ? preferredStreetMapStyle() : preferredImageryMapStyle();
+  await setMapTileStyle(nextStyle);
+}
+
+async function toggleDashboardSatellite() {
+  rememberUndoState();
+  const nextStyle = mapStyle === "mapbox-satellite-streets" ? preferredStreetMapStyle() : "mapbox-satellite-streets";
   await setMapTileStyle(nextStyle);
 }
 
@@ -3581,6 +3763,178 @@ function renderVetroLayerList(container, values, selected, counts = {}) {
     .join("");
 }
 
+function appVetroAvailableLayerIds() {
+  if (!vetroGeojson?.features) return [];
+  return uniqueSorted(vetroGeojson.features.map(vetroLayerControlId));
+}
+
+function setAppVetroStyleLayer(layerId, { openDrawer = false } = {}) {
+  const available = appVetroAvailableLayerIds();
+  if (!available.length) return;
+  const next = available.includes(String(layerId)) ? String(layerId) : (available.includes(appVetroStyleLayerId) ? appVetroStyleLayerId : available[0]);
+  appVetroStyleLayerId = next;
+  localStorage.setItem("appVetroStyleLayerId", appVetroStyleLayerId);
+  if (elements.appVetroLayerSelect) elements.appVetroLayerSelect.value = appVetroStyleLayerId;
+  if (openDrawer && elements.vetroDrawer) elements.vetroDrawer.open = true;
+  renderAppVetroStyleEditor();
+}
+
+function syncAppVetroLayerInputs(layerId = appVetroStyleLayerId) {
+  if (!elements.vetroLayerFilter || !layerId) return;
+  const layerKey = String(layerId);
+  for (const input of elements.vetroLayerFilter.querySelectorAll("[data-layer-size]")) {
+    if (input.dataset.layerSize === layerKey) input.value = String(vetroLayerSize(layerKey));
+  }
+  for (const input of elements.vetroLayerFilter.querySelectorAll("[data-layer-opacity]")) {
+    if (input.dataset.layerOpacity === layerKey) input.value = String(opacityToPercent(vetroLayerOpacity(layerKey)));
+  }
+  for (const select of elements.vetroLayerFilter.querySelectorAll("[data-layer-style]")) {
+    if (select.dataset.layerStyle === layerKey) select.value = vetroLayerStyleOverrides[layerKey] || "";
+  }
+}
+
+function renderAppVetroStyleEditor(layerIds = appVetroAvailableLayerIds(), counts = {}) {
+  if (!elements.appVetroStyleEditor) return;
+  elements.appVetroStyleEditor.hidden = !canEditVetroAppearance();
+  if (elements.appVetroStyleEditor.hidden) return;
+  if (!layerIds.length) {
+    if (elements.appVetroLayerSelect) elements.appVetroLayerSelect.innerHTML = "";
+    if (elements.appVetroStyleSummary) elements.appVetroStyleSummary.textContent = "Load VETRO to tune app layer sizes.";
+    for (const control of [elements.appVetroLayerSelect, elements.appVetroLayerSize, elements.appVetroLayerOpacity, elements.appVetroLayerColor, elements.appVetroLayerStyle, elements.appVetroSaveView]) {
+      if (control) control.disabled = true;
+    }
+    return;
+  }
+  for (const control of [elements.appVetroLayerSelect, elements.appVetroLayerSize, elements.appVetroLayerOpacity, elements.appVetroLayerColor, elements.appVetroLayerStyle, elements.appVetroSaveView]) {
+    if (control) control.disabled = false;
+  }
+  if (!layerIds.includes(appVetroStyleLayerId)) {
+    const selected = layerIds.find((layerId) => vetroSelectedLayers.has(layerId));
+    appVetroStyleLayerId = selected || layerIds[0];
+    localStorage.setItem("appVetroStyleLayerId", appVetroStyleLayerId);
+  }
+  if (elements.appVetroLayerSelect) {
+    elements.appVetroLayerSelect.innerHTML = layerIds
+      .map((layerId) => `<option value="${escapeHtml(layerId)}">${escapeHtml(vetroLayerLabel(layerId, counts[layerId] || 0))}</option>`)
+      .join("");
+    elements.appVetroLayerSelect.value = appVetroStyleLayerId;
+  }
+  const range = vetroLayerSizeRange(appVetroStyleLayerId);
+  if (elements.appVetroSizeLabel) elements.appVetroSizeLabel.textContent = range.label;
+  if (elements.appVetroLayerSize) {
+    elements.appVetroLayerSize.min = String(range.min);
+    elements.appVetroLayerSize.max = String(range.max);
+    elements.appVetroLayerSize.step = String(range.step);
+    elements.appVetroLayerSize.value = String(vetroLayerSize(appVetroStyleLayerId));
+  }
+  if (elements.appVetroSizeValue) {
+    elements.appVetroSizeValue.min = String(range.min);
+    elements.appVetroSizeValue.max = String(range.max);
+    elements.appVetroSizeValue.step = String(range.step);
+    elements.appVetroSizeValue.value = String(vetroLayerSize(appVetroStyleLayerId));
+  }
+  if (elements.appVetroLayerOpacity) elements.appVetroLayerOpacity.value = String(opacityToPercent(vetroLayerOpacity(appVetroStyleLayerId)));
+  if (elements.appVetroOpacityValue) elements.appVetroOpacityValue.value = String(opacityToPercent(vetroLayerOpacity(appVetroStyleLayerId)));
+  if (elements.appVetroLayerColor) elements.appVetroLayerColor.value = colorForVetroLayer(appVetroStyleLayerId);
+  if (elements.appVetroLayerStyle) {
+    const current = vetroLayerStyleOverrides[String(appVetroStyleLayerId)] || "";
+    elements.appVetroLayerStyle.innerHTML = vetroLayerStyleChoices(appVetroStyleLayerId)
+      .map(([value, text]) => `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(text)}</option>`)
+      .join("");
+    elements.appVetroLayerStyle.value = current;
+  }
+  if (elements.appVetroStyleSummary) {
+    elements.appVetroStyleSummary.textContent = `${vetroLayerDisplayName(appVetroStyleLayerId)} · ${range.label.toLowerCase()} ${vetroLayerSize(appVetroStyleLayerId)} · ${opacityToPercent(vetroLayerOpacity(appVetroStyleLayerId))}%`;
+  }
+}
+
+function updateAppVetroLayerSize(value) {
+  if (!appVetroStyleLayerId) return;
+  rememberUndoState();
+  const range = vetroLayerSizeRange(appVetroStyleLayerId);
+  vetroLayerSizeOverrides[appVetroStyleLayerId] = clampNumber(value, range.min, range.max, vetroLayerSizeDefault(appVetroStyleLayerId));
+  vetroLayerSizeOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerSizes, vetroLayerSizeOverrides, (layerId, item) => Number.isFinite(Number(item)));
+  renderVetroLayer();
+  syncAppVetroLayerInputs();
+  renderAppVetroStyleEditor();
+  scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
+}
+
+function updateAppVetroLayerOpacity(value) {
+  if (!appVetroStyleLayerId) return;
+  rememberUndoState();
+  vetroLayerOpacityOverrides[appVetroStyleLayerId] = percentToOpacity(value, vetroOpacity);
+  vetroLayerOpacityOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerOpacities, vetroLayerOpacityOverrides, (layerId, item) => Number.isFinite(Number(item)));
+  renderVetroLayer();
+  syncAppVetroLayerInputs();
+  renderAppVetroStyleEditor();
+  scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
+}
+
+function updateAppVetroLayerStyle(value) {
+  if (!appVetroStyleLayerId) return;
+  rememberUndoState();
+  vetroLayerStyleOverrides[appVetroStyleLayerId] = value;
+  vetroLayerStyleOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerStyles, vetroLayerStyleOverrides, (layerId, item) => vetroLayerStyleValid(layerId, item));
+  renderVetroLayer();
+  syncAppVetroLayerInputs();
+  renderAppVetroStyleEditor();
+  scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
+}
+
+function applyAppVetroPreset(name) {
+  if (!appVetroStyleLayerId) return;
+  rememberUndoState();
+  const range = vetroLayerSizeRange(appVetroStyleLayerId);
+  const line = vetroLayerStyleChoice(appVetroStyleLayerId) === "line";
+  if (name === "reset") {
+    delete vetroLayerSizeOverrides[appVetroStyleLayerId];
+    delete vetroLayerOpacityOverrides[appVetroStyleLayerId];
+    delete vetroLayerStyleOverrides[appVetroStyleLayerId];
+  } else {
+    const preset = {
+      field: { size: line ? 4 : 15, opacity: 0.78, style: line ? "solid" : "circle" },
+      satellite: { size: line ? 5 : 17, opacity: 0.9, style: line ? "solid" : "pin" },
+      thin: { size: line ? 2 : 10, opacity: 0.55, style: line ? "solid" : "circle" },
+      bold: { size: line ? 7 : 22, opacity: 0.95, style: line ? "solid" : "pin" },
+    }[name];
+    if (!preset) return;
+    vetroLayerSizeOverrides[appVetroStyleLayerId] = clampNumber(preset.size, range.min, range.max, vetroLayerSizeDefault(appVetroStyleLayerId));
+    vetroLayerOpacityOverrides[appVetroStyleLayerId] = clampNumber(preset.opacity, 0, 1, vetroOpacity);
+    if (vetroLayerStyleValid(appVetroStyleLayerId, preset.style)) vetroLayerStyleOverrides[appVetroStyleLayerId] = preset.style;
+  }
+  vetroLayerSizeOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerSizes, vetroLayerSizeOverrides, (layerId, item) => Number.isFinite(Number(item)));
+  vetroLayerOpacityOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerOpacities, vetroLayerOpacityOverrides, (layerId, item) => Number.isFinite(Number(item)));
+  vetroLayerStyleOverrides = normalizeObjectStorage(STORAGE_KEYS.vetroLayerStyles, vetroLayerStyleOverrides, (layerId, item) => vetroLayerStyleValid(layerId, item));
+  renderVetroLayer();
+  syncAppVetroLayerInputs();
+  renderAppVetroStyleEditor();
+  scheduleDashboardStateSave();
+  scheduleEmployeeDashboardSync();
+}
+
+async function saveAppVetroStyleView() {
+  if (!canWriteEmployeeDashboard()) {
+    showSavedToast("Shared dashboard access denied");
+    return;
+  }
+  if (elements.appVetroSaveView) elements.appVetroSaveView.disabled = true;
+  showSavedToast("Saving app VETRO style...");
+  try {
+    await saveAppViewPreset(dashboardStatePayload({ employeeViewMode: "mobile" }));
+    showSavedToast("App VETRO style saved");
+    if (elements.appVetroStyleSummary) elements.appVetroStyleSummary.textContent = "Saved to app view. Refresh tickets in the native app.";
+  } catch (error) {
+    showSavedToast("App VETRO style save failed");
+    console.error(error);
+  } finally {
+    if (elements.appVetroSaveView) elements.appVetroSaveView.disabled = false;
+  }
+}
+
 function vitruviLayerTitle(layerId, count = 0) {
   const geometry = vitruviLayerGeometryType(layerId);
   const note = vitruviLayerNote(layerId);
@@ -3826,6 +4180,7 @@ function bindVetroPopup(feature, layer) {
     .filter(([, value]) => value)
     .map(([label, value]) => `<div><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`)
     .join("");
+  if (layerId) layer.on("click", () => setAppVetroStyleLayer(layerId, { openDrawer: true }));
   layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${rows ? `<div class="popup-rows">${rows}</div>` : ""}`);
 }
 
@@ -4111,6 +4466,7 @@ function populateVetroFilters() {
   writeJsonStorage(STORAGE_KEYS.vetroLayers, [...vetroSelectedLayers]);
   const layerCounts = valueCountMap(features, vetroLayerControlId);
   renderVetroLayerList(elements.vetroLayerFilter, layerIds, [...vetroSelectedLayers], layerCounts);
+  renderAppVetroStyleEditor(layerIds, layerCounts);
   const planValues = uniqueSorted(features.map((feature) => propValue(feature.properties || {}, "plan")));
 
   vetroSelectedPlans = normalizeSelectedSet(vetroSelectedPlans, planValues, STORAGE_KEYS.vetroPlan);
@@ -4332,6 +4688,15 @@ function normalizeTicketDescriptions(value) {
   return normalized;
 }
 
+function normalizeTicketMarkedBy(value) {
+  const normalized = {};
+  for (const [ticketNumber, username] of Object.entries(value || {})) {
+    const text = String(username || "").trim();
+    if (text) normalized[String(ticketNumber)] = text.slice(0, 120);
+  }
+  return normalized;
+}
+
 function ticketSelectedActions(ticketNumber) {
   return Array.isArray(ticketActions[ticketNumber]) ? ticketActions[ticketNumber] : [];
 }
@@ -4381,9 +4746,11 @@ function saveTicketWorkflowState() {
   ticketActions = normalizeTicketActions(ticketActions);
   ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(ticketActionUpdatedAt);
   ticketDescriptions = normalizeTicketDescriptions(ticketDescriptions);
+  ticketMarkedBy = normalizeTicketMarkedBy(ticketMarkedBy);
   writeJsonStorage(STORAGE_KEYS.ticketActions, ticketActions);
   writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
   writeJsonStorage(STORAGE_KEYS.ticketDescriptions, ticketDescriptions);
+  writeJsonStorage(STORAGE_KEYS.ticketMarkedBy, ticketMarkedBy);
   scheduleTicketWorkflowServerSave();
   scheduleDashboardStateSave();
   void saveDashboardState().catch((error) => {
@@ -4411,6 +4778,8 @@ function setTicketActions(ticketNumber, actionKeys) {
   const next = [...new Set((actionKeys || []).map(String).filter((key) => actionByKey(key)))];
   if (next.length) ticketActions[ticketNumber] = next;
   else delete ticketActions[ticketNumber];
+  const actor = currentUsername || currentUserDisplayName;
+  if (actor) ticketMarkedBy[ticketNumber] = actor;
   stampTicketAction(ticketNumber);
   saveTicketWorkflowState();
   auditEvent("ticket_actions_changed", { ticket: ticketNumber, actions: next });
@@ -4420,6 +4789,8 @@ function setAllTicketActions(ticketNumber, selected) {
   if (!selected && protectedTicketNumbersFromCheckpoint().has(String(ticketNumber))) return;
   if (selected) ticketActions[ticketNumber] = TICKET_ACTIONS.map((action) => action.key);
   else delete ticketActions[ticketNumber];
+  const actor = currentUsername || currentUserDisplayName;
+  if (actor) ticketMarkedBy[ticketNumber] = actor;
   stampTicketAction(ticketNumber);
   saveTicketWorkflowState();
   auditEvent("ticket_actions_all_changed", { ticket: ticketNumber, selected });
@@ -4453,6 +4824,7 @@ function actionControlHtml(ticketNumber, compact = false, options = {}) {
   const allChecked = TICKET_ACTIONS.every((action) => selected.has(action.key));
   const deferred = Boolean(options.deferred);
   const externalSubmit = Boolean(options.externalSubmit);
+  const includeDescription = Boolean(options.includeDescription);
   const allAttribute = deferred ? "data-ticket-action-stage-all" : "data-ticket-action-all";
   const actionAttribute = deferred ? "data-ticket-action-stage" : "data-ticket-action";
   const rows = [
@@ -4467,8 +4839,14 @@ function actionControlHtml(ticketNumber, compact = false, options = {}) {
         <span data-ticket-action-pending="${escapeHtml(ticketNumber)}">Choose actions, then submit.</span>
       </div>`
     : "";
+  const description = includeDescription
+    ? `<label class="ticket-action-description">
+        Description before submit
+        <textarea data-ticket-description="${escapeHtml(ticketNumber)}" rows="3" placeholder="Add locator notes">${escapeHtml(ticketDescription(ticketNumber))}</textarea>
+      </label>`
+    : "";
   const upload = deferred ? attachmentUploadHtml(ticketNumber) : "";
-  return `<div class="ticket-action-checks${compact ? " compact" : ""}${deferred ? " staged" : ""}" data-action-mode="${deferred ? "deferred" : "instant"}">${rows}${upload}${submit}</div>`;
+  return `<div class="ticket-action-checks${compact ? " compact" : ""}${deferred ? " staged" : ""}" data-action-mode="${deferred ? "deferred" : "instant"}">${rows}${description}${upload}${submit}</div>`;
 }
 
 function firstTicketValue(ticket, keys) {
@@ -4538,7 +4916,7 @@ const SHEET_COLUMNS = [
   ["Description", (ticket, expanded) => expanded ? `
     <textarea class="sheet-description" data-ticket-description="${escapeHtml(ticket.ticket_number)}" placeholder="Leave a description">${escapeHtml(ticketDescription(ticket.ticket_number))}</textarea>
   ` : escapeHtml(ticketDescription(ticket.ticket_number) || workDescription(ticket)), "html"],
-  ["Marked By", () => ""],
+  ["Marked By", (ticket) => ticketMarkedBy[ticket.ticket_number] || ""],
   ["Comment", () => ""],
   ["811 Ticket #", (ticket) => ticket.ticket_number || ""],
   ["Due Date", ticketDueText],
@@ -4633,6 +5011,7 @@ function sheetExportCell(ticket, column) {
   const [label, getter, mode] = column;
   if (label === "Action") return ticketActionLabels(ticket.ticket_number).join("; ");
   if (label === "Description") return ticketDescription(ticket.ticket_number) || workDescription(ticket);
+  if (label === "Marked By") return ticketMarkedBy[ticket.ticket_number] || "";
   const value = getter(ticket, false) || "";
   return mode === "html" ? plainTextFromHtml(value) : String(value);
 }
@@ -5192,7 +5571,7 @@ function bindTicketActionControls(container) {
       const selected = stagedActionKeys(wrapper);
       const uploader = wrapper.querySelector("[data-ticket-upload]");
       const shouldAskForAttachments = selected.some((key) => key !== "clear");
-      if (uploader && shouldAskForAttachments && window.confirm(`Do you want to upload attachments to ticket ${ticketNumber} before submitting these actions?`)) {
+      if (uploader && shouldAskForAttachments && await confirmYesNo(`Do you want to upload attachments to ticket ${ticketNumber} before submitting these actions?`, "Yes", "No")) {
         const fileInput = uploader.querySelector("[data-ticket-file-input]");
         if (fileInput?.files?.length) {
           try {
@@ -5309,7 +5688,7 @@ function searchable(ticket) {
 }
 
 function scopedTickets() {
-  return Array.isArray(tickets) ? tickets.filter((ticket) => ACTIVE_COUNTIES.has(String(ticket.county || "").toUpperCase())) : [];
+  return dashboardModeTickets();
 }
 
 function visibleTickets() {
@@ -5320,6 +5699,16 @@ function visibleTickets() {
       && !protectedTickets.has(ticket.ticket_number)
       && (elements.showHiddenToggle.checked || !hiddenTickets.has(ticket.ticket_number)),
   );
+}
+
+function fieldOpenTickets() {
+  const query = ticketSearch.trim().toLowerCase();
+  return scopedTickets().filter((ticket) => {
+    if (ticketIsActionHidden(ticket)) return false;
+    if (!countyFilterAll && !selectedCounties.has(ticket.county || "")) return false;
+    if (query && !searchable(ticket).includes(query)) return false;
+    return true;
+  });
 }
 
 function matchingTickets() {
@@ -5499,7 +5888,10 @@ function ticketIsRenewal(ticket) {
 
 function ticketIsRemark(ticket) {
   const text = ticketPriorityText(ticket);
-  return text.includes("REMARK") || text.includes("RECALL") || text.includes("SECOND REQUEST");
+  return /\bRECALL\b/.test(text)
+    || /\bSECOND\s+REQUEST\b/.test(text)
+    || /\b24\s*(?:HOUR|HR)\s+PRIORITY\b/.test(text)
+    || /\bTWENTY\s+FOUR\s+HOUR\s+PRIORITY\b/.test(text);
 }
 
 function normalizedCompanyText(value) {
@@ -5539,6 +5931,39 @@ function ticketIsTcwDmiWork(ticket) {
   return companyTextMatchesOrangePriority(ticketCompanyPriorityText(ticket));
 }
 
+function baseScopedTickets() {
+  return Array.isArray(tickets) ? tickets.filter((ticket) => ACTIVE_COUNTIES.has(String(ticket.county || "").toUpperCase())) : [];
+}
+
+function ticketDueDay(ticket) {
+  const due = parseTicketDueDate(ticket);
+  if (!due) return null;
+  return new Date(due.getFullYear(), due.getMonth(), due.getDate());
+}
+
+function ticketDueDayIsPast(ticket) {
+  const due = ticketDueDay(ticket);
+  return Boolean(due && due < startOfToday());
+}
+
+function ticketDueDayIsToday(ticket) {
+  const due = ticketDueDay(ticket);
+  const today = startOfToday();
+  return Boolean(due && due.getTime() === today.getTime());
+}
+
+function tcwTicketNeedsReview(ticket) {
+  return ticketIsTcwDmiWork(ticket) && ticketDueDayIsToday(ticket) && !tcwClearedTickets.has(ticket.ticket_number);
+}
+
+function dashboardModeTickets() {
+  const base = baseScopedTickets();
+  if (dashboardTicketMode === "tcw") {
+    return base.filter((ticket) => ticketIsTcwDmiWork(ticket) && !ticketDueDayIsPast(ticket) && !tcwClearedTickets.has(ticket.ticket_number));
+  }
+  return base.filter((ticket) => !ticketIsTcwDmiWork(ticket));
+}
+
 function historicalRecordIsTcwDmiWork(record) {
   return companyTextMatchesOrangePriority([
     historyCell(record, "Done For"),
@@ -5547,17 +5972,27 @@ function historicalRecordIsTcwDmiWork(record) {
 }
 
 function parseTicketDueDate(ticket) {
-  const value = String(ticket.work_begin_date || "").trim();
+  const value = String(ticket.work_begin_date || ticket.work_date || ticket.due_date || ticket.workDate || "").trim();
   if (!value) return null;
-  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const isoMatch = value.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (isoMatch) {
     return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
   }
-  const slashMatch = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  const slashMatch = value.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/);
   if (slashMatch) {
     const year = Number(slashMatch[3].length === 2 ? `20${slashMatch[3]}` : slashMatch[3]);
     return new Date(year, Number(slashMatch[1]) - 1, Number(slashMatch[2]));
   }
+  const namedMonthMatch = value.match(/\b(JANUARY|JAN|FEBRUARY|FEB|MARCH|MAR|APRIL|APR|MAY|JUNE|JUN|JULY|JUL|AUGUST|AUG|SEPTEMBER|SEP|SEPT|OCTOBER|OCT|NOVEMBER|NOV|DECEMBER|DEC)\.?\s+(\d{1,2})(?:ST|ND|RD|TH)?[,]?\s+(\d{2,4})\b/i);
+  if (namedMonthMatch) {
+    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    const monthKey = namedMonthMatch[1].slice(0, 3).toUpperCase();
+    const month = monthNames.indexOf(monthKey);
+    const year = Number(namedMonthMatch[3].length === 2 ? `20${namedMonthMatch[3]}` : namedMonthMatch[3]);
+    if (month >= 0) return new Date(year, month, Number(namedMonthMatch[2]));
+  }
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
   return null;
 }
 
@@ -5629,6 +6064,7 @@ function ticketPriorityClasses(ticket) {
   const classes = [];
   if (ticketHasActions(ticket.ticket_number)) classes.push("ticket-actioned");
   if (ticketIsTcwDmiWork(ticket)) classes.push("ticket-tcw-dmi-work");
+  if (tcwTicketNeedsReview(ticket)) classes.push("ticket-tcw-review-needed");
   if (ticketIsEmergency(ticket)) classes.push("ticket-emergency-priority");
   if (ticketIsRemark(ticket)) classes.push("ticket-remark-priority");
   if (ticketIsRenewal(ticket)) classes.push("ticket-renewal-priority");
@@ -5648,16 +6084,16 @@ function ticketVisualColors(ticket) {
     case "due-next":
       return { stroke: "#facc15", fill: "#facc15", fillOpacity: 0.3 };
     case "due-later":
-      return { stroke: "#8df5a5", fill: "#8df5a5", fillOpacity: 0.28 };
+      return { stroke: "#15803d", fill: "#15803d", fillOpacity: 0.18 };
     default:
-      return { stroke: "#74a6ff", fill: "#74a6ff", fillOpacity: 0.24 };
+      return { stroke: "#2563eb", fill: "#2563eb", fillOpacity: 0.16 };
   }
 }
 
 function ticketMapColors(ticket) {
   const colors = ticketVisualColors(ticket);
   if (ticketHasActions(ticket.ticket_number) && !ticketIsTcwDmiWork(ticket) && !ticketIsEmergency(ticket) && !ticketIsRemark(ticket) && !ticketIsRenewal(ticket)) {
-    return { stroke: "#ff2b2b", fill: "#ff2b2b", fillOpacity: 0.3 };
+    return { stroke: "#ff2b2b", fill: "#ff2b2b", fillOpacity: 0.16 };
   }
   return colors;
 }
@@ -5727,22 +6163,33 @@ function hideGroupTickets(ticketNumbers, hidden = true) {
   setTicketsHidden(ticketNumbers, hidden);
 }
 
+function clearTcwReviewTicket(ticketNumber) {
+  if (!ticketNumber) return;
+  tcwClearedTickets.add(String(ticketNumber));
+  writeJsonStorage(STORAGE_KEYS.tcwClearedTickets, [...tcwClearedTickets]);
+  auditEvent("tcw_ticket_review_cleared", { ticket: ticketNumber });
+  selectedTicket = null;
+  render();
+}
+
 function ticketCardHtml(ticket) {
   const hidden = hiddenTickets.has(ticket.ticket_number);
   const archived = archivedTickets.has(ticket.ticket_number);
   const priorityClasses = ticketPriorityClasses(ticket);
+  const tcwReadOnly = dashboardTicketMode === "tcw" && ticketIsTcwDmiWork(ticket);
   return `
     <div class="ticket-card ${priorityClasses} ${selectedTicket?.ticket_number === ticket.ticket_number ? "active" : ""} ${hidden ? "hidden-ticket" : ""} ${archived ? "archived-ticket" : ""}" data-ticket="${escapeHtml(ticket.ticket_number)}" role="button" tabindex="0">
       <div class="ticket-card-header">
         <span class="ticket-number">${escapeHtml(ticket.ticket_number)}</span>
         <span class="ticket-header-actions">
-          <button class="hide-ticket-button" type="button" data-hide-ticket="${escapeHtml(ticket.ticket_number)}" title="${hidden ? "Unhide ticket" : "Hide ticket"}" aria-label="${hidden ? "Unhide ticket" : "Hide ticket"}">
+          ${tcwReadOnly ? "" : `<button class="hide-ticket-button" type="button" data-hide-ticket="${escapeHtml(ticket.ticket_number)}" title="${hidden ? "Unhide ticket" : "Hide ticket"}" aria-label="${hidden ? "Unhide ticket" : "Hide ticket"}">
             ${hideIcon(hidden)}
-          </button>
+          </button>`}
           <span class="badge">${escapeHtml(ticket.county || "UNKNOWN")}</span>
         </span>
       </div>
       <div class="ticket-actions-row">
+        ${tcwTicketNeedsReview(ticket) ? '<span class="mini-status action-status">Due today - review reports</span>' : ""}
         ${hidden ? '<span class="mini-status hidden-status">Hidden</span>' : ""}
         ${archived ? '<span class="mini-status archived-status">Archived</span>' : ""}
         ${ticketActionLabels(ticket.ticket_number).map((label) => `<span class="mini-status action-status">${escapeHtml(label)}</span>`).join("")}
@@ -5803,6 +6250,7 @@ async function runMapSearch() {
 }
 
 function groupActionButtonHtml(items = []) {
+  if (dashboardTicketMode === "tcw") return "";
   const activeItems = items.filter((ticket) => !archivedTickets.has(ticket.ticket_number));
   const hiddenCount = activeItems.filter((ticket) => hiddenTickets.has(ticket.ticket_number)).length;
   const shouldHide = hiddenCount < activeItems.length;
@@ -6012,7 +6460,7 @@ function renderMap(list = []) {
       const dimmedBySelection = shouldDimNearSelectedPolygon(ticket, focusedPolygonBounds);
       const fillOpacity = dimmedBySelection
         ? NEARBY_POLYGON_DIM_OPACITY
-        : (selected ? Math.max(0.48, dueColors.fillOpacity) : dueColors.fillOpacity);
+        : dueColors.fillOpacity;
       const strokeOpacity = dimmedBySelection ? NEARBY_POLYGON_DIM_STROKE_OPACITY : 1;
       const polygon = L.geoJSON(ticket.polygon, {
         style: {
@@ -6355,8 +6803,7 @@ function mobileTicketCardHtml(ticket) {
 }
 
 function mobileOpenTickets() {
-  return visibleTickets()
-    .filter((ticket) => !ticketIsActionHidden(ticket))
+  return fieldOpenTickets()
     .sort((a, b) => compareTicketsByDate(a, b, "asc"));
 }
 
@@ -6371,7 +6818,7 @@ function mobileDigTickets() {
 }
 
 function mobilePanelTickets() {
-  if (mobilePanel === "map") return visibleTickets();
+  if (mobilePanel === "map") return fieldOpenTickets();
   if (mobilePanel === "dig") return mobileDigTickets();
   if (mobilePanel === "done") return mobileDoneTickets();
   return mobileOpenTickets();
@@ -6505,7 +6952,7 @@ function renderMobileMap(list = []) {
       const dimmedBySelection = shouldDimNearSelectedPolygon(ticket, focusedPolygonBounds);
       const fillOpacity = dimmedBySelection
         ? NEARBY_POLYGON_DIM_OPACITY
-        : (selected ? Math.max(0.46, dueColors.fillOpacity) : dueColors.fillOpacity);
+        : dueColors.fillOpacity;
       const strokeOpacity = dimmedBySelection ? NEARBY_POLYGON_DIM_STROKE_OPACITY : 0.96;
       const polygon = L.geoJSON(ticket.polygon, {
         style: {
@@ -6925,6 +7372,7 @@ function renderDetail() {
       "ticket-remark-priority",
       "ticket-renewal-priority",
       "ticket-tcw-dmi-work",
+      "ticket-tcw-review-needed",
       "ticket-due-today",
       "ticket-due-next",
       "ticket-due-later",
@@ -6936,11 +7384,13 @@ function renderDetail() {
 
   const ticket = selectedTicket;
   const priorityClasses = ticketPriorityClasses(ticket);
+  const tcwReadOnly = dashboardTicketMode === "tcw" && ticketIsTcwDmiWork(ticket);
   elements.detail.hidden = false;
   elements.detail.classList.toggle("ticket-emergency-priority", ticketIsEmergency(ticket));
   elements.detail.classList.toggle("ticket-remark-priority", ticketIsRemark(ticket));
   elements.detail.classList.toggle("ticket-renewal-priority", ticketIsRenewal(ticket));
   elements.detail.classList.toggle("ticket-tcw-dmi-work", ticketIsTcwDmiWork(ticket));
+  elements.detail.classList.toggle("ticket-tcw-review-needed", tcwTicketNeedsReview(ticket));
   elements.detail.classList.toggle("ticket-due-today", ticketDueStatus(ticket) === "due-today");
   elements.detail.classList.toggle("ticket-due-next", ticketDueStatus(ticket) === "due-next");
   elements.detail.classList.toggle("ticket-due-later", ticketDueStatus(ticket) === "due-later");
@@ -6951,8 +7401,16 @@ function renderDetail() {
       <div class="badge">${escapeHtml(ticket.county)} · ${escapeHtml(ticket.message_type)}</div>
       ${portalActions(ticket)}
 
-      <h3>Actions</h3>
-      ${actionControlHtml(ticket.ticket_number, false, { deferred: true })}
+      <h3>${tcwReadOnly ? "TCW Review" : "Actions"}</h3>
+      ${tcwReadOnly ? `
+        <div class="tcw-review-box">
+          <p>Read-only TCW ticket. It stays here through the due date and does not use normal locate actions.</p>
+          ${ticketDueDayIsToday(ticket) ? `<p class="tcw-review-alert">Due today. Check the Arkansas One Call ticket page for outside utility reporting.</p>` : ""}
+          ${ticket.portal_html_available ? `<a class="action" href="/api/portal-html?ticket=${encodeURIComponent(ticket.ticket_number)}" target="_blank" rel="noreferrer">Open ticket page</a>` : ""}
+          ${ticket.portal_url ? `<a class="action" href="${escapeHtml(ticket.portal_url)}" target="_blank" rel="noreferrer">Open live GeoCall page</a>` : ""}
+          ${tcwTicketNeedsReview(ticket) ? `<button type="button" data-tcw-clear-ticket="${escapeHtml(ticket.ticket_number)}">Manual clear</button>` : ""}
+        </div>
+      ` : actionControlHtml(ticket.ticket_number, false, { deferred: true, includeDescription: true })}
 
       <h3>Work Description</h3>
       <div class="description-box">${escapeHtml(workDescription(ticket))}</div>
@@ -6986,7 +7444,13 @@ function renderDetail() {
       <div class="raw">${linkifyContactText(ticket.raw_text)}</div>
     </div>
   `;
-  bindTicketActionControls(elements.detail);
+  if (!tcwReadOnly) {
+    bindTicketActionControls(elements.detail);
+    bindTicketDescriptionControls(elements.detail);
+  }
+  for (const button of elements.detail.querySelectorAll("[data-tcw-clear-ticket]")) {
+    button.addEventListener("click", () => clearTcwReviewTicket(button.dataset.tcwClearTicket));
+  }
 }
 
 function selectTicket(ticketNumber, options = {}) {
@@ -7023,6 +7487,10 @@ function render() {
   captureTicketListScroll();
   const matching = matchingTickets();
   const list = visibleTickets();
+  if (elements.sourcePath) {
+    const modeLabel = dashboardTicketMode === "tcw" ? "One-Calls Done For TCW" : "Fiber Locator";
+    elements.sourcePath.textContent = elements.sourcePath.textContent.replace(/^(TCW Dashboard|One-Calls Done For TCW|Fiber Locator):/, `${modeLabel}:`);
+  }
   if (selectedTicket && !matching.some((ticket) => ticket.ticket_number === selectedTicket.ticket_number)) {
     selectedTicket = null;
     pendingSelectedTicketNumber = "";
@@ -7047,12 +7515,14 @@ async function loadTickets() {
   tickets = Array.isArray(payload.tickets)
     ? payload.tickets.filter((ticket) => ACTIVE_COUNTIES.has(String(ticket.county || "").toUpperCase()))
     : [];
-  const scopedPolygonCount = tickets.filter((ticket) => ticket.polygon).length;
-  const scopedMissingPolygonCount = tickets.length - scopedPolygonCount;
+  const activeDashboardTickets = dashboardModeTickets();
+  const scopedPolygonCount = activeDashboardTickets.filter((ticket) => ticket.polygon).length;
+  const scopedMissingPolygonCount = activeDashboardTickets.length - scopedPolygonCount;
   const polygonStatus = scopedMissingPolygonCount
     ? `${scopedPolygonCount} polygon(s) loaded, ${scopedMissingPolygonCount} waiting on GeoCall cache`
     : `${scopedPolygonCount} polygon(s) loaded`;
-  elements.sourcePath.textContent = `Reading ${tickets.length} exported ticket(s) from ${payload.inbox_dir || payload.downloads_dir} - ${polygonStatus}`;
+  const modeLabel = dashboardTicketMode === "tcw" ? "One-Calls Done For TCW" : "Fiber Locator";
+  elements.sourcePath.textContent = `${modeLabel}: reading ${activeDashboardTickets.length} dashboard ticket(s) from ${payload.inbox_dir || payload.downloads_dir} - ${polygonStatus}`;
   if (pendingSelectedTicketNumber) {
     selectedTicket = tickets.find((ticket) => ticket.ticket_number === pendingSelectedTicketNumber) || null;
   }
@@ -7102,21 +7572,27 @@ elements.undoAction.addEventListener("click", undoLastChange);
 elements.redoAction.addEventListener("click", redoLastChange);
 elements.showSheetView.addEventListener("click", () => setCurrentView("sheet"));
 if (elements.showLiveTicketsView) elements.showLiveTicketsView.addEventListener("click", () => setCurrentView("live-tickets"));
+if (elements.showTcwDashboardView) elements.showTcwDashboardView.addEventListener("click", () => setDashboardTicketMode(dashboardTicketMode === "tcw" ? "main" : "tcw"));
 if (elements.showMobileView) elements.showMobileView.addEventListener("click", () => setCurrentView("mobile"));
 elements.showDashboardView.addEventListener("click", () => setCurrentView("dashboard"));
-if (elements.showMobileAdminView) elements.showMobileAdminView.addEventListener("click", () => setCurrentView("mobile-admin"));
+if (elements.showMobileAdminView) elements.showMobileAdminView.addEventListener("click", () => setCurrentView("admin-console"));
 if (elements.showActivityView) elements.showActivityView.addEventListener("click", () => setCurrentView("activity"));
+if (elements.adminOpenActivityLog) elements.adminOpenActivityLog.addEventListener("click", () => setCurrentView("activity"));
 if (elements.refreshActivity) elements.refreshActivity.addEventListener("click", () => {
   void loadActivity().catch((error) => {
     if (elements.activityList) elements.activityList.innerHTML = `<div class="detail-content">${escapeHtml(error.message)}</div>`;
     console.error(error);
   });
 });
+if (elements.downloadActivityCsv) elements.downloadActivityCsv.addEventListener("click", () => downloadActivityLog("csv"));
+if (elements.downloadActivityExcel) elements.downloadActivityExcel.addEventListener("click", () => downloadActivityLog("excel"));
+if (elements.downloadActivityJson) elements.downloadActivityJson.addEventListener("click", () => downloadActivityLog("json"));
 if (elements.activityBackToDashboard) elements.activityBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.mobileAdminBackToDashboard) elements.mobileAdminBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.publishMobileConfig) elements.publishMobileConfig.addEventListener("click", publishMobileConfig);
 if (elements.copyMobileAppLink) elements.copyMobileAppLink.addEventListener("click", () => copyText(mobileAppUrl(), "Mobile app link copied"));
 if (elements.employeeInviteForm) elements.employeeInviteForm.addEventListener("submit", createEmployeeInvite);
+if (elements.adminTicketFetchForm) elements.adminTicketFetchForm.addEventListener("submit", runAdminTicketFetch);
 if (elements.showEmployeeView) elements.showEmployeeView.addEventListener("click", () => setProfileMode("employee"));
 if (elements.showAdminView) elements.showAdminView.addEventListener("click", () => setProfileMode("admin"));
 if (elements.showSettingsMenu) {
@@ -7157,6 +7633,7 @@ if (elements.mobileLocateMe) elements.mobileLocateMe.addEventListener("click", t
 if (elements.mobileFollowLocation) elements.mobileFollowLocation.addEventListener("click", toggleLiveLocation);
 if (elements.mobileMapTickets) elements.mobileMapTickets.addEventListener("click", () => setMobilePanel("tickets"));
 if (elements.mobileMapFitAll) elements.mobileMapFitAll.addEventListener("click", fitMobileMapToTickets);
+if (elements.dashboardSatelliteToggle) elements.dashboardSatelliteToggle.addEventListener("click", () => void toggleDashboardSatellite().catch((error) => console.error(error)));
 if (elements.mobileDeployAppUpdate) elements.mobileDeployAppUpdate.addEventListener("click", () => void deployAppUpdate());
 if (elements.mobileSaveEmployeeDashboard) {
   elements.mobileSaveEmployeeDashboard.addEventListener("click", async () => {
@@ -7311,6 +7788,16 @@ if (elements.saveView) {
     }
   });
 }
+if (elements.saveSharedFieldDefault) {
+  elements.saveSharedFieldDefault.addEventListener("click", async () => {
+    try {
+      await saveSharedFieldDefault();
+    } catch (error) {
+      showSavedToast("Field default save failed");
+      console.error(error);
+    }
+  });
+}
 if (elements.saveEmployeeDashboard) {
   elements.saveEmployeeDashboard.addEventListener("click", async () => {
     try {
@@ -7337,6 +7824,60 @@ if (elements.vetroCaptureFile && elements.vetroCaptureText) {
 if (elements.saveVetroCapture) {
   elements.saveVetroCapture.addEventListener("click", () => {
     void saveVetroCapture();
+  });
+}
+if (elements.appVetroLayerSelect) {
+  elements.appVetroLayerSelect.addEventListener("change", () => {
+    setAppVetroStyleLayer(elements.appVetroLayerSelect.value);
+  });
+}
+if (elements.appVetroLayerSize) {
+  elements.appVetroLayerSize.addEventListener("input", () => {
+    updateAppVetroLayerSize(elements.appVetroLayerSize.value);
+  });
+}
+if (elements.appVetroSizeValue) {
+  elements.appVetroSizeValue.addEventListener("input", () => {
+    updateAppVetroLayerSize(elements.appVetroSizeValue.value);
+  });
+  elements.appVetroSizeValue.addEventListener("change", () => {
+    updateAppVetroLayerSize(elements.appVetroSizeValue.value);
+  });
+}
+if (elements.appVetroLayerOpacity) {
+  elements.appVetroLayerOpacity.addEventListener("input", () => {
+    updateAppVetroLayerOpacity(elements.appVetroLayerOpacity.value);
+  });
+}
+if (elements.appVetroOpacityValue) {
+  elements.appVetroOpacityValue.addEventListener("input", () => {
+    updateAppVetroLayerOpacity(elements.appVetroOpacityValue.value);
+  });
+  elements.appVetroOpacityValue.addEventListener("change", () => {
+    updateAppVetroLayerOpacity(elements.appVetroOpacityValue.value);
+  });
+}
+if (elements.appVetroLayerColor) {
+  elements.appVetroLayerColor.addEventListener("input", () => {
+    if (!appVetroStyleLayerId) return;
+    rememberUndoState();
+    setVetroLayerColorOverride(appVetroStyleLayerId, elements.appVetroLayerColor.value);
+    renderAppVetroStyleEditor();
+  });
+}
+if (elements.appVetroLayerStyle) {
+  elements.appVetroLayerStyle.addEventListener("change", () => {
+    updateAppVetroLayerStyle(elements.appVetroLayerStyle.value);
+  });
+}
+if (elements.appVetroStyleEditor) {
+  for (const button of elements.appVetroStyleEditor.querySelectorAll("[data-app-vetro-preset]")) {
+    button.addEventListener("click", () => applyAppVetroPreset(button.dataset.appVetroPreset));
+  }
+}
+if (elements.appVetroSaveView) {
+  elements.appVetroSaveView.addEventListener("click", () => {
+    void saveAppVetroStyleView();
   });
 }
 elements.refresh.addEventListener("click", refreshServerData);
@@ -7789,7 +8330,11 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function bootstrap() {
-  registerServiceWorker();
+  unregisterWebAppServiceWorkers();
+  document.body.classList.toggle("tcw-dashboard-mode", dashboardTicketMode === "tcw");
+  if (elements.showTcwDashboardView) {
+    elements.showTcwDashboardView.textContent = dashboardTicketMode === "tcw" ? "Main Dashboard" : "One-Calls Done For TCW";
+  }
   closeDashboardLayerDrawers();
   await loadMapConfig();
   await loadDashboardState().catch((error) => {
@@ -7805,15 +8350,13 @@ async function bootstrap() {
     elements.ticketList.innerHTML = `<div class="detail-content">${escapeHtml(error.message)}</div>`;
     throw error;
   }
-  if (window.location.pathname === "/mobile" || window.location.hash === "#mobile") {
-    setCurrentView("mobile");
-  } else if (window.location.hash === "#sheet") {
+  if (window.location.hash === "#sheet") {
     setCurrentView("sheet");
   } else if (window.location.hash === "#live-tickets") {
     setCurrentView("live-tickets");
-  } else if (window.location.hash === "#mobile-admin") {
-    setCurrentView("mobile-admin");
-  } else if (window.location.hash === "#activity") {
+  } else if (window.location.hash === "#admin-console" || window.location.hash === "#mobile-admin") {
+    setCurrentView("admin-console");
+  } else if (window.location.hash === "#activity" || window.location.hash === "#app-dashboard-log") {
     setCurrentView("activity");
   }
   dashboardStateReady = true;

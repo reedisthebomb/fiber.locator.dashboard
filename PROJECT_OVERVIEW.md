@@ -29,7 +29,7 @@ Deployed cloud-server copy:
 Current live cloud server:
 
 ```text
-http://5.78.214.184:8765/
+https://fiber-locator.5-78-214-184.sslip.io/
 ```
 
 ## Runtime
@@ -181,7 +181,7 @@ The current deployment supports:
 - local access on the host
 - LAN access
 - Tailscale access
-- optional HTTPS
+- Caddy HTTPS reverse proxy on ports 80/443 with the Python dashboard bound to `127.0.0.1:8765`
 
 Access should stay limited to the dashboard machine unless the user intentionally exposes more.
 
