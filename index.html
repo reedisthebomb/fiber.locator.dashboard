@@ -11,13 +11,16 @@
     <meta name="apple-mobile-web-app-title" content="Fiber Locator">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/styles.css?v=20260602143000">
+    <link rel="stylesheet" href="/static/styles.css?v=20260602150000">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
-        <img id="appBrandLogo" src="/static/assets/tcw-logo.png?v=20260602143000" alt="Fiber Locator">
+        <div class="brand-logos">
+          <img id="appBrandLogo" class="brand-primary-logo" src="/static/assets/tcw-logo.png?v=20260602150000" alt="TCW">
+          <img id="appBrandSecondaryLogo" class="brand-secondary-logo" src="/static/assets/fiber-locator-new-logo.png?v=20260602150000" alt="Fiber Locator">
+        </div>
         <div>
           <h1>Fiber Locator</h1>
         </div>
@@ -321,7 +324,10 @@
 
     <section id="mobileView" class="mobile-view" hidden>
       <header class="mobile-header">
-        <img id="mobileBrandLogo" src="/static/assets/tcw-logo.png?v=20260602143000" alt="Fiber Locator">
+        <div class="brand-logos">
+          <img id="mobileBrandLogo" class="brand-primary-logo" src="/static/assets/tcw-logo.png?v=20260602150000" alt="TCW">
+          <img id="mobileBrandSecondaryLogo" class="brand-secondary-logo" src="/static/assets/fiber-locator-new-logo.png?v=20260602150000" alt="Fiber Locator">
+        </div>
         <div>
           <h2>Fiber Locator Field</h2>
           <p id="mobileSummary">0 active tickets</p>
@@ -468,6 +474,6 @@
     <link href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css" rel="stylesheet">
     <script src="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
-    <script src="/static/app.js?v=20260602143000"></script>
+    <script src="/static/app.js?v=20260602150000"></script>
   </body>
 </html>

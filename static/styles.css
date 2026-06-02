@@ -37,13 +37,21 @@ body {
 
 .brand {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-columns: 142px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   min-width: 0;
 }
 
-.brand img {
+.brand-logos {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.brand img,
+.mobile-header img {
   width: 52px;
   height: 52px;
   object-fit: contain;
@@ -51,6 +59,22 @@ body {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: 0 0 0 1px rgba(116, 166, 255, 0.42), 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.brand img.brand-primary-logo,
+.mobile-header img.brand-primary-logo {
+  width: 88px;
+  height: 42px;
+}
+
+.brand img.brand-secondary-logo,
+.mobile-header img.brand-secondary-logo {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
 }
 
 .brand img.james-brand-logo,
@@ -64,6 +88,11 @@ body {
 
 body.james-branding .brand {
   grid-template-columns: 60px minmax(0, 1fr);
+}
+
+body.james-branding .brand img.brand-secondary-logo,
+body.james-branding .mobile-header img.brand-secondary-logo {
+  display: none;
 }
 
 h1 {
@@ -4144,7 +4173,7 @@ button {
   top: 0;
   z-index: 1800;
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr) auto;
+  grid-template-columns: 142px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px;
@@ -4153,15 +4182,6 @@ button {
     linear-gradient(135deg, rgba(94, 225, 139, 0.12), rgba(116, 166, 255, 0.08)),
     rgba(8, 17, 28, 0.96);
   backdrop-filter: blur(14px);
-}
-
-.mobile-header img {
-  width: 52px;
-  height: 52px;
-  object-fit: contain;
-  padding: 2px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.94);
 }
 
 .mobile-header h2 {
@@ -4897,13 +4917,18 @@ body.mobile-map-open .mobile-detail-back {
   }
 
   .mobile-header {
-    grid-template-columns: 54px minmax(0, 1fr) 42px;
+    grid-template-columns: 118px minmax(0, 1fr) 42px;
     min-height: calc(58px + env(safe-area-inset-top, 0px));
   }
 
-  .mobile-header img {
-    width: 48px;
-    height: 48px;
+  .mobile-header img.brand-primary-logo {
+    width: 72px;
+    height: 38px;
+  }
+
+  .mobile-header img.brand-secondary-logo {
+    width: 36px;
+    height: 36px;
   }
 
   .mobile-header h2 {

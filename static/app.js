@@ -52,7 +52,8 @@ const MAX_HISTORY = 40;
 const SELECTED_POLYGON_NEARBY_PIXELS = 96;
 const NEARBY_POLYGON_DIM_OPACITY = 0.035;
 const NEARBY_POLYGON_DIM_STROKE_OPACITY = 0.12;
-const DEFAULT_BRAND_LOGO = "/static/assets/tcw-logo.png?v=20260602143000";
+const DEFAULT_BRAND_LOGO = "/static/assets/tcw-logo.png?v=20260602150000";
+const DEFAULT_BRAND_SECONDARY_LOGO = "/static/assets/fiber-locator-new-logo.png?v=20260602150000";
 const JAMES_BRAND_LOGO = "/static/james-fiber-locator-logo.png?v=20260528190500";
 const STORAGE_KEYS = {
   hiddenTickets: "hiddenTickets",
@@ -2207,7 +2208,9 @@ let appVetroStyleLayerId = localStorage.getItem("appVetroStyleLayerId") || "";
 const elements = {
   sourcePath: document.querySelector("#sourcePath"),
   appBrandLogo: document.querySelector("#appBrandLogo"),
+  appBrandSecondaryLogo: document.querySelector("#appBrandSecondaryLogo"),
   mobileBrandLogo: document.querySelector("#mobileBrandLogo"),
+  mobileBrandSecondaryLogo: document.querySelector("#mobileBrandSecondaryLogo"),
   totalCount: document.querySelector("#totalCount"),
   dueCount: document.querySelector("#dueCount"),
   countyCount: document.querySelector("#countyCount"),
@@ -2652,12 +2655,17 @@ function jamesBrandingEnabled() {
 function applyUserBranding() {
   const jamesBranding = jamesBrandingEnabled();
   const logo = jamesBranding ? JAMES_BRAND_LOGO : DEFAULT_BRAND_LOGO;
-  const alt = jamesBranding ? "James Fiber Locator" : "Fiber Locator";
+  const alt = jamesBranding ? "James Fiber Locator" : "TCW";
   for (const image of [elements.appBrandLogo, elements.mobileBrandLogo]) {
     if (!image) continue;
     image.src = logo;
     image.alt = alt;
     image.classList.toggle("james-brand-logo", jamesBranding);
+  }
+  for (const image of [elements.appBrandSecondaryLogo, elements.mobileBrandSecondaryLogo]) {
+    if (!image) continue;
+    image.src = DEFAULT_BRAND_SECONDARY_LOGO;
+    image.hidden = jamesBranding;
   }
   document.body.classList.toggle("james-branding", jamesBranding);
 }
