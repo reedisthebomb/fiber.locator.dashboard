@@ -1492,9 +1492,9 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fiber Locator Login</title>
-  <link rel="icon" type="image/png" href="/favicon.ico?v=20260522170500">
-  <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260522170500">
-  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260522170500">
+  <link rel="icon" type="image/png" href="/favicon.ico?v=20260602143000">
+  <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260602143000">
+  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260602143000">
   <style>
     body {{
       margin: 0;
@@ -1513,6 +1513,13 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       gap: 12px;
       justify-items: center;
       width: min(420px, calc(100vw - 32px));
+    }}
+    .login-wide-logo {{
+      width: min(560px, calc(100vw - 32px));
+      max-height: 230px;
+      object-fit: contain;
+      border-radius: 8px;
+      filter: drop-shadow(0 18px 38px rgba(0, 0, 0, 0.48));
     }}
     .login-app-logo {{
       display: none;
@@ -1544,8 +1551,9 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       .login-shell {{
         align-self: center;
       }}
-      .login-app-logo {{
-        display: block;
+      .login-wide-logo {{
+        width: min(360px, calc(100vw - 32px));
+        max-height: 180px;
       }}
       .login {{
         transform: none;
@@ -1608,6 +1616,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
 </head>
 <body>
   <main class="login-shell">
+    <img class="login-wide-logo" src="/static/assets/fiber-locator-new-logo.png?v=20260602154500" alt="Fiber Locator">
     <img class="login-app-logo" src="/static/fiberlocatorfinal.png?v=20260522170500" alt="Fiber Locator">
     <form class="login" method="post" action="/login">
       <h1>Fiber Locator</h1>
