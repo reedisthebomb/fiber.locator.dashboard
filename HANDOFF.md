@@ -530,6 +530,14 @@ The project is in a working state on the live cloud server. The GitHub repositor
 - Rebuilt native Android release as `versionCode 13` / `versionName 0.1.12`.
 - Current AAB for Google Play upload: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
 
+## 2026-06-02 Android Auto Map Crash Fix
+
+- ADB logcat on Reed's Android Auto connection showed `PlaceListMapTemplate` crashing with `All non-browsable rows must have a distance span attached to either its title or texts`.
+- Android Auto ticket map rows now include a `DistanceSpan` on the status line, using the phone's last known location when available.
+- Rebuilt native Android release as `versionCode 14` / `versionName 0.1.13`.
+- Current AAB for Google Play upload: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+- Direct ADB install over the Play-installed copy failed because the Play copy is signed by Google Play and does not match the local upload-key signature; upload the AAB through Google Play, or uninstall the Play copy before local sideload testing.
+
 ## Important User Preferences
 
 - User wants hands-on artifact-building, not generic instructions.

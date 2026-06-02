@@ -1,13 +1,20 @@
 package com.fiberlocator.auto.car;
 
+import android.content.Context;
+import android.location.Location;
+import android.location.LocationManager;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.SpannableString;
+import android.text.Spanned;
 
 import androidx.annotation.NonNull;
 import androidx.car.app.CarContext;
 import androidx.car.app.Screen;
 import androidx.car.app.model.Action;
 import androidx.car.app.model.CarLocation;
+import androidx.car.app.model.Distance;
+import androidx.car.app.model.DistanceSpan;
 import androidx.car.app.model.ItemList;
 import androidx.car.app.model.ListTemplate;
 import androidx.car.app.model.Metadata;
@@ -47,8 +54,10 @@ public class TicketListScreen extends Screen {
     private Template ticketMapTemplate() {
         ItemList.Builder list = new ItemList.Builder();
         Place anchor = null;
+        Location currentLocation = lastKnownLocation();
         for (Ticket ticket : tickets) {
             if (!ticket.hasCoordinates) continue;
+            double distanceMiles = distanceMiles(currentLocation, ticket);
             Place place = new Place.Builder(CarLocation.create(ticket.latitude, ticket.longitude))
                 .setMarker(new PlaceMarker.Builder()
                     .setLabel(TicketCarStyle.mapLabel(ticket))
@@ -58,7 +67,7 @@ public class TicketListScreen extends Screen {
             if (anchor == null) anchor = place;
             Row.Builder row = new Row.Builder()
                 .setTitle(TicketCarStyle.title(ticket))
-                .addText(TicketCarStyle.statusLine(ticket))
+                .addText(statusWithDistance(ticket, distanceMiles))
                 .addText(join(ticket.locationLine(), TicketCarStyle.detailLine(ticket)))
                 .setMetadata(new Metadata.Builder().setPlace(place).build())
                 .setOnClickListener(() -> getScreenManager().push(new TicketDetailScreen(getCarContext(), ticket)));
@@ -126,6 +135,47 @@ public class TicketListScreen extends Screen {
                 });
             }
         });
+    }
+
+    private Location lastKnownLocation() {
+        try {
+            LocationManager manager = (LocationManager) getCarContext().getSystemService(Context.LOCATION_SERVICE);
+            if (manager == null) return null;
+            Location best = null;
+            for (String provider : manager.getProviders(true)) {
+                Location location = manager.getLastKnownLocation(provider);
+                if (location == null) continue;
+                if (best == null || location.getTime() > best.getTime()) best = location;
+            }
+            return best;
+        } catch (SecurityException ex) {
+            return null;
+        }
+    }
+
+    private static CharSequence statusWithDistance(Ticket ticket, double distanceMiles) {
+        String status = TicketCarStyle.statusLine(ticket).toString();
+        SpannableString text = new SpannableString("  - " + status);
+        text.setSpan(
+            DistanceSpan.create(Distance.create(Math.max(0, distanceMiles), Distance.UNIT_MILES_P1)),
+            0,
+            1,
+            Spanned.SPAN_INCLUSIVE_INCLUSIVE
+        );
+        return text;
+    }
+
+    private static double distanceMiles(Location currentLocation, Ticket ticket) {
+        if (currentLocation == null || !ticket.hasCoordinates) return 0;
+        float[] result = new float[1];
+        Location.distanceBetween(
+            currentLocation.getLatitude(),
+            currentLocation.getLongitude(),
+            ticket.latitude,
+            ticket.longitude,
+            result
+        );
+        return result[0] / 1609.344d;
     }
 
     private static String join(String... values) {
