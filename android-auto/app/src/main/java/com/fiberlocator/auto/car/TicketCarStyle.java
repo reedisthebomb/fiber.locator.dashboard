@@ -36,8 +36,7 @@ final class TicketCarStyle {
         String due = dueStatus(ticket);
         if ("due-today".equals(due)) return "DUE";
         if ("due-next".equals(due)) return "NXT";
-        if ("due-later".equals(due)) return "UP";
-        return "TKT";
+        return "";
     }
 
     static CarColor markerColor(Ticket ticket) {

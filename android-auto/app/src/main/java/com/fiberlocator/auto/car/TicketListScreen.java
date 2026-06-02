@@ -58,11 +58,12 @@ public class TicketListScreen extends Screen {
         for (Ticket ticket : tickets) {
             if (!ticket.hasCoordinates) continue;
             double distanceMiles = distanceMiles(currentLocation, ticket);
+            PlaceMarker.Builder marker = new PlaceMarker.Builder()
+                .setColor(TicketCarStyle.markerColor(ticket));
+            String markerLabel = TicketCarStyle.mapLabel(ticket);
+            if (!markerLabel.isEmpty()) marker.setLabel(markerLabel);
             Place place = new Place.Builder(CarLocation.create(ticket.latitude, ticket.longitude))
-                .setMarker(new PlaceMarker.Builder()
-                    .setLabel(TicketCarStyle.mapLabel(ticket))
-                    .setColor(TicketCarStyle.markerColor(ticket))
-                    .build())
+                .setMarker(marker.build())
                 .build();
             if (anchor == null) anchor = place;
             Row.Builder row = new Row.Builder()
