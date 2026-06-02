@@ -1492,9 +1492,9 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fiber Locator Login</title>
-  <link rel="icon" type="image/png" href="/favicon.ico?v=20260602143000">
-  <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260602143000">
-  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260602143000">
+  <link rel="icon" type="image/png" href="/favicon.ico?v=20260602201000">
+  <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260602201000">
+  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260602201000">
   <style>
     body {{
       margin: 0;
@@ -1504,7 +1504,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       font-family: Arial, Helvetica, sans-serif;
       background:
         radial-gradient(circle at center, rgba(13, 17, 23, 0.08), #0d1117 76%),
-        url("/static/fiberlocatorfinal.png?v=20260522170500") center / min(92vmin, 820px) no-repeat,
+        url("/static/fiberlocatorfinal.png?v=20260602201000") center / min(92vmin, 820px) no-repeat,
         #0d1117;
       color: #f8fbff;
     }}
@@ -1616,8 +1616,8 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
 </head>
 <body>
   <main class="login-shell">
-    <img class="login-wide-logo" src="/static/assets/finalfiberlocator.wide.png?v=20260602200100" alt="Fiber Locator">
-    <img class="login-app-logo" src="/static/fiberlocatorfinal.png?v=20260522170500" alt="Fiber Locator">
+    <img class="login-wide-logo" src="/static/assets/eldorado.locator.wide.png?v=20260602201000" alt="Fiber Locator">
+    <img class="login-app-logo" src="/static/fiberlocatorfinal.png?v=20260602201000" alt="Fiber Locator">
     <form class="login" method="post" action="/login">
       <h1>Fiber Locator</h1>
       <p>Sign in to view tickets, Vetro layers, and refresh data.</p>
@@ -1653,7 +1653,7 @@ def employee_setup_page_html(token: str, message: str = "", username: str = "") 
   <title>Employee Setup</title>
   <link rel="icon" type="image/png" href="/favicon.ico?v=20260522170500">
   <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260522170500">
-  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260522170500">
+  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260602201000">
   <style>
     body {{
       margin: 0;
