@@ -6369,8 +6369,13 @@ function focusTicketOnMap(ticket) {
   if (!ticket) return;
   const detailOffset = () => {
     if (!elements.detail || elements.detail.hidden || window.innerWidth < 760) return [0, 0];
-    const width = elements.detail.getBoundingClientRect().width || 0;
-    return [Math.min(340, Math.max(180, width * 0.72)), 0];
+    const detailRect = elements.detail.getBoundingClientRect();
+    const mapRect = elements.map?.getBoundingClientRect?.();
+    const detailWidth = detailRect.width || 0;
+    const mapWidth = mapRect?.width || window.innerWidth;
+    const visibleWidth = Math.max(240, mapWidth - detailWidth - 28);
+    const targetShift = Math.max(0, (mapWidth / 2) - (visibleWidth / 2));
+    return [Math.min(detailWidth + 90, Math.max(220, targetShift + 32)), 0];
   };
   const visiblePadding = () => {
     const rightPadding = elements.detail && !elements.detail.hidden && window.innerWidth >= 760
@@ -6564,7 +6569,7 @@ function openTicketMapPopup(ticket) {
   if (!map || !ticket) return;
   const latlng = ticketPopupLatLng(ticket);
   if (!latlng) return;
-  L.popup({ closeButton: true, autoClose: true, maxWidth: 360 })
+  L.popup({ closeButton: true, autoClose: true, autoPan: false, maxWidth: 360 })
     .setLatLng(latlng)
     .setContent(ticketPopupContent(ticket))
     .openOn(map);
