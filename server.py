@@ -1616,7 +1616,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
 </head>
 <body>
   <main class="login-shell">
-    <img class="login-wide-logo" src="/static/assets/fiber-locator-new-logo.png?v=20260602154500" alt="Fiber Locator">
+    <img class="login-wide-logo" src="/static/assets/finalfiberlocator.wide.png?v=20260602200100" alt="Fiber Locator">
     <img class="login-app-logo" src="/static/fiberlocatorfinal.png?v=20260522170500" alt="Fiber Locator">
     <form class="login" method="post" action="/login">
       <h1>Fiber Locator</h1>

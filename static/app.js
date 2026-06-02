@@ -53,7 +53,7 @@ const SELECTED_POLYGON_NEARBY_PIXELS = 96;
 const NEARBY_POLYGON_DIM_OPACITY = 0.035;
 const NEARBY_POLYGON_DIM_STROKE_OPACITY = 0.12;
 const DEFAULT_BRAND_LOGO = "/static/assets/tcw-logo.png?v=20260602150000";
-const DEFAULT_BRAND_SECONDARY_LOGO = "/static/assets/fiber-locator-new-logo.png?v=20260602154500";
+const DEFAULT_BRAND_SECONDARY_LOGO = "/static/assets/finalfiberlocator.wide.png?v=20260602200100";
 const JAMES_BRAND_LOGO = "/static/james-fiber-locator-logo.png?v=20260528190500";
 const STORAGE_KEYS = {
   hiddenTickets: "hiddenTickets",
