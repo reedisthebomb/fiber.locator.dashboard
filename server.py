@@ -1592,12 +1592,12 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       display: grid;
       gap: 18px;
       justify-items: center;
-      width: min(560px, calc(100vw - 32px));
+      width: min(720px, calc(100vw - 32px));
       padding-top: clamp(28px, 8vh, 72px);
     }}
     .login-wide-logo {{
-      width: min(560px, calc(100vw - 32px));
-      max-height: 210px;
+      width: min(720px, calc(100vw - 32px));
+      max-height: 280px;
       object-fit: contain;
       border-radius: 8px;
       filter: drop-shadow(0 18px 38px rgba(0, 0, 0, 0.48));
@@ -1623,8 +1623,8 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
         padding-top: 28px;
       }}
       .login-wide-logo {{
-        width: min(360px, calc(100vw - 32px));
-        max-height: 180px;
+        width: min(420px, calc(100vw - 32px));
+        max-height: 220px;
       }}
       .login {{
         width: 100%;
