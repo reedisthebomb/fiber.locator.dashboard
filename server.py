@@ -66,6 +66,7 @@ STATE_FILE: Path | None = None
 AUTH_FILE: Path | None = None
 AUDIT_LOCK = threading.Lock()
 ATTACHMENT_LOCK = threading.Lock()
+LOCATOR_NOTES_LOCK = threading.Lock()
 ONEDRIVE_AUTH_LOCK = threading.Lock()
 ONEDRIVE_PENDING_AUTH: dict[str, object] = {}
 VETRO_CACHE_LOCK = threading.Lock()
@@ -77,6 +78,7 @@ MICROSOFT_AUTH_BASE = "https://login.microsoftonline.com"
 ONEDRIVE_DEFAULT_SCOPE = "offline_access Files.ReadWrite User.Read"
 ONEDRIVE_DEFAULT_ROOT = "Fiber Locator Attachments"
 ONEDRIVE_MAX_ATTACHMENTS = 80
+LOCATOR_NOTE_MAX_ATTACHMENTS = 20
 DASHBOARD_TIME_ZONE = ZoneInfo(os.getenv("DASHBOARD_TIME_ZONE", "America/Chicago"))
 AUDIT_VIEW_USERS = {item.strip() for item in os.getenv("AUDIT_VIEW_USERS", "site_owner").split(",") if item.strip()}
 SHARED_DASHBOARD_WRITE_USERS = {
@@ -654,6 +656,85 @@ def save_attachments_index(data_dir: Path, payload: dict) -> None:
 
 def ticket_attachment_dir(data_dir: Path, ticket_number: str) -> Path:
     return attachments_root(data_dir) / safe_file_component(ticket_number, "ticket")
+
+
+def locator_notes_root(data_dir: Path) -> Path:
+    return data_dir / "locator_notes"
+
+
+def locator_notes_index_path(data_dir: Path) -> Path:
+    return locator_notes_root(data_dir) / "notes.json"
+
+
+def locator_note_dir(data_dir: Path, note_id: str) -> Path:
+    return locator_notes_root(data_dir) / "files" / safe_file_component(note_id, "note")
+
+
+def clean_locator_note_text(value: object, max_length: int = 2000) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    return text[:max_length]
+
+
+def load_locator_notes(data_dir: Path) -> dict:
+    path = locator_notes_index_path(data_dir)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"notes": []}
+    except Exception as exc:
+        print(f"Skipping locator notes index {path}: {exc}")
+        return {"notes": []}
+    if not isinstance(payload, dict):
+        return {"notes": []}
+    notes = payload.get("notes")
+    if not isinstance(notes, list):
+        payload["notes"] = []
+    return payload
+
+
+def save_locator_notes(data_dir: Path, payload: dict) -> None:
+    path = locator_notes_index_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def public_locator_note(note: dict) -> dict:
+    if not isinstance(note, dict):
+        return {}
+    attachments = []
+    for item in note.get("attachments", []):
+        if not isinstance(item, dict):
+            continue
+        attachment_id = safe_file_component(str(item.get("id") or ""), "")
+        if not attachment_id:
+            continue
+        note_id = safe_file_component(str(note.get("id") or ""), "")
+        attachments.append({
+            "id": attachment_id,
+            "original_name": str(item.get("original_name") or ""),
+            "content_type": str(item.get("content_type") or "application/octet-stream"),
+            "size": int(item.get("size") or 0),
+            "url": f"/api/locator-notes/file?note={quote(note_id)}&id={quote(attachment_id)}",
+        })
+    return {
+        "id": str(note.get("id") or ""),
+        "lat": float(note.get("lat") or 0),
+        "lng": float(note.get("lng") or 0),
+        "category": str(note.get("category") or "instruction"),
+        "text": str(note.get("text") or ""),
+        "target_type": str(note.get("target_type") or "map"),
+        "target_label": str(note.get("target_label") or ""),
+        "target_id": str(note.get("target_id") or ""),
+        "ticket": str(note.get("ticket") or ""),
+        "layer_id": str(note.get("layer_id") or ""),
+        "feature_id": str(note.get("feature_id") or ""),
+        "created_at": str(note.get("created_at") or ""),
+        "created_by": str(note.get("created_by") or ""),
+        "attachments": attachments,
+    }
 
 
 class GraphRequestError(RuntimeError):
@@ -2645,6 +2726,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             ticket_number = parse_qs(parsed.query).get("ticket", [""])[0]
             self.send_attachments(ticket_number)
             return
+        if parsed.path == "/api/locator-notes":
+            self.send_locator_notes()
+            return
         if parsed.path == "/api/onedrive/status":
             self.send_onedrive_status()
             return
@@ -2653,6 +2737,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             ticket_number = query.get("ticket", [""])[0]
             attachment_id = query.get("id", [""])[0]
             self.send_attachment_file(ticket_number, attachment_id)
+            return
+        if parsed.path == "/api/locator-notes/file":
+            query = parse_qs(parsed.query)
+            note_id = query.get("note", [""])[0]
+            attachment_id = query.get("id", [""])[0]
+            self.send_locator_note_file(note_id, attachment_id)
             return
         if parsed.path.startswith("/data/history/"):
             self.send_history_file(parsed.path)
@@ -2740,6 +2830,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/attachments":
             self.upload_attachment()
+            return
+        if parsed.path == "/api/locator-notes":
+            self.create_locator_note()
             return
         if parsed.path == "/api/onedrive/device-code":
             self.start_onedrive_device_code()
@@ -3317,6 +3410,154 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not isinstance(items, list):
                 items = []
         self.send_json({"ok": True, "ticket": ticket_number, "attachments": items})
+
+    def send_locator_notes(self) -> None:
+        with LOCATOR_NOTES_LOCK:
+            payload = load_locator_notes(self.data_dir)
+            notes = [public_locator_note(item) for item in payload.get("notes", []) if isinstance(item, dict)]
+        notes.sort(key=lambda item: str(item.get("created_at") or ""))
+        self.send_json({"ok": True, "notes": notes})
+
+    def create_locator_note(self) -> None:
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.lower().startswith("multipart/form-data"):
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "multipart/form-data required"}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(content_length)
+        message = BytesParser(policy=policy.default).parsebytes(
+            f"Content-Type: {content_type}\nMIME-Version: 1.0\n\n".encode("utf-8") + body
+        )
+        fields: dict[str, str] = {}
+        file_parts = []
+        for part in message.iter_parts():
+            disposition = part.get_content_disposition()
+            if disposition != "form-data":
+                continue
+            name = part.get_param("name", header="content-disposition")
+            filename = part.get_filename()
+            if filename:
+                file_parts.append(part)
+            elif name:
+                try:
+                    fields[str(name)] = str(part.get_content() or "")
+                except Exception:
+                    fields[str(name)] = part.get_payload(decode=True).decode("utf-8", errors="replace")
+        try:
+            lat = float(str(fields.get("lat") or ""))
+            lng = float(str(fields.get("lng") or ""))
+        except ValueError:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Pick a valid map location for the note."}).encode("utf-8"))
+            return
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Pick a valid map location for the note."}).encode("utf-8"))
+            return
+        if len(file_parts) > LOCATOR_NOTE_MAX_ATTACHMENTS:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": f"Select {LOCATOR_NOTE_MAX_ATTACHMENTS} attachments or fewer."}).encode("utf-8"))
+            return
+        allowed_categories = {"instruction", "layer_issue", "locate_issue", "needs_attention", "restoration", "other"}
+        category = clean_profile_text(fields.get("category"), 40)
+        if category not in allowed_categories:
+            category = "instruction"
+        target_type = clean_profile_text(fields.get("targetType") or fields.get("target_type"), 40)
+        if target_type not in {"map", "ticket", "vetro", "vitruvi", "layer", "feature"}:
+            target_type = "map"
+        note_id = f"{dashboard_now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
+        note = {
+            "id": note_id,
+            "lat": lat,
+            "lng": lng,
+            "category": category,
+            "text": clean_locator_note_text(fields.get("text") or fields.get("note"), 2000),
+            "target_type": target_type,
+            "target_label": clean_profile_text(fields.get("targetLabel") or fields.get("target_label"), 220),
+            "target_id": clean_profile_text(fields.get("targetId") or fields.get("target_id"), 180),
+            "ticket": clean_profile_text(fields.get("ticket"), 40),
+            "layer_id": clean_profile_text(fields.get("layerId") or fields.get("layer_id"), 120),
+            "feature_id": clean_profile_text(fields.get("featureId") or fields.get("feature_id"), 180),
+            "created_at": dashboard_now_iso(),
+            "created_by": self.current_username() or "default",
+            "attachments": [],
+        }
+        note_folder = locator_note_dir(self.data_dir, note_id)
+        with LOCATOR_NOTES_LOCK:
+            payload = load_locator_notes(self.data_dir)
+            notes = payload.setdefault("notes", [])
+            if not isinstance(notes, list):
+                notes = []
+                payload["notes"] = notes
+            for part in file_parts:
+                original_name = safe_file_component(part.get_filename() or "", "")
+                if not original_name:
+                    continue
+                attachment_id = f"{dashboard_now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
+                file_body = part.get_payload(decode=True) or b""
+                stored_name = f"{attachment_id}_{original_name}"
+                note_folder.mkdir(parents=True, exist_ok=True)
+                (note_folder / stored_name).write_bytes(file_body)
+                note["attachments"].append({
+                    "id": attachment_id,
+                    "original_name": original_name,
+                    "stored_name": stored_name,
+                    "content_type": str(part.get_content_type() or mimetypes.guess_type(original_name)[0] or "application/octet-stream"),
+                    "size": len(file_body),
+                    "uploaded_at": dashboard_now_iso(),
+                    "uploaded_by": note["created_by"],
+                })
+            notes.append(note)
+            save_locator_notes(self.data_dir, payload)
+        self.audit_event(
+            "locator_note_created",
+            {"category": note["category"], "target_type": note["target_type"], "attachments": len(note["attachments"])},
+            username=note["created_by"],
+        )
+        self.send_json({"ok": True, "note": public_locator_note(note)})
+
+    def send_locator_note_file(self, note_id: str, attachment_id: str) -> None:
+        note_id = safe_file_component(note_id, "")
+        attachment_id = safe_file_component(attachment_id, "")
+        if not note_id or not attachment_id:
+            self.send_error(400, "Valid note and attachment id required")
+            return
+        with LOCATOR_NOTES_LOCK:
+            payload = load_locator_notes(self.data_dir)
+            note = next((item for item in payload.get("notes", []) if isinstance(item, dict) and item.get("id") == note_id), None)
+            attachments = note.get("attachments", []) if isinstance(note, dict) else []
+            item = next((entry for entry in attachments if isinstance(entry, dict) and entry.get("id") == attachment_id), None)
+        if not item:
+            self.send_error(404, "Attachment not found")
+            return
+        filename = safe_file_component(str(item.get("stored_name") or ""), "")
+        path = locator_note_dir(self.data_dir, note_id) / filename
+        try:
+            resolved_root = locator_note_dir(self.data_dir, note_id).resolve()
+            resolved_path = path.resolve()
+        except OSError:
+            self.send_error(404, "Attachment not found")
+            return
+        if resolved_root not in resolved_path.parents or not resolved_path.exists():
+            self.send_error(404, "Attachment not found")
+            return
+        content_type = str(item.get("content_type") or mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream")
+        body = resolved_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'inline; filename="{safe_file_component(str(item.get("original_name") or filename))}"')
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_onedrive_status(self) -> None:
         client_id = onedrive_client_id()

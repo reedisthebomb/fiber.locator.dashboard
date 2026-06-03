@@ -466,6 +466,189 @@ body.james-branding .profile-editor-preview img {
   font-weight: 900;
 }
 
+.more-menu-panel button.active {
+  background: rgba(37, 99, 235, 0.22);
+  color: #dbeafe;
+}
+
+.locator-note-mode #map {
+  cursor: crosshair;
+}
+
+.locator-note-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 4200;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(3, 8, 16, 0.62);
+}
+
+.locator-note-modal[hidden] {
+  display: none;
+}
+
+.locator-note-card {
+  display: grid;
+  gap: 12px;
+  width: min(460px, calc(100vw - 28px));
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.55);
+}
+
+.locator-note-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.locator-note-head h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.locator-note-head button {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.locator-note-target {
+  padding: 9px 10px;
+  border: 1px solid rgba(116, 166, 255, 0.35);
+  border-radius: 7px;
+  background: rgba(116, 166, 255, 0.11);
+  color: #dbeafe;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.locator-note-card label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.locator-note-card select,
+.locator-note-card textarea,
+.locator-note-card input[type="file"] {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
+  text-transform: none;
+}
+
+.locator-note-card select,
+.locator-note-card input[type="file"] {
+  min-height: 38px;
+}
+
+.locator-note-card textarea {
+  min-height: 126px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.locator-note-status {
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.locator-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.locator-note-actions button {
+  min-width: 104px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.locator-note-actions button[type="submit"] {
+  border-color: rgba(37, 99, 235, 0.65);
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.locator-note-flag {
+  position: relative;
+  display: block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ffffff;
+  border-radius: 3px 3px 3px 0;
+  background: var(--flag-color, #2563eb);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+}
+
+.locator-note-flag::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  bottom: -12px;
+  width: 2px;
+  height: 12px;
+  background: #ffffff;
+}
+
+.locator-note-popup {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  color: #0f172a;
+}
+
+.locator-note-popup strong {
+  font-size: 14px;
+}
+
+.locator-note-popup small,
+.locator-note-popup em {
+  color: #475569;
+  font-size: 12px;
+}
+
+.locator-note-popup p {
+  margin: 2px 0;
+  white-space: normal;
+}
+
+.locator-note-attachments {
+  display: grid;
+  gap: 4px;
+}
+
+.locator-note-attachments a {
+  color: #1d4ed8;
+  font-weight: 800;
+}
+
 #saveProfileEditor {
   background: #74a6ff;
   color: #06121c;

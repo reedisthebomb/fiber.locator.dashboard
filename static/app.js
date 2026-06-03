@@ -4,6 +4,10 @@ let map;
 let baseTileLayer;
 let mapDataOverlayLayer;
 let mapDataOverlayAbort = 0;
+let locatorNotesLayer;
+let locatorNotes = [];
+let locatorNoteMode = false;
+let pendingLocatorNoteTarget = null;
 let markers;
 let polygons;
 let userLocationLayer;
@@ -117,6 +121,14 @@ const FOCUS_ZOOM_THRESHOLD = 14;
 const FOCUS_TARGET_ZOOM = 17;
 const VETRO_SERVICE_LOCATION_LAYER_ID = "26";
 const NEW_SAVED_VIEW_OPTION = "__new_saved_view__";
+const LOCATOR_NOTE_CATEGORIES = {
+  instruction: { label: "Future locator instruction", color: "#2563eb" },
+  layer_issue: { label: "Layer is not correct", color: "#f59e0b" },
+  locate_issue: { label: "Problem locating", color: "#dc2626" },
+  needs_attention: { label: "Needs attention", color: "#7c3aed" },
+  restoration: { label: "Restoration needed", color: "#059669" },
+  other: { label: "Other note", color: "#475569" },
+};
 const VETRO_PREFIX_LAYERS = [
   { prefix: "SL-", id: "prefix:SL", name: "Customers", detail: "customer service-location points from VETRO layer 26" },
 ];
@@ -2318,6 +2330,7 @@ const elements = {
   showTcwDashboardView: document.querySelector("#showTcwDashboardView"),
   dashboardSatelliteToggle: document.querySelector("#dashboardSatelliteToggle"),
   showMobileView: document.querySelector("#showMobileView"),
+  addLocatorNote: document.querySelector("#addLocatorNote"),
   showDashboardView: document.querySelector("#showDashboardView"),
   showMobileAdminView: document.querySelector("#showMobileAdminView"),
   showActivityView: document.querySelector("#showActivityView"),
@@ -2373,6 +2386,15 @@ const elements = {
   downloadActivityExcel: document.querySelector("#downloadActivityExcel"),
   downloadActivityJson: document.querySelector("#downloadActivityJson"),
   activityBackToDashboard: document.querySelector("#activityBackToDashboard"),
+  locatorNoteModal: document.querySelector("#locatorNoteModal"),
+  locatorNoteForm: document.querySelector("#locatorNoteForm"),
+  locatorNoteCategory: document.querySelector("#locatorNoteCategory"),
+  locatorNoteText: document.querySelector("#locatorNoteText"),
+  locatorNoteFiles: document.querySelector("#locatorNoteFiles"),
+  locatorNoteTarget: document.querySelector("#locatorNoteTarget"),
+  locatorNoteStatus: document.querySelector("#locatorNoteStatus"),
+  locatorNoteCancel: document.querySelector("#locatorNoteCancel"),
+  locatorNoteClose: document.querySelector("#locatorNoteClose"),
   mobileSummary: document.querySelector("#mobileSummary"),
   sheetSearch: document.querySelector("#sheetSearch"),
   exportSheetPdf: document.querySelector("#exportSheetPdf"),
@@ -2838,11 +2860,16 @@ function initMap() {
   map = L.map("map", { zoomControl: true, preferCanvas: true }).setView([33.23, -92.67], 12);
   setMapTileStyle(mapStyle, false);
   mapDataOverlayLayer = L.layerGroup().addTo(map);
+  locatorNotesLayer = L.layerGroup().addTo(map);
   userLocationLayer = L.layerGroup().addTo(map);
   markers = L.layerGroup().addTo(map);
   polygons = L.layerGroup().addTo(map);
-  map.on("click", () => {
+  map.on("click", (event) => {
     if (measureTool?.active) return;
+    if (locatorNoteMode) {
+      beginLocatorNoteForMap(event.latlng);
+      return;
+    }
     clearSelectedTicket();
   });
   map.on("moveend zoomend", () => {
@@ -2860,6 +2887,216 @@ function initMap() {
     onChange: () => renderMap(visibleTickets()),
   });
   scheduleMapDataOverlayRefresh();
+}
+
+function locatorNoteCategoryLabel(category) {
+  return LOCATOR_NOTE_CATEGORIES[category]?.label || LOCATOR_NOTE_CATEGORIES.other.label;
+}
+
+function locatorNoteCategoryColor(category) {
+  return LOCATOR_NOTE_CATEGORIES[category]?.color || LOCATOR_NOTE_CATEGORIES.other.color;
+}
+
+function setLocatorNoteMode(active) {
+  locatorNoteMode = Boolean(active);
+  document.body.classList.toggle("locator-note-mode", locatorNoteMode);
+  if (elements.addLocatorNote) {
+    elements.addLocatorNote.classList.toggle("active", locatorNoteMode);
+    elements.addLocatorNote.textContent = locatorNoteMode ? "Cancel locator note" : "Add locator note";
+  }
+}
+
+function locatorNoteTargetSummary(target) {
+  if (!target) return "Map spot";
+  if (target.targetType === "ticket") return `Ticket ${target.targetLabel || target.ticket || ""}`.trim();
+  if (target.targetType === "vetro") {
+    const layer = target.layerId ? ` - ${vetroLayerLabel(target.layerId)}` : "";
+    return `VETRO feature${target.targetLabel ? `: ${target.targetLabel}` : ""}${layer}`;
+  }
+  if (target.targetType === "vitruvi") {
+    const layer = target.layerId ? ` - ${vitruviLayerLabel(target.layerId)}` : "";
+    return `Vitruvi feature${target.targetLabel ? `: ${target.targetLabel}` : ""}${layer}`;
+  }
+  return "Map spot";
+}
+
+function openLocatorNoteModal(target) {
+  pendingLocatorNoteTarget = target;
+  if (elements.locatorNoteTarget) elements.locatorNoteTarget.textContent = locatorNoteTargetSummary(target);
+  if (elements.locatorNoteStatus) elements.locatorNoteStatus.textContent = "Photos or files are optional.";
+  if (elements.locatorNoteCategory) elements.locatorNoteCategory.value = "instruction";
+  if (elements.locatorNoteText) elements.locatorNoteText.value = "";
+  if (elements.locatorNoteFiles) elements.locatorNoteFiles.value = "";
+  if (elements.locatorNoteModal) elements.locatorNoteModal.hidden = false;
+  window.setTimeout(() => elements.locatorNoteText?.focus(), 0);
+}
+
+function closeLocatorNoteModal() {
+  if (elements.locatorNoteModal) elements.locatorNoteModal.hidden = true;
+  pendingLocatorNoteTarget = null;
+  setLocatorNoteMode(false);
+}
+
+function beginLocatorNoteForMap(latlng) {
+  if (!latlng) return;
+  openLocatorNoteModal({
+    lat: latlng.lat,
+    lng: latlng.lng,
+    targetType: "map",
+    targetLabel: "Map spot",
+    targetId: "",
+    ticket: "",
+    layerId: "",
+    featureId: "",
+  });
+}
+
+function beginLocatorNoteForTicket(ticket, latlng = null) {
+  const point = latlng || ticketPopupLatLng(ticket);
+  if (!ticket || !point) return;
+  openLocatorNoteModal({
+    lat: point.lat,
+    lng: point.lng,
+    targetType: "ticket",
+    targetLabel: ticket.ticket_number || "",
+    targetId: ticket.ticket_number || "",
+    ticket: ticket.ticket_number || "",
+    layerId: "",
+    featureId: "",
+  });
+}
+
+function beginLocatorNoteForVetro(feature, latlng = null) {
+  const props = feature?.properties || {};
+  const layerId = vetroLayerControlId(feature);
+  const point = latlng || featureCenterLatLng(feature);
+  if (!point) return;
+  const featureId = propValue(props, "ID", "feature_id", "vetro_id") || "";
+  openLocatorNoteModal({
+    lat: point.lat,
+    lng: point.lng,
+    targetType: "vetro",
+    targetLabel: propValue(props, "Street_Address", "street_address", "Name", "name", "feature_id", "ID") || vetroLayerLabel(layerId),
+    targetId: featureId,
+    ticket: "",
+    layerId,
+    featureId,
+  });
+}
+
+function beginLocatorNoteForVitruvi(feature, latlng = null) {
+  const props = feature?.properties || {};
+  const layerId = vitruviLayerId(feature);
+  const point = latlng || featureCenterLatLng(feature);
+  if (!point) return;
+  const featureId = propValue(props, "vitruvi_id", "feature_id", "ID", "id", "uid") || "";
+  openLocatorNoteModal({
+    lat: point.lat,
+    lng: point.lng,
+    targetType: "vitruvi",
+    targetLabel: propValue(props, "label", "name", "Name", "full_address", "Address", "feature_id") || vitruviLayerLabel(layerId),
+    targetId: featureId,
+    ticket: "",
+    layerId,
+    featureId,
+  });
+}
+
+function featureCenterLatLng(feature) {
+  try {
+    const layer = L.geoJSON(feature);
+    const bounds = layer.getBounds();
+    if (bounds.isValid()) return bounds.getCenter();
+  } catch (error) {
+    console.warn("Unable to find feature center", error);
+  }
+  return null;
+}
+
+async function loadLocatorNotes() {
+  if (!locatorNotesLayer) return;
+  try {
+    const response = await fetch("/api/locator-notes");
+    if (!response.ok) throw new Error("Unable to load locator notes");
+    const payload = await response.json();
+    locatorNotes = Array.isArray(payload.notes) ? payload.notes : [];
+    renderLocatorNotes();
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+function renderLocatorNotes() {
+  if (!locatorNotesLayer) return;
+  locatorNotesLayer.clearLayers();
+  for (const note of locatorNotes) {
+    const lat = Number(note.lat);
+    const lng = Number(note.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const marker = L.marker([lat, lng], {
+      icon: L.divIcon({
+        className: "",
+        html: `<span class="locator-note-flag" style="--flag-color:${escapeHtml(locatorNoteCategoryColor(note.category))}"></span>`,
+        iconSize: [18, 22],
+        iconAnchor: [4, 21],
+        popupAnchor: [4, -20],
+      }),
+      title: locatorNoteCategoryLabel(note.category),
+    });
+    marker.bindPopup(locatorNotePopupHtml(note), { maxWidth: 360 });
+    marker.addTo(locatorNotesLayer);
+  }
+}
+
+function locatorNotePopupHtml(note) {
+  const attachments = Array.isArray(note.attachments) ? note.attachments : [];
+  const attachmentHtml = attachments.length
+    ? `<div class="locator-note-attachments">${attachments.map((item) => `<a href="${escapeHtml(item.url || "")}" target="_blank" rel="noreferrer">${escapeHtml(item.original_name || "Attachment")}</a>`).join("")}</div>`
+    : "";
+  const created = [note.created_by, note.created_at].filter(Boolean).join(" - ");
+  return `
+    <div class="locator-note-popup">
+      <strong>${escapeHtml(locatorNoteCategoryLabel(note.category))}</strong>
+      <small>${escapeHtml(note.target_label || note.target_type || "Map spot")}</small>
+      ${note.text ? `<p>${escapeHtml(note.text).replaceAll("\n", "<br>")}</p>` : ""}
+      ${attachmentHtml}
+      ${created ? `<em>${escapeHtml(created)}</em>` : ""}
+    </div>
+  `;
+}
+
+async function submitLocatorNote(event) {
+  event.preventDefault();
+  const target = pendingLocatorNoteTarget;
+  if (!target) return;
+  const files = [...(elements.locatorNoteFiles?.files || [])];
+  if (files.length > 20) {
+    if (elements.locatorNoteStatus) elements.locatorNoteStatus.textContent = "Select 20 attachments or fewer.";
+    return;
+  }
+  const form = new FormData();
+  form.append("lat", String(target.lat));
+  form.append("lng", String(target.lng));
+  form.append("category", elements.locatorNoteCategory?.value || "instruction");
+  form.append("text", elements.locatorNoteText?.value || "");
+  form.append("targetType", target.targetType || "map");
+  form.append("targetLabel", target.targetLabel || "");
+  form.append("targetId", target.targetId || "");
+  form.append("ticket", target.ticket || "");
+  form.append("layerId", target.layerId || "");
+  form.append("featureId", target.featureId || "");
+  for (const file of files) form.append("attachments", file, file.name);
+  if (elements.locatorNoteStatus) elements.locatorNoteStatus.textContent = "Saving note...";
+  const response = await fetch("/api/locator-notes", { method: "POST", body: form });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.ok) {
+    if (elements.locatorNoteStatus) elements.locatorNoteStatus.textContent = payload.message || "Unable to save locator note.";
+    return;
+  }
+  locatorNotes.push(payload.note);
+  renderLocatorNotes();
+  closeLocatorNoteModal();
+  showSavedToast("Locator note saved");
 }
 
 function formatMeasureDistance(meters, unit = "feet") {
@@ -4188,7 +4425,16 @@ function bindVetroPopup(feature, layer) {
     .filter(([, value]) => value)
     .map(([label, value]) => `<div><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`)
     .join("");
-  if (layerId) layer.on("click", () => setAppVetroStyleLayer(layerId, { openDrawer: true }));
+  if (layerId) {
+    layer.on("click", (event) => {
+      if (locatorNoteMode) {
+        if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+        beginLocatorNoteForVetro(feature, event.latlng || null);
+        return;
+      }
+      setAppVetroStyleLayer(layerId, { openDrawer: true });
+    });
+  }
   layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${rows ? `<div class="popup-rows">${rows}</div>` : ""}`);
 }
 
@@ -4272,6 +4518,11 @@ function bindVitruviPopup(feature, layer) {
   ].filter(([, value]) => value)
     .map(([label, value]) => `<div><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`)
     .join("");
+  layer.on("click", (event) => {
+    if (!locatorNoteMode) return;
+    if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+    beginLocatorNoteForVitruvi(feature, event.latlng || null);
+  });
   layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${rows ? `<div class="popup-rows">${rows}</div>` : ""}`);
 }
 
@@ -6487,6 +6738,10 @@ function renderMap(list = []) {
       polygon.bindPopup(`<strong>${escapeHtml(ticket.ticket_number)}</strong><br>${escapeHtml(ticketAddress(ticket) || "GeoCall polygon")}`);
       polygon.on("click", (event) => {
         if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+        if (locatorNoteMode) {
+          beginLocatorNoteForTicket(ticket, event.latlng);
+          return;
+        }
         if (measureTool?.active) {
           measureTool.addPoint(event.latlng);
           return;
@@ -6495,6 +6750,10 @@ function renderMap(list = []) {
       });
       polygon.on("dblclick", (event) => {
         if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+        if (locatorNoteMode) {
+          beginLocatorNoteForTicket(ticket, event.latlng);
+          return;
+        }
         if (measureTool?.active) {
           measureTool.addPoint(event.latlng);
           return;
@@ -6526,10 +6785,18 @@ function renderMap(list = []) {
     marker.bindPopup(`<strong>${escapeHtml(ticket.ticket_number)}</strong><br>${escapeHtml(ticketAddress(ticket))}`);
     marker.on("click", (event) => {
       if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+      if (locatorNoteMode) {
+        beginLocatorNoteForTicket(ticket, event.latlng);
+        return;
+      }
       selectTicket(ticket.ticket_number, { focus: true });
     });
     marker.on("dblclick", (event) => {
       if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+      if (locatorNoteMode) {
+        beginLocatorNoteForTicket(ticket, event.latlng);
+        return;
+      }
       selectTicket(ticket.ticket_number, { focus: true });
     });
     marker.addTo(markers);
@@ -8328,6 +8595,28 @@ if (elements.ticketList) {
 if (elements.legendToggle) {
   elements.legendToggle.addEventListener("click", () => showMapLegendTemporarily(3200));
 }
+if (elements.addLocatorNote) {
+  elements.addLocatorNote.addEventListener("click", () => {
+    const nextActive = !locatorNoteMode;
+    setLocatorNoteMode(nextActive);
+    closeMoreMenu();
+    showSavedToast(nextActive ? "Click a map spot or feature for the note" : "Locator note canceled");
+  });
+}
+if (elements.locatorNoteForm) {
+  elements.locatorNoteForm.addEventListener("submit", (event) => {
+    submitLocatorNote(event).catch((error) => {
+      if (elements.locatorNoteStatus) elements.locatorNoteStatus.textContent = error.message || "Unable to save locator note.";
+      console.error(error);
+    });
+  });
+}
+if (elements.locatorNoteCancel) {
+  elements.locatorNoteCancel.addEventListener("click", closeLocatorNoteModal);
+}
+if (elements.locatorNoteClose) {
+  elements.locatorNoteClose.addEventListener("click", closeLocatorNoteModal);
+}
 const moreMenu = document.querySelector(".more-menu");
 if (moreMenu) {
   moreMenu.addEventListener("mouseenter", cancelMoreMenuClose);
@@ -8356,6 +8645,7 @@ async function bootstrap() {
   renderPriorityLegends();
   renderProfile();
   initMap();
+  await loadLocatorNotes();
   applySidebarCollapsed();
   try {
     await loadTickets();

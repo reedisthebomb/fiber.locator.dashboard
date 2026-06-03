@@ -11,7 +11,7 @@
     <meta name="apple-mobile-web-app-title" content="Fiber Locator">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/styles.css?v=20260602154500">
+    <link rel="stylesheet" href="/static/styles.css?v=20260603104500">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
@@ -41,6 +41,7 @@
             <button id="showLiveTicketsView" type="button">Live tickets</button>
             <button id="showTcwDashboardView" type="button">One-Calls Done For TCW</button>
             <button id="showDashboardView" type="button">Dashboard</button>
+            <button id="addLocatorNote" type="button">Add locator note</button>
             <button id="showMobileAdminView" type="button" hidden>Admin console</button>
             <button id="showActivityView" type="button" hidden>Activity</button>
             <button id="showEmployeeView" type="button">Employee Profile</button>
@@ -470,10 +471,44 @@
       </div>
     </div>
 
+    <div id="locatorNoteModal" class="locator-note-modal" hidden>
+      <form id="locatorNoteForm" class="locator-note-card" role="dialog" aria-modal="true" aria-labelledby="locatorNoteTitle">
+        <div class="locator-note-head">
+          <h2 id="locatorNoteTitle">Locator Note</h2>
+          <button id="locatorNoteCancel" type="button" aria-label="Close locator note">×</button>
+        </div>
+        <div id="locatorNoteTarget" class="locator-note-target">Map spot</div>
+        <label>
+          Type
+          <select id="locatorNoteCategory">
+            <option value="instruction">Future locator instruction</option>
+            <option value="layer_issue">Layer is not correct</option>
+            <option value="locate_issue">Problem locating</option>
+            <option value="needs_attention">Needs attention</option>
+            <option value="restoration">Restoration needed</option>
+            <option value="other">Other note</option>
+          </select>
+        </label>
+        <label>
+          Note
+          <textarea id="locatorNoteText" rows="5" maxlength="2000" placeholder="Add details for future locators"></textarea>
+        </label>
+        <label>
+          Attachments
+          <input id="locatorNoteFiles" type="file" multiple accept="image/*,video/*,.pdf,.txt,.doc,.docx,.xls,.xlsx">
+        </label>
+        <div id="locatorNoteStatus" class="locator-note-status">Photos or files are optional.</div>
+        <div class="locator-note-actions">
+          <button type="button" id="locatorNoteClose">Cancel</button>
+          <button type="submit">Save note</button>
+        </div>
+      </form>
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css" rel="stylesheet">
     <script src="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
-    <script src="/static/app.js?v=20260602201000"></script>
+    <script src="/static/app.js?v=20260603104500"></script>
   </body>
 </html>

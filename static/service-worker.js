@@ -1,10 +1,10 @@
-const CACHE_VERSION = "fiber-locator-20260602201000";
+const CACHE_VERSION = "fiber-locator-20260603104500";
 const APP_SHELL = [
   "/",
   "/mobile",
   "/manifest.webmanifest",
-  "/static/styles.css?v=20260602154500",
-  "/static/app.js?v=20260602201000",
+  "/static/styles.css?v=20260603104500",
+  "/static/app.js?v=20260603104500",
   "/static/assets/eldorado.locator.wide.png?v=20260602201000",
   "/static/fiberlocatorfinal.png?v=20260602201000",
   "/static/fiberlocatorwhitebackgroud.png?v=20260602201000"
