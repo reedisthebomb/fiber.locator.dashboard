@@ -1591,13 +1591,13 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
     }}
     .login-shell {{
       display: grid;
-      gap: 12px;
+      gap: 18px;
       justify-items: center;
-      width: min(420px, calc(100vw - 32px));
+      width: min(560px, calc(100vw - 32px));
     }}
     .login-wide-logo {{
       width: min(560px, calc(100vw - 32px));
-      max-height: 230px;
+      max-height: 210px;
       object-fit: contain;
       border-radius: 8px;
       filter: drop-shadow(0 18px 38px rgba(0, 0, 0, 0.48));
@@ -1616,14 +1616,13 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       overflow: hidden;
       justify-self: center;
       align-self: center;
-      transform: translate(-150px, 112px);
-      width: 100%;
+      width: min(420px, 100%);
       padding: 24px;
       border: 1px solid rgba(226, 239, 255, 0.18);
       border-radius: 8px;
-      background: rgba(8, 13, 24, 0.24);
-      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
-      backdrop-filter: blur(0.5px);
+      background: rgba(8, 13, 24, 0.62);
+      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.38);
+      backdrop-filter: blur(4px);
     }}
     @media (max-width: 560px) {{
       body {{
@@ -1637,7 +1636,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
         max-height: 180px;
       }}
       .login {{
-        transform: none;
+        width: 100%;
       }}
     }}
     h1 {{
@@ -2664,7 +2663,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path in {"/favicon.ico", "/manifest.webmanifest", "/static/service-worker.js", "/static/fiberlocatorfinal.png", "/static/fiberlocatorwhitebackgroud.png", "/android-auto/app/build/outputs/apk/release/app-release.apk"}:
+        if parsed.path in {"/favicon.ico", "/manifest.webmanifest", "/static/service-worker.js", "/static/fiberlocatorfinal.png", "/static/fiberlocatorwhitebackgroud.png", "/static/assets/eldorado.locator.wide.png", "/android-auto/app/build/outputs/apk/release/app-release.apk"}:
             self.send_public_asset(parsed.path)
             return
         if parsed.path == "/privacy-policy":
