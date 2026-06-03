@@ -1581,11 +1581,10 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       margin: 0;
       min-height: 100vh;
       display: grid;
-      place-items: center;
+      place-items: start center;
       font-family: Arial, Helvetica, sans-serif;
       background:
         radial-gradient(circle at center, rgba(13, 17, 23, 0.08), #0d1117 76%),
-        url("/static/fiberlocatorfinal.png?v=20260602201000") center / min(92vmin, 820px) no-repeat,
         #0d1117;
       color: #f8fbff;
     }}
@@ -1594,6 +1593,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       gap: 18px;
       justify-items: center;
       width: min(560px, calc(100vw - 32px));
+      padding-top: clamp(28px, 8vh, 72px);
     }}
     .login-wide-logo {{
       width: min(560px, calc(100vw - 32px));
@@ -1601,15 +1601,6 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
       object-fit: contain;
       border-radius: 8px;
       filter: drop-shadow(0 18px 38px rgba(0, 0, 0, 0.48));
-    }}
-    .login-app-logo {{
-      display: none;
-      width: 150px;
-      height: 150px;
-      object-fit: contain;
-      border-radius: 30px;
-      background: rgba(255, 255, 255, 0.96);
-      box-shadow: 0 16px 42px rgba(0, 0, 0, 0.42);
     }}
     .login {{
       position: relative;
@@ -1629,7 +1620,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
         background: #0d1117;
       }}
       .login-shell {{
-        align-self: center;
+        padding-top: 28px;
       }}
       .login-wide-logo {{
         width: min(360px, calc(100vw - 32px));
@@ -1697,7 +1688,6 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
 <body>
   <main class="login-shell">
     <img class="login-wide-logo" src="/static/assets/eldorado.locator.wide.png?v=20260602201000" alt="Fiber Locator">
-    <img class="login-app-logo" src="/static/fiberlocatorfinal.png?v=20260602201000" alt="Fiber Locator">
     <form class="login" method="post" action="/login">
       <h1>Fiber Locator</h1>
       <p>Sign in to view tickets, Vetro layers, and refresh data.</p>
