@@ -118,6 +118,9 @@ public class MainActivity extends Activity {
     private WebView activeMapWebView;
     private boolean refreshRunning = false;
     private boolean tcwDashboardMode = false;
+    private ScrollView ticketListScroll;
+    private int pendingTicketListScrollY = -1;
+    private boolean mapWaitingForSnapshot = false;
 
     private static final String[][] LOCATOR_NOTE_CATEGORIES = new String[][] {
         {"instruction", "Instruction"},
@@ -575,8 +578,12 @@ public class MainActivity extends Activity {
     }
 
     private void renderTickets() {
+        if (ticketListScroll != null && pendingTicketListScrollY < 0) {
+            pendingTicketListScrollY = ticketListScroll.getScrollY();
+        }
         content.removeAllViews();
         ScrollView scroll = new ScrollView(this);
+        ticketListScroll = scroll;
         LinearLayout list = column(dp(14), dp(12), dp(14), dp(22));
         scroll.addView(list);
         LinearLayout tools = new LinearLayout(this);
@@ -603,6 +610,21 @@ public class MainActivity extends Activity {
             for (Ticket ticket : visible) list.addView(ticketRow(ticket));
         }
         content.addView(scroll);
+        restoreTicketListScroll();
+    }
+
+    private void restoreTicketListScroll() {
+        if (ticketListScroll == null || pendingTicketListScrollY < 0) return;
+        final int scrollY = pendingTicketListScrollY;
+        pendingTicketListScrollY = -1;
+        ticketListScroll.post(() -> {
+            if (ticketListScroll != null) {
+                ticketListScroll.scrollTo(0, scrollY);
+                ticketListScroll.post(() -> {
+                    if (ticketListScroll != null) ticketListScroll.scrollTo(0, scrollY);
+                });
+            }
+        });
     }
 
     private View ticketRow(Ticket ticket) {
@@ -635,6 +657,8 @@ public class MainActivity extends Activity {
         activeTicket = ticket;
         activeTicketNumber = ticket.ticketNumber;
         activeMapWebView = null;
+        ticketListScroll = null;
+        pendingTicketListScrollY = -1;
         pendingScreen = "";
         AppSettings.saveLastView(this, screen, activeTicketNumber);
         chrome.setVisibility(View.VISIBLE);
@@ -707,6 +731,11 @@ public class MainActivity extends Activity {
         AppSettings.saveLastView(this, screen, activeTicketNumber);
         chrome.setVisibility(View.GONE);
         selectNav(mapNav);
+        if (snapshot == null) {
+            showMapLoading();
+            loadSnapshotForMap(activeTicketNumber);
+            return;
+        }
         content.removeAllViews();
         WebView map = new WebView(this);
         activeMapWebView = map;
@@ -718,6 +747,44 @@ public class MainActivity extends Activity {
         map.loadDataWithBaseURL(webMapOrigin(), mapHtml(focus), "text/html", "UTF-8", null);
         content.addView(map, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         updateMapPictureInPictureParams();
+    }
+
+    private void showMapLoading() {
+        activeMapWebView = null;
+        content.removeAllViews();
+        LinearLayout loading = column(dp(18), dp(18), dp(18), dp(18));
+        loading.setGravity(Gravity.CENTER);
+        loading.addView(text("Loading map layers...", 18, ink, true));
+        loading.addView(text("Pulling the published dashboard colors and filters.", 13, muted, false));
+        content.addView(loading, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        if (progress != null) progress.setVisibility(View.VISIBLE);
+    }
+
+    private void loadSnapshotForMap(String focusTicketNumber) {
+        if (mapWaitingForSnapshot || refreshRunning) return;
+        mapWaitingForSnapshot = true;
+        executor.execute(() -> {
+            try {
+                DashboardSnapshot loaded = repository.loadSnapshot();
+                runOnUiThread(() -> {
+                    mapWaitingForSnapshot = false;
+                    snapshot = loaded;
+                    if (progress != null) progress.setVisibility(View.GONE);
+                    if (!"map".equals(screen)) {
+                        restoreRequestedScreen();
+                        return;
+                    }
+                    Ticket nextFocus = focusTicketNumber == null || focusTicketNumber.isEmpty() ? null : findTicketIn(loaded.tickets, focusTicketNumber);
+                    showMap(nextFocus);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    mapWaitingForSnapshot = false;
+                    if (progress != null) progress.setVisibility(View.GONE);
+                    showLogin(error.getMessage());
+                });
+            }
+        });
     }
 
     private String mapHtml(Ticket focus) {
@@ -1103,6 +1170,10 @@ public class MainActivity extends Activity {
                     progress.setVisibility(View.GONE);
                     if (subtitle != null) subtitle.setText(visibleTickets().size() + " open tickets | synced " + DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
                     if ("tickets".equals(screen)) renderTickets();
+                    else if ("map".equals(screen) && activeMapWebView == null) {
+                        Ticket nextFocus = activeTicketNumber.isEmpty() ? null : findTicketIn(loaded.tickets, activeTicketNumber);
+                        showMap(nextFocus);
+                    }
                     else restoreRequestedScreen();
                 });
             } catch (Exception error) {
