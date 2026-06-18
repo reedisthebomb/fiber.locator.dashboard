@@ -33,6 +33,15 @@ Updated: 2026-06-18
 - Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py tools/export_vetro_google_earth_layers.py`, `node --check static/app.js`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease`, `aapt dump badging` showing `versionCode 48` / `versionName 0.1.47`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `MAP_TEMPLATES`, and `ACCESS_SURFACE`, plus `apksigner verify --verbose`.
 - Device validation note: `adb devices -l` showed no attached devices, and `adb connect 192.168.50.173:42023` failed with `No route to host`, so no live phone/Android Auto runtime smoke test could be completed from this shell for this build.
 
+## VETRO Layer Fragment Cleanup - 2026-06-18
+
+- Reed asked to check the VETRO/petrol layers for fragmentation and ensure future captures only add coverage or replace lower-quality features.
+- Live audit showed the June 18 capture import had inflated line layers with low-zoom anonymous fragments: before cleanup counts were `Layer_17 24961`, `Layer_26 10903`, `Layer_28 7141`, `Layer_42 7513`, `Layer_43 67`, `Layer_654 32305`, `Layer_659 192`.
+- Rebuilt live VETRO layers from the clean June 16 baseline `data/layers/backups/vetro_geojson_layers.backup-1781789922`, preserving baseline line coverage, keeping point additions, accepting only named high-zoom new line fragments, and rejecting low-quality anonymous line fragments.
+- Live cleaned counts are `Layer_17 14084`, `Layer_26 8542`, `Layer_28 7130`, `Layer_42 7507`, `Layer_43 58`, `Layer_654 13970`, `Layer_659 2`. Backup of the inflated pre-cleanup live folder: `data/layers/backups/vetro_geojson_layers.before-fragment-cleanup-20260618T143804Z`.
+- Hardened `tools/import_vetro_tiles_from_capture.py`: append-only imports now skip exact existing geometry, skip same-ID existing line fragments, reject low-quality anonymous line fragments, allow named high-zoom line additions, and replace existing non-fragment point features only when the new feature has a higher detail score.
+- Verification: `python3 -m py_compile tools/import_vetro_tiles_from_capture.py`; synthetic merge test confirmed low-quality line fragments are rejected, named high-zoom lines are kept, and point replacements prefer higher detail. Live `/api/vetro` returns `401 Login required` unauthenticated, which confirms the route is active behind auth.
+
 ## Android Auto Polygon Transparency Follow-Up - 2026-06-18
 
 - Reed reported Android Auto polygons were still too dark/thick to see the streets/map beneath them.

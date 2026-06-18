@@ -247,7 +247,11 @@ def is_fragmented_geometry(feature: dict) -> bool:
 
 def feature_has_display_id(feature: dict) -> bool:
     props = feature.get("properties") or {}
-    return bool(props.get("ID") or props.get("feature_id"))
+    return bool(props.get("ID") or props.get("feature_id") or props.get("label") or props.get("Name"))
+
+
+def new_fragment_allowed(feature: dict) -> bool:
+    return is_fragmented_geometry(feature) and feature_has_display_id(feature) and source_zoom(feature) >= 13
 
 
 def stable_feature_key(feature: dict) -> str | None:
@@ -371,27 +375,75 @@ def decode_tile(tile_bytes: bytes, tile: dict) -> list[dict]:
 def write_outputs(features: list[dict], output_dir: Path, backup_dir: Path | None, source: Path, failures: list[str], replace: bool = False) -> dict:
     existing_count = 0
     existing_by_layer: dict[str, list[dict]] = {}
+    skipped_existing_ids = 0
+    skipped_exact_geometry = 0
+    skipped_low_quality_fragments = 0
+    replaced_lower_quality = 0
     if not replace:
         existing = read_existing_features(output_dir)
         existing_count = len(existing)
         existing_by_layer = group_features_by_layer(existing)
+        merged_features = list(existing)
         existing_stable_ids = {
             f"{(feature.get('properties') or {}).get('layer_id')}|{stable_feature_id(feature)}"
             for feature in existing
             if stable_feature_id(feature)
         }
         existing_feature_keys = {feature_key(feature) for feature in existing}
-        filtered_features = []
+        existing_geometry_keys = {geometry_signature(feature) for feature in existing}
+        existing_replaceable_index = {
+            f"{(feature.get('properties') or {}).get('layer_id')}|{stable_feature_id(feature)}": index
+            for index, feature in enumerate(merged_features)
+            if stable_feature_id(feature) and not is_fragmented_geometry(feature)
+        }
+        new_fragments_by_id: dict[str, list[dict]] = {}
         for feature in features:
             props = feature.get("properties") or {}
             stable_id = stable_feature_id(feature)
-            if stable_id and f"{props.get('layer_id')}|{stable_id}" in existing_stable_ids:
+            stable_key = f"{props.get('layer_id')}|{stable_id}" if stable_id else ""
+            geometry_key = geometry_signature(feature)
+            if geometry_key in existing_geometry_keys:
+                skipped_exact_geometry += 1
+                continue
+            if stable_id and stable_key in existing_stable_ids:
+                replace_index = existing_replaceable_index.get(stable_key)
+                if (
+                    replace_index is not None
+                    and not is_fragmented_geometry(feature)
+                    and feature_detail_score(feature) > feature_detail_score(merged_features[replace_index])
+                ):
+                    merged_features[replace_index] = feature
+                    existing_geometry_keys.add(geometry_key)
+                    replaced_lower_quality += 1
+                else:
+                    skipped_existing_ids += 1
+                continue
+            if stable_id and is_fragmented_geometry(feature):
+                if new_fragment_allowed(feature):
+                    new_fragments_by_id.setdefault(stable_key, []).append(feature)
+                else:
+                    skipped_low_quality_fragments += 1
                 continue
             if not stable_id and feature_key(feature) in existing_feature_keys:
+                skipped_exact_geometry += 1
                 continue
-            filtered_features.append(feature)
-        features = filtered_features
-        features = existing + features
+            merged_features.append(feature)
+            if stable_id:
+                existing_stable_ids.add(stable_key)
+            existing_feature_keys.add(feature_key(feature))
+            existing_geometry_keys.add(geometry_key)
+        for fragment_group in new_fragments_by_id.values():
+            max_zoom = max(source_zoom(feature) for feature in fragment_group)
+            seen_fragment_geometry: set[str] = set()
+            for feature in fragment_group:
+                geometry_key = geometry_signature(feature)
+                if source_zoom(feature) != max_zoom or geometry_key in seen_fragment_geometry or geometry_key in existing_geometry_keys:
+                    skipped_low_quality_fragments += 1
+                    continue
+                seen_fragment_geometry.add(geometry_key)
+                existing_geometry_keys.add(geometry_key)
+                merged_features.append(feature)
+        features = merged_features
     layer_features = group_features_by_layer(dedupe_features(features))
     if not layer_features:
         raise RuntimeError("No VETRO features were decoded from the capture")
@@ -420,6 +472,12 @@ def write_outputs(features: list[dict], output_dir: Path, backup_dir: Path | Non
         "failures": failures,
         "mode": "replace" if replace else "append_only_merge",
         "existing_feature_count": existing_count,
+        "quality_guardrails": {
+            "skipped_existing_ids": skipped_existing_ids,
+            "skipped_exact_geometry": skipped_exact_geometry,
+            "skipped_low_quality_fragments": skipped_low_quality_fragments,
+            "replaced_lower_quality": replaced_lower_quality,
+        },
         "coverage_guardrails": coverage_guardrails,
         "layers": {},
     }
