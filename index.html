@@ -11,7 +11,7 @@
     <meta name="apple-mobile-web-app-title" content="Fiber Locator">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-  <link rel="stylesheet" href="/static/styles.css?v=20260618015500">
+  <link rel="stylesheet" href="/static/styles.css?v=20260618170500">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
@@ -498,6 +498,10 @@
             </div>
             <button id="inHouseUseMapCenter" type="button">Use center</button>
           </div>
+          <div class="in-house-lookup">
+            <input id="inHouseLookup" type="search" maxlength="220" placeholder="Find ticket, utility ID, VETRO ID, handhole, flower pot, address, coordinates">
+            <div id="inHouseLookupResults" class="in-house-lookup-results" hidden></div>
+          </div>
           <div id="inHouseMap" class="in-house-map"></div>
         </aside>
       </div>
@@ -782,6 +786,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js?v=20260618015500"></script>
+  <script src="/static/app.js?v=20260618170500"></script>
   </body>
 </html>

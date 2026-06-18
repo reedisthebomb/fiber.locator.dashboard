@@ -2981,6 +2981,226 @@ def get_vitruvi_response(paths: list[Path]) -> tuple[bytes, bytes]:
         return body, gzip_body
 
 
+def geojson_coordinate_points(coords) -> Iterable[tuple[float, float]]:
+    if not isinstance(coords, list):
+        return
+    if len(coords) >= 2 and all(isinstance(value, (int, float)) for value in coords[:2]):
+        yield float(coords[0]), float(coords[1])
+        return
+    for item in coords:
+        yield from geojson_coordinate_points(item)
+
+
+def geojson_centroid(geometry: dict | None) -> tuple[float, float] | None:
+    points = list(geojson_coordinate_points((geometry or {}).get("coordinates")))
+    if not points:
+        return None
+    longitude = sum(point[0] for point in points) / len(points)
+    latitude = sum(point[1] for point in points) / len(points)
+    if abs(latitude) > 90 or abs(longitude) > 180:
+        return None
+    return latitude, longitude
+
+
+def compact_search_text(*values: object) -> str:
+    return " ".join(str(value or "").lower() for value in values if value not in (None, ""))
+
+
+def search_score(query: str, values: Iterable[object]) -> int:
+    terms = [term for term in re.split(r"[\s,;:/#-]+", query.lower()) if term]
+    value_list = [str(value or "") for value in values if value not in (None, "")]
+    haystack = compact_search_text(*value_list)
+    if not terms or not haystack:
+        return 0
+    score = 0
+    for term in terms:
+        if term in haystack:
+            score += 10
+        if any(value.lower().startswith(term) for value in value_list):
+            score += 6
+        if any(value.lower() == term for value in value_list):
+            score += 12
+    if query.lower() in haystack:
+        score += 20
+    return score
+
+
+def ticket_center(ticket: Ticket) -> tuple[float, float] | None:
+    lat = ticket.latitude
+    lng = ticket.longitude
+    if isinstance(lat, (int, float)) and isinstance(lng, (int, float)) and abs(lat) <= 90 and abs(lng) <= 180:
+        return float(lat), float(lng)
+    return geojson_centroid(ticket.polygon)
+
+
+def in_house_coordinate_result(query: str) -> dict | None:
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*[, ]+\s*(-?\d+(?:\.\d+)?)", query)
+    if not match:
+        return None
+    first = float(match.group(1))
+    second = float(match.group(2))
+    for lat, lng in ((first, second), (second, first)):
+        if abs(lat) <= 90 and abs(lng) <= 180:
+            label = f"{lat:.6f}, {lng:.6f}"
+            return {
+                "type": "coordinates",
+                "label": label,
+                "detail": "Typed coordinates",
+                "score": 200,
+                "latitude": lat,
+                "longitude": lng,
+                "address": label,
+                "values": {
+                    "address": label,
+                    "lat": f"{lat:.6f}",
+                    "lng": f"{lng:.6f}",
+                    "title": "Coordinate locate",
+                },
+            }
+    return None
+
+
+def in_house_ticket_results(query: str, tickets: list[Ticket], limit: int = 8) -> list[dict]:
+    results = []
+    for ticket in tickets:
+        center = ticket_center(ticket)
+        values = [
+            ticket.ticket_number,
+            ticket.address,
+            ticket.street,
+            ticket.place,
+            ticket.county,
+            ticket.caller,
+            ticket.contractor,
+            ticket.done_for,
+            ticket.work_type,
+            ticket.portal_ticket_id,
+        ]
+        score = search_score(query, values)
+        if not score:
+            continue
+        item = {
+            "type": "ticket",
+            "label": ticket.ticket_number,
+            "detail": " - ".join(part for part in [ticket.address or ticket.street, ticket.place, ticket.county] if part),
+            "score": score + 40,
+            "address": ticket.address or ticket.street or "",
+            "values": {
+                "title": f"Locate {ticket.ticket_number}",
+                "address": ticket.address or ticket.street or "",
+                "place": ticket.place,
+                "county": ticket.county,
+                "utilities": ticket.work_type or ticket.done_for,
+                "scope": ticket.location_information or ticket.work_type or ticket.extent,
+                "project": ticket.done_for,
+            },
+        }
+        if center:
+            item["latitude"], item["longitude"] = center
+            item["values"]["lat"] = f"{center[0]:.6f}"
+            item["values"]["lng"] = f"{center[1]:.6f}"
+        results.append(item)
+    return sorted(results, key=lambda item: (-int(item.get("score") or 0), item.get("label") or ""))[:limit]
+
+
+def in_house_vetro_results(query: str, paths: list[Path], limit: int = 10) -> list[dict]:
+    if not paths:
+        return []
+    try:
+        body, _ = get_vetro_response(paths)
+        payload = json.loads(body.decode("utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return []
+    results = []
+    for feature in payload.get("features", []):
+        if not isinstance(feature, dict):
+            continue
+        props = feature.get("properties") or {}
+        layer_id = first_prop(props, "layer_id", "Layer_ID")
+        label = first_prop(props, "ID", "feature_id", "vetro_id", "Name", "name", "label", "TT_ID", "Global_ID_TT")
+        address = first_prop(props, "street_address", "Street_Address", "Street Address", "Address", "full_address")
+        values = [
+            layer_id,
+            label,
+            address,
+            first_prop(props, "vetro_id", "Vetro_ID"),
+            first_prop(props, "Name", "name"),
+            first_prop(props, "Build", "build"),
+            first_prop(props, "Placement", "placement"),
+            first_prop(props, "status_id", "Status_ID"),
+            first_prop(props, "source_file"),
+            json.dumps(props, sort_keys=True, default=str)[:2000],
+        ]
+        score = search_score(query, values)
+        if not score:
+            continue
+        center = geojson_centroid(feature.get("geometry") or {})
+        layer_label = f"Layer {layer_id}" if layer_id else "VETRO layer"
+        utility_label = label or address or layer_label
+        item = {
+            "type": "vetro",
+            "label": utility_label,
+            "detail": f"{layer_label} - {(feature.get('geometry') or {}).get('type') or 'feature'}",
+            "score": score + 60,
+            "address": address,
+            "layer_id": layer_id,
+            "feature_id": label,
+            "values": {
+                "title": f"Locate {utility_label}",
+                "address": address,
+                "utilities": " ".join(part for part in [layer_label, utility_label] if part),
+                "scope": f"Locate {layer_label} {utility_label}".strip(),
+            },
+        }
+        if center:
+            item["latitude"], item["longitude"] = center
+            item["values"]["lat"] = f"{center[0]:.6f}"
+            item["values"]["lng"] = f"{center[1]:.6f}"
+        results.append(item)
+    return sorted(results, key=lambda item: (-int(item.get("score") or 0), item.get("label") or ""))[:limit]
+
+
+def nominatim_search_results(query: str, limit: int = 5) -> list[dict]:
+    bounded_query = query if re.search(r"\b(arkansas|ar|usa|united states)\b", query, re.I) else f"{query}, Arkansas, USA"
+    url = f"https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit={limit}&q={quote(bounded_query)}"
+    geocode_request = urllib_request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "fiber-locator-dashboard/1.0",
+        },
+    )
+    try:
+        with urllib_request.urlopen(geocode_request, timeout=12) as response:
+            results = json.loads(response.read().decode("utf-8", errors="replace"))
+    except (HTTPError, OSError, URLError, json.JSONDecodeError):
+        return []
+    matches = []
+    for index, result in enumerate(results if isinstance(results, list) else []):
+        try:
+            latitude = float(result.get("lat"))
+            longitude = float(result.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        label = str(result.get("display_name") or bounded_query)
+        matches.append({
+            "type": "address",
+            "label": label,
+            "detail": str(result.get("type") or result.get("class") or "Address"),
+            "score": 50 - index,
+            "latitude": latitude,
+            "longitude": longitude,
+            "address": label,
+            "values": {
+                "address": label,
+                "lat": f"{latitude:.6f}",
+                "lng": f"{longitude:.6f}",
+                "title": label.split(",", 1)[0],
+            },
+        })
+    return matches
+
+
 def clear_vetro_response_cache() -> None:
     with VETRO_CACHE_LOCK:
         VETRO_RESPONSE_CACHE.update({"signature": None, "body": b"", "gzip_body": b""})
@@ -3503,6 +3723,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/map-search":
             query = parse_qs(parsed.query).get("q", [""])[0]
             self.send_map_search(query)
+            return
+        if parsed.path == "/api/in-house-lookup":
+            query = parse_qs(parsed.query).get("q", [""])[0]
+            self.send_in_house_lookup(query)
             return
         if parsed.path == "/api/attachments":
             ticket_number = parse_qs(parsed.query).get("ticket", [""])[0]
@@ -5704,6 +5928,40 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "latitude": latitude,
             "longitude": longitude,
         })
+
+    def send_in_house_lookup(self, query: str) -> None:
+        query = query.strip()
+        if len(query) < 2:
+            self.send_json({"ok": True, "query": query, "results": []})
+            return
+        results = []
+        coordinate_result = in_house_coordinate_result(query)
+        if coordinate_result:
+            results.append(coordinate_result)
+        if len(query) >= 3:
+            tickets = load_tickets(self.downloads_dir, self.data_dir, self.inbox_dir)
+            results.extend(in_house_ticket_results(query, tickets))
+            results.extend(in_house_vetro_results(query, self.vetro_layers))
+        local_count = len(results)
+        if len(query) >= 4 and local_count < 4:
+            results.extend(nominatim_search_results(query, limit=5))
+        seen = set()
+        deduped = []
+        for item in sorted(results, key=lambda value: (-int(value.get("score") or 0), str(value.get("label") or ""))):
+            key = (
+                item.get("type"),
+                item.get("label"),
+                round(float(item.get("latitude") or 0), 6) if item.get("latitude") is not None else "",
+                round(float(item.get("longitude") or 0), 6) if item.get("longitude") is not None else "",
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            item.pop("score", None)
+            deduped.append(item)
+            if len(deduped) >= 12:
+                break
+        self.send_json({"ok": True, "query": query, "results": deduped, "local_result_count": local_count})
 
     def send_portal_html(self, ticket_number: str) -> None:
         details = load_geocall_details(self.downloads_dir, self.data_dir)

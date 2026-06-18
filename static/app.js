@@ -29,6 +29,8 @@ let inHouseMapMarker = null;
 let inHouseMapVetroLayer = null;
 let inHouseMapSearchTimer = null;
 let inHouseMapSearchToken = 0;
+let inHouseLookupTimer = null;
+let inHouseLookupToken = 0;
 let markers;
 let polygons;
 let userLocationLayer;
@@ -2539,6 +2541,8 @@ const elements = {
   inHouseMap: document.querySelector("#inHouseMap"),
   inHouseMapStatus: document.querySelector("#inHouseMapStatus"),
   inHouseUseMapCenter: document.querySelector("#inHouseUseMapCenter"),
+  inHouseLookup: document.querySelector("#inHouseLookup"),
+  inHouseLookupResults: document.querySelector("#inHouseLookupResults"),
   inHouseRefreshRequests: document.querySelector("#inHouseRefreshRequests"),
   inHouseRequestList: document.querySelector("#inHouseRequestList"),
   locationPhotosView: document.querySelector("#locationPhotosView"),
@@ -7387,6 +7391,106 @@ function syncInHouseMapFromCoordinates() {
   return true;
 }
 
+function inHouseLookupText() {
+  return String(elements.inHouseLookup?.value || "").trim();
+}
+
+function hideInHouseLookupResults() {
+  if (!elements.inHouseLookupResults) return;
+  elements.inHouseLookupResults.hidden = true;
+  elements.inHouseLookupResults.innerHTML = "";
+}
+
+function inHouseLookupTypeLabel(type) {
+  if (type === "vetro") return "VETRO";
+  if (type === "ticket") return "Ticket";
+  if (type === "coordinates") return "Coords";
+  if (type === "address") return "Address";
+  return "Match";
+}
+
+function renderInHouseLookupResults(results, query) {
+  if (!elements.inHouseLookupResults) return;
+  const items = Array.isArray(results) ? results : [];
+  if (!items.length) {
+    elements.inHouseLookupResults.hidden = false;
+    elements.inHouseLookupResults.innerHTML = `<div class="in-house-lookup-empty">No match for ${escapeHtml(query)}</div>`;
+    return;
+  }
+  elements.inHouseLookupResults.hidden = false;
+  elements.inHouseLookupResults.innerHTML = items.map((item, index) => `
+    <button type="button" data-in-house-lookup-result="${index}">
+      <span class="in-house-lookup-type">${escapeHtml(inHouseLookupTypeLabel(item.type))}</span>
+      <strong>${escapeHtml(item.label || item.address || "Map match")}</strong>
+      <small>${escapeHtml(item.detail || item.address || "")}</small>
+    </button>
+  `).join("");
+  for (const button of elements.inHouseLookupResults.querySelectorAll("[data-in-house-lookup-result]")) {
+    button.addEventListener("click", () => {
+      const item = items[Number(button.dataset.inHouseLookupResult)];
+      applyInHouseLookupResult(item);
+    });
+  }
+}
+
+function setInputIfEmptyOrLookup(element, value) {
+  if (!element || value === undefined || value === null || value === "") return;
+  if (!String(element.value || "").trim()) element.value = value;
+}
+
+function applyInHouseLookupResult(item) {
+  if (!item || typeof item !== "object") return;
+  const values = item.values || {};
+  setInputIfEmptyOrLookup(elements.inHouseTitle, values.title || item.label);
+  setInputIfEmptyOrLookup(elements.inHouseProject, values.project);
+  if (values.address || item.address) {
+    if (elements.inHouseAddress) elements.inHouseAddress.value = values.address || item.address || "";
+  }
+  setInputIfEmptyOrLookup(elements.inHousePlace, values.place);
+  setInputIfEmptyOrLookup(elements.inHouseCounty, values.county);
+  setInputIfEmptyOrLookup(elements.inHouseUtilities, values.utilities);
+  setInputIfEmptyOrLookup(elements.inHouseScope, values.scope);
+  const lat = Number(item.latitude ?? values.lat);
+  const lng = Number(item.longitude ?? values.lng);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    setInHouseMapPoint(lat, lng, item.label || item.address || "Lookup result");
+  } else if (elements.inHouseMapStatus) {
+    elements.inHouseMapStatus.textContent = `${item.label || "Lookup result"} selected. Add or pick a map point.`;
+  }
+  if (elements.inHouseLookup) elements.inHouseLookup.value = item.label || item.address || "";
+  hideInHouseLookupResults();
+}
+
+function scheduleInHouseLookup() {
+  window.clearTimeout(inHouseLookupTimer);
+  const query = inHouseLookupText();
+  if (query.length < 2) {
+    hideInHouseLookupResults();
+    return;
+  }
+  const token = ++inHouseLookupToken;
+  if (elements.inHouseMapStatus) elements.inHouseMapStatus.textContent = "Finding matching tickets, utilities, addresses...";
+  inHouseLookupTimer = window.setTimeout(async () => {
+    try {
+      const response = await fetch(`/api/in-house-lookup?q=${encodeURIComponent(query)}`);
+      if (!response.ok) throw new Error(`Lookup failed: ${response.status}`);
+      const payload = await response.json();
+      if (token !== inHouseLookupToken) return;
+      renderInHouseLookupResults(payload.results || [], query);
+      if (elements.inHouseMapStatus) {
+        const count = Array.isArray(payload.results) ? payload.results.length : 0;
+        elements.inHouseMapStatus.textContent = count ? `${count} lookup match${count === 1 ? "" : "es"} found.` : "No lookup match found.";
+      }
+    } catch (error) {
+      if (token === inHouseLookupToken) {
+        hideInHouseLookupResults();
+        if (elements.inHouseMapStatus) elements.inHouseMapStatus.textContent = error.message || "Lookup failed.";
+      }
+      console.error(error);
+    }
+  }, 350);
+}
+
 function scheduleInHouseMapSearch(options = {}) {
   window.clearTimeout(inHouseMapSearchTimer);
   if (!options.forceAddress && syncInHouseMapFromCoordinates()) return;
@@ -7416,6 +7520,8 @@ function scheduleInHouseMapSearch(options = {}) {
 }
 
 function fillInHouseForm(item = {}) {
+  hideInHouseLookupResults();
+  if (!item.id && elements.inHouseLookup) elements.inHouseLookup.value = "";
   selectedInHouseRequestId = item.id || "";
   if (elements.inHouseId) elements.inHouseId.value = item.id || "";
   if (elements.inHouseTitle) elements.inHouseTitle.value = item.title || "";
@@ -9819,6 +9925,22 @@ for (const input of [elements.inHouseLat, elements.inHouseLng]) {
 for (const input of [elements.inHouseAddress, elements.inHousePlace, elements.inHouseCounty]) {
   if (input) input.addEventListener("input", () => scheduleInHouseMapSearch({ forceAddress: true }));
 }
+if (elements.inHouseLookup) {
+  elements.inHouseLookup.addEventListener("input", scheduleInHouseLookup);
+  elements.inHouseLookup.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const first = elements.inHouseLookupResults?.querySelector("[data-in-house-lookup-result]");
+    if (first && !elements.inHouseLookupResults.hidden) {
+      event.preventDefault();
+      first.click();
+    }
+  });
+}
+document.addEventListener("click", (event) => {
+  if (!elements.inHouseLookupResults || elements.inHouseLookupResults.hidden) return;
+  if (elements.inHouseLookup?.contains(event.target) || elements.inHouseLookupResults.contains(event.target)) return;
+  hideInHouseLookupResults();
+});
 if (elements.locationPhotosBackToDashboard) elements.locationPhotosBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.refreshLocationPhotos) elements.refreshLocationPhotos.addEventListener("click", () => {
   void loadLocationPhotos().then(renderLocationPhotosView).catch((error) => {

@@ -2,6 +2,14 @@
 
 Updated: 2026-06-18
 
+## In-House Locate Lookup Upgrade - 2026-06-18
+
+- Reed asked for the In-house Locate process to be easier and searchable by utility number, layer number, handhole/flower-pot IDs, VETRO IDs, addresses, and coordinates, with details filled in where possible.
+- Added `/api/in-house-lookup`, which ranks typed coordinates, current One Call tickets, VETRO features/properties, and address geocoder results into one normalized result list. VETRO/ticket matches come from local server data first; public address lookup is only used as a fallback.
+- The In-house Locate page now has a `Find ticket, utility ID, VETRO ID, handhole, flower pot, address, coordinates` lookup box beside the map. Selecting a result fills available address/place/county/title/utilities/scope/lat/lng fields and moves the map marker. The Android app uses this through its existing `/#in-house-requests` WebView route.
+- Deployed `server.py`, `index.html`, `static/app.js`, and `static/styles.css` to the cloud server with cache-bust `20260618170500`; backup path is `data/deploy_backups/20260618T170354Z`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py tools/export_vetro_google_earth_layers.py`, `node --check static/app.js`, live remote SHA256 hashes match local for the deployed files, and `onecall-dashboard` is active. Live SSH data checks returned coordinate, ticket, and VETRO matches against 7 VETRO layer files and 1870 tickets. Local Playwright/Google Chrome rendered `/#in-house-requests`, selected a coordinate lookup result, and confirmed address/lat/lng/map status updated.
+
 ## Photo Library API And Admin Upload/Export - 2026-06-18
 
 - Added a server-backed photo library for Timestamp Camera evidence photos on the live cloud dashboard. Admin/site-owner users can open Settings -> Photo Library or More -> Location Photos to bulk upload existing photos without needing OneDrive connected.
