@@ -6,12 +6,12 @@
     <title>Fiber Locator</title>
     <link rel="icon" type="image/png" href="/favicon.ico?v=20260602201000">
     <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260602201000">
-    <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260602201000">
+    <link rel="apple-touch-icon" href="/static/finalapplocator.png?v=20260606120000">
     <meta name="theme-color" content="#07131f">
     <meta name="apple-mobile-web-app-title" content="Fiber Locator">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/styles.css?v=20260603104500">
+  <link rel="stylesheet" href="/static/styles.css?v=20260618015500">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
@@ -19,7 +19,7 @@
       <div class="brand">
         <div class="brand-logos">
           <img id="appBrandLogo" class="brand-primary-logo" src="/static/assets/tcw-logo.png?v=20260602150000" alt="TCW">
-          <img id="appBrandSecondaryLogo" class="brand-secondary-logo" src="/static/assets/eldorado.locator.wide.png?v=20260602201000" alt="Fiber Locator">
+          <img id="appBrandSecondaryLogo" class="brand-secondary-logo" src="/static/assets/finallandscapelocator.png?v=20260606120000" alt="Fiber Locator">
         </div>
         <div>
           <h1>Fiber Locator</h1>
@@ -38,8 +38,10 @@
           <summary aria-label="More options">...</summary>
           <div class="more-menu-panel">
             <button id="showSheetView" type="button">Dig Tickets</button>
+            <button id="showRestorationView" type="button">Restoration Jobs</button>
+            <button id="showInHouseRequestsView" type="button">In-house Locate Requests</button>
+            <button id="showLocationPhotosView" type="button">Location Photos</button>
             <button id="showLiveTicketsView" type="button">Live tickets</button>
-            <button id="showTcwDashboardView" type="button">One-Calls Done For TCW</button>
             <button id="showDashboardView" type="button">Dashboard</button>
             <button id="addLocatorNote" type="button">Add locator note</button>
             <button id="showMobileAdminView" type="button" hidden>Admin console</button>
@@ -53,6 +55,29 @@
                 <button id="refreshOneDriveStatus" type="button">Check OneDrive</button>
                 <button id="connectOneDrive" type="button">Connect / change OneDrive</button>
                 <div id="oneDriveStatus" class="settings-status">OneDrive status not checked.</div>
+                <div class="settings-divider"></div>
+                <strong>Photo Library</strong>
+                <button id="openPhotoManager" type="button">Manage photos</button>
+                <button id="downloadPhotoCsv" type="button">Export photo CSV</button>
+                <button id="downloadPhotoZip" type="button">Export photo ZIP</button>
+                <label>
+                  Source app
+                  <input id="photoSettingsSourceApp" type="text" value="Timestamp Camera">
+                </label>
+                <label>
+                  Google export folder
+                  <input id="photoSettingsGoogleFolder" type="text" value="Fiber Locator Photos">
+                </label>
+                <label>
+                  Sync mode
+                  <select id="photoSettingsDriveMode">
+                    <option value="export">Export ZIP/CSV for Google Drive</option>
+                    <option value="manual">Manual upload to Google Drive</option>
+                    <option value="off">Local server only</option>
+                  </select>
+                </label>
+                <button id="savePhotoSettings" type="button">Save photo settings</button>
+                <div id="photoSettingsStatus" class="settings-status">Photo library status not checked.</div>
               </div>
             </div>
             <div class="profile-menu">
@@ -260,6 +285,7 @@
 
       <section class="map-wrap">
         <div id="map"></div>
+        <div id="map3d" class="map-3d" hidden></div>
         <form id="mapSearchForm" class="map-search" role="search">
           <input id="mapSearch" type="search" placeholder="Search map, address, intersection, coordinates">
           <button type="submit">Go</button>
@@ -274,6 +300,13 @@
           <span id="measureStatus">Off</span>
         </div>
         <button id="dashboardSatelliteToggle" class="dashboard-satellite-toggle" type="button" aria-pressed="false">Satellite</button>
+        <button id="dashboard3dToggle" class="dashboard-3d-toggle" type="button" aria-pressed="false">3D</button>
+        <button id="dashboard3dStyle" class="dashboard-3d-style" type="button" hidden>Satellite 3D</button>
+        <div id="dashboard3dTilt" class="dashboard-3d-tilt" hidden>
+          <button id="dashboard3dTiltUp" type="button">Tilt +</button>
+          <button id="dashboard3dTiltDown" type="button">Tilt -</button>
+          <button id="dashboard3dRotate" type="button">Rotate</button>
+        </div>
         <div id="mapLegend" class="priority-legend map-legend" aria-label="Ticket priority legend"></div>
         <button id="legendToggle" class="legend-toggle" type="button" aria-label="Show legend" title="Show legend">Legend</button>
         <aside id="detail" class="detail">
@@ -300,7 +333,181 @@
         </div>
         <button id="sheetBackToDashboard" type="button">Dashboard</button>
       </div>
+      <div id="sheetHorizontalScroll" class="sheet-horizontal-scroll" aria-label="Scroll dig tickets columns horizontally">
+        <div id="sheetHorizontalScrollInner"></div>
+      </div>
       <div id="sheetTableWrap" class="sheet-table-wrap"></div>
+    </section>
+
+    <section id="restorationView" class="restoration-view" hidden>
+      <div class="restoration-toolbar ops-toolbar">
+        <div>
+          <h2>Restoration Jobs</h2>
+          <p>Prioritized restoration dashboard sorted by priority and due date.</p>
+        </div>
+        <label class="sheet-search">
+          <span>Search restoration jobs</span>
+          <input id="restorationSearch" type="search" placeholder="Search job, ticket, address, entity, employee">
+        </label>
+        <select id="restorationPriorityFilter" aria-label="Filter restoration priority">
+          <option value="">All priorities</option>
+          <option value="emergency">Emergency</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        <select id="restorationStatusFilter" aria-label="Filter restoration status">
+          <option value="">All statuses</option>
+          <option value="open">Open</option>
+          <option value="scheduled">Scheduled</option>
+          <option value="in_progress">In progress</option>
+          <option value="submitted">Submitted</option>
+          <option value="completed">Completed</option>
+        </select>
+        <button id="newRestorationJob" type="button">Add restoration ticket</button>
+        <button id="restorationBackToDashboard" type="button">Dashboard</button>
+      </div>
+      <div class="restoration-shell">
+        <div class="restoration-workspace">
+          <div id="restorationJobsTable" class="restoration-jobs-table"></div>
+        </div>
+        <div class="restoration-map-panel">
+          <div id="restorationMap"></div>
+        </div>
+        <aside id="restorationDetail" class="ops-detail-panel"></aside>
+      </div>
+      <div id="restorationModal" class="ops-modal" hidden>
+        <form id="restorationForm" class="restoration-form ops-modal-card">
+          <div class="ops-modal-head">
+            <h3>Add restoration ticket</h3>
+            <button id="restorationCancel" type="button" aria-label="Close restoration form">Close</button>
+          </div>
+            <input id="restorationJobId" type="hidden">
+            <label>
+              Title
+              <input id="restorationTitle" type="text" maxlength="160" placeholder="Driveway repair, yard restore, bore pit cleanup">
+            </label>
+            <label>
+              Ticket
+              <input id="restorationTicket" type="text" placeholder="250506-0000">
+            </label>
+            <label>
+              Location or address
+              <input id="restorationLocation" type="text" placeholder="Address, intersection, map note, or site description">
+            </label>
+            <label>
+              Layer/entity
+              <input id="restorationEntity" type="text" placeholder="VETRO layer, feature, customer, or polygon reference">
+            </label>
+            <div class="restoration-grid">
+              <label>
+                Latitude
+                <input id="restorationLat" type="number" step="any" placeholder="Map click fills this">
+              </label>
+              <label>
+                Longitude
+                <input id="restorationLng" type="number" step="any">
+              </label>
+              <label class="restoration-admin-only">
+                Priority
+                <select id="restorationPriority">
+                  <option value="low">Low</option>
+                  <option value="medium" selected>Medium</option>
+                  <option value="high">High</option>
+                  <option value="emergency">Emergency</option>
+                </select>
+              </label>
+              <label>
+                Status
+                <select id="restorationStatus">
+                  <option value="open">Open</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="in_progress">In progress</option>
+                  <option value="submitted">Submitted</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </label>
+              <label class="restoration-admin-only">
+                Scheduled
+                <input id="restorationScheduled" type="datetime-local">
+              </label>
+              <label class="restoration-admin-only">
+                Assigned to
+                <input id="restorationAssigned" type="text" placeholder="Employee or crew">
+              </label>
+            </div>
+            <label>
+              Notes
+              <textarea id="restorationNotes" rows="3" placeholder="Document damage, materials, access, completion notes"></textarea>
+            </label>
+            <div class="restoration-actions">
+              <button type="submit">Save job</button>
+              <span id="restorationFormStatus"></span>
+            </div>
+        </form>
+      </div>
+    </section>
+
+    <section id="inHouseRequestsView" class="in-house-requests-view" hidden>
+      <div class="restoration-toolbar ops-toolbar">
+        <div>
+          <h2>In-house Locate Requests</h2>
+          <p>Submit internal locate requests to the normal locator dashboard.</p>
+        </div>
+        <button id="inHouseBackToDashboard" type="button">Dashboard</button>
+      </div>
+      <div class="in-house-request-entry-shell">
+        <form id="inHouseForm" class="restoration-form in-house-request-form">
+          <div class="ops-modal-head in-house-request-head">
+            <h3>New in-house locate request</h3>
+            <span>After submission, this request appears on the normal locator dashboard.</span>
+          </div>
+          <input id="inHouseId" type="hidden">
+          <div class="restoration-grid">
+            <label>Requestor<input id="inHouseRequestor" type="text" maxlength="120"></label>
+            <label>Contact phone<input id="inHouseContactPhone" type="tel" maxlength="80"></label>
+            <label>Priority<select id="inHousePriority"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option><option value="emergency">Emergency</option></select></label>
+            <label>Status<select id="inHouseStatus"><option value="open">Open</option><option value="scheduled">Scheduled</option><option value="in_progress">In progress</option><option value="completed">Completed</option><option value="canceled">Canceled</option></select></label>
+            <label>Due date/time<input id="inHouseDue" type="datetime-local"></label>
+            <label>Assigned to<input id="inHouseAssigned" type="text" maxlength="120"></label>
+          </div>
+          <label>Title<input id="inHouseTitle" type="text" maxlength="160" placeholder="Subdivision drop locate, yard repair route, private bore request"></label>
+          <div class="restoration-grid">
+            <label>Crew / department<input id="inHouseCrew" type="text" maxlength="120"></label>
+            <label>Project<input id="inHouseProject" type="text" maxlength="160"></label>
+            <label>County<input id="inHouseCounty" type="text" maxlength="80" placeholder="UNION"></label>
+            <label>Place<input id="inHousePlace" type="text" maxlength="120"></label>
+            <label>Latitude<input id="inHouseLat" type="number" step="any"></label>
+            <label>Longitude<input id="inHouseLng" type="number" step="any"></label>
+          </div>
+          <label>Address / location<input id="inHouseAddress" type="text" maxlength="220"></label>
+          <label>Utilities to locate<textarea id="inHouseUtilities" rows="3" maxlength="1000" placeholder="Fiber, conduit, service drop, handhole, power crossing"></textarea></label>
+          <label>Scope / work description<textarea id="inHouseScope" rows="4" maxlength="2000"></textarea></label>
+          <label>Notes<textarea id="inHouseNotes" rows="3" maxlength="2000"></textarea></label>
+          <div class="restoration-actions">
+            <button type="submit">Save request</button>
+            <button id="inHouseNewRequest" type="button">New request</button>
+            <span id="inHouseFormStatus"></span>
+          </div>
+        </form>
+        <aside class="in-house-map-panel">
+          <div class="in-house-map-toolbar">
+            <div>
+              <strong>Request location</strong>
+              <span id="inHouseMapStatus">Type an address or click the map.</span>
+            </div>
+            <button id="inHouseUseMapCenter" type="button">Use center</button>
+          </div>
+          <div id="inHouseMap" class="in-house-map"></div>
+        </aside>
+      </div>
+      <section class="in-house-request-list-panel">
+        <div class="location-photos-list-head">
+          <h3>Current in-house requests</h3>
+          <button id="inHouseRefreshRequests" type="button">Refresh</button>
+        </div>
+        <div id="inHouseRequestList" class="in-house-request-list"></div>
+      </section>
     </section>
 
     <section id="liveTicketsView" class="live-tickets-view" hidden>
@@ -323,11 +530,80 @@
       </div>
     </section>
 
+    <section id="locationPhotosView" class="location-photos-view" hidden>
+      <header class="location-photos-header">
+        <div>
+          <h2>Location Photos</h2>
+          <p>Upload GPS-tagged photos as standalone location records for future ticket polygon lookup.</p>
+        </div>
+        <button id="locationPhotosBackToDashboard" type="button">Dashboard</button>
+      </header>
+      <div class="location-photos-shell">
+        <form id="locationPhotosForm" class="location-photos-form">
+          <label>
+            Timestamp Camera photos
+            <input id="locationPhotosFiles" type="file" multiple accept="image/*,.jpg,.jpeg,.png,.heic,.heif">
+          </label>
+          <div class="location-photos-grid">
+            <label>
+              Ticket number
+              <input id="locationPhotosTicket" type="text" inputmode="text" maxlength="40" placeholder="260529-1101">
+            </label>
+            <label>
+              Location label
+              <input id="locationPhotosLocationLabel" type="text" maxlength="140" placeholder="Ticket, road, handhole, flower pot, address">
+            </label>
+          </div>
+          <label>
+            Address / site
+            <input id="locationPhotosAddress" type="text" maxlength="220" placeholder="Optional searchable address or site description">
+          </label>
+          <div class="location-photos-grid">
+            <label>
+              Fallback latitude
+              <input id="locationPhotosLat" type="number" step="any" placeholder="Used only when photo GPS is missing">
+            </label>
+            <label>
+              Fallback longitude
+              <input id="locationPhotosLng" type="number" step="any">
+            </label>
+          </div>
+          <label>
+            Note
+            <textarea id="locationPhotosNote" rows="3" maxlength="1000" placeholder="Optional note for review, location, locate status, or upload batch"></textarea>
+          </label>
+          <div class="location-photos-actions">
+            <button id="locationPhotosUpload" type="submit">Upload photos</button>
+            <span id="locationPhotosStatus">Choose existing Timestamp Camera photos. Photo GPS is read when available.</span>
+          </div>
+          <div class="ticket-upload-progress" id="locationPhotosProgress" hidden>
+            <div id="locationPhotosProgressBar"></div>
+          </div>
+        </form>
+        <div>
+          <div class="location-photos-list-head">
+            <h3>Photo location map</h3>
+          </div>
+          <div id="locationPhotosMap" class="location-photos-map"></div>
+          <div class="location-photos-list-head">
+            <h3>Stored photos</h3>
+            <div class="location-photos-list-actions">
+              <button id="exportLocationPhotosCsv" type="button">CSV</button>
+              <button id="exportLocationPhotosZip" type="button">ZIP</button>
+              <button id="refreshLocationPhotos" type="button">Refresh</button>
+            </div>
+          </div>
+          <div id="locationPhotosSummary" class="location-photos-summary"></div>
+          <div id="locationPhotosList" class="location-photos-list"></div>
+        </div>
+      </div>
+    </section>
+
     <section id="mobileView" class="mobile-view" hidden>
       <header class="mobile-header">
         <div class="brand-logos">
           <img id="mobileBrandLogo" class="brand-primary-logo" src="/static/assets/tcw-logo.png?v=20260602150000" alt="TCW">
-          <img id="mobileBrandSecondaryLogo" class="brand-secondary-logo" src="/static/assets/eldorado.locator.wide.png?v=20260602201000" alt="Fiber Locator">
+          <img id="mobileBrandSecondaryLogo" class="brand-secondary-logo" src="/static/assets/finallandscapelocator.png?v=20260606120000" alt="Fiber Locator">
         </div>
         <div>
           <h2>Fiber Locator Field</h2>
@@ -506,9 +782,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <link href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css" rel="stylesheet">
-    <script src="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.js"></script>
-    <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
-    <script src="/static/app.js?v=20260603104500"></script>
+  <script src="/static/app.js?v=20260618015500"></script>
   </body>
 </html>

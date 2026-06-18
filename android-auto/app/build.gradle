@@ -28,8 +28,8 @@ android {
         applicationId "com.fiberlocator.auto"
         minSdk 28
         targetSdk 36
-        versionCode 16
-        versionName "0.1.15"
+        versionCode 48
+        versionName "0.1.47"
     }
 
     buildTypes {
@@ -43,4 +43,5 @@ android {
 dependencies {
     implementation "androidx.car.app:app:1.7.0"
     implementation "androidx.car.app:app-projected:1.7.0"
+    implementation "com.google.android.gms:play-services-location:21.3.0"
 }

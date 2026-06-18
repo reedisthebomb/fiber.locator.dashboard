@@ -29,8 +29,14 @@ public class TicketDetailScreen extends Screen {
             .setTitle("Google Maps")
             .setOnClickListener(this::navigate)
             .build();
+        Action dashboardMap = new Action.Builder()
+            .setTitle("Dashboard Map")
+            .setOnClickListener(this::openDashboardMap)
+            .build();
 
-        Pane.Builder pane = new Pane.Builder().addAction(navigate);
+        Pane.Builder pane = new Pane.Builder()
+            .addAction(dashboardMap)
+            .addAction(navigate);
         addRow(pane, "Status", TicketCarStyle.statusLine(ticket));
         addRow(pane, "Location", ticket.locationLine());
         addRow(pane, "Due", ticket.dueLine());
@@ -51,6 +57,14 @@ public class TicketDetailScreen extends Screen {
         } catch (Exception ex) {
             CarToast.makeText(getCarContext(), "Navigation is unavailable", CarToast.LENGTH_LONG).show();
         }
+    }
+
+    private void openDashboardMap() {
+        if (!ticket.hasCoordinates) {
+            CarToast.makeText(getCarContext(), "Ticket has no map location", CarToast.LENGTH_LONG).show();
+            return;
+        }
+        getScreenManager().push(new CarLiveMapScreen(getCarContext(), ticket));
     }
 
     private static void addRow(Pane.Builder pane, String title, CharSequence text) {

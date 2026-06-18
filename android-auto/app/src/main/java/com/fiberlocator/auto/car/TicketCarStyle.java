@@ -4,6 +4,8 @@ import com.fiberlocator.auto.data.Ticket;
 
 import androidx.car.app.model.CarColor;
 
+import android.graphics.Color;
+
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -51,6 +53,18 @@ final class TicketCarStyle {
         return CarColor.DEFAULT;
     }
 
+    static int dashboardColor(Ticket ticket) {
+        if (isTcwDmi(ticket)) return Color.rgb(255, 106, 0);
+        if (isEmergency(ticket)) return Color.rgb(255, 0, 51);
+        if (isRecall(ticket)) return Color.rgb(168, 85, 247);
+        if (isRenewal(ticket)) return Color.rgb(56, 189, 248);
+        String due = dueStatus(ticket);
+        if ("due-today".equals(due)) return Color.rgb(255, 179, 179);
+        if ("due-next".equals(due)) return Color.rgb(250, 204, 21);
+        if ("due-later".equals(due)) return Color.rgb(21, 128, 61);
+        return Color.rgb(0, 105, 92);
+    }
+
     static String badge(Ticket ticket) {
         if (isTcwDmi(ticket)) return "TCW/DMI";
         if (isEmergency(ticket)) return "Emergency";
@@ -80,11 +94,11 @@ final class TicketCarStyle {
         return out.toString();
     }
 
-    private static boolean isEmergency(Ticket ticket) {
+    static boolean isEmergency(Ticket ticket) {
         return priorityText(ticket).contains("EMERGENCY");
     }
 
-    private static boolean isRecall(Ticket ticket) {
+    static boolean isRecall(Ticket ticket) {
         String text = priorityText(ticket);
         return text.matches(".*\\bRECALL\\b.*")
             || text.matches(".*\\bSECOND\\s+REQUEST\\b.*")
@@ -92,11 +106,11 @@ final class TicketCarStyle {
             || text.matches(".*\\bTWENTY\\s+FOUR\\s+HOUR\\s+PRIORITY\\b.*");
     }
 
-    private static boolean isRenewal(Ticket ticket) {
+    static boolean isRenewal(Ticket ticket) {
         return priorityText(ticket).contains("RENEWAL");
     }
 
-    private static boolean isTcwDmi(Ticket ticket) {
+    static boolean isTcwDmi(Ticket ticket) {
         String text = normalized(ticket.doneFor + " " + ticket.contractor + " " + ticket.caller);
         return text.contains(" TCW ")
             || text.contains(" DMI ")
@@ -120,7 +134,7 @@ final class TicketCarStyle {
             .trim() + " ");
     }
 
-    private static String dueStatus(Ticket ticket) {
+    static String dueStatus(Ticket ticket) {
         Date due = parseTicketDate(ticket.workDate);
         if (due == null) return "";
         Date today = startOfToday();

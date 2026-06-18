@@ -132,7 +132,7 @@ ONEDRIVE_GRAPH_SCOPE=offline_access Files.ReadWrite User.Read
 ONEDRIVE_ATTACHMENTS_ROOT=Fiber Locator Attachments
 ```
 
-Then open the dashboard three-dot menu, choose `Settings`, and use `Connect / change OneDrive`. Uploaded files are stored under `Fiber Locator Attachments/<ticket-number>/`, and the ticket keeps a clickable OneDrive folder link.
+Then open the dashboard three-dot menu, choose `Settings`, and use `Connect / change OneDrive`. Uploaded dig-ticket files are stored under `Fiber Locator Attachments/<ticket-number>/`, and restoration job photos are stored under `Fiber Locator Attachments/Restoration Jobs/<ticket-number-or-job-id>/`. The dashboard stores only attachment metadata and OneDrive links under ignored runtime data.
 
 ## Notes
 

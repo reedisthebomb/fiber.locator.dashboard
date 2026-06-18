@@ -22,10 +22,14 @@ import androidx.car.app.model.Place;
 import androidx.car.app.model.PlaceListMapTemplate;
 import androidx.car.app.model.PlaceMarker;
 import androidx.car.app.model.Row;
+import androidx.car.app.model.Tab;
+import androidx.car.app.model.TabContents;
+import androidx.car.app.model.TabTemplate;
 import androidx.car.app.model.Template;
 
 import com.fiberlocator.auto.data.Ticket;
 import com.fiberlocator.auto.data.TicketRepository;
+import com.fiberlocator.auto.data.TicketRepository.DashboardSnapshot;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -33,11 +37,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class TicketListScreen extends Screen {
+    private static final String TAB_TICKETS = "tickets";
+    private static final String TAB_MAP = "map";
+    private static final int MAX_TAB_TICKETS = 48;
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Ticket> tickets = new ArrayList<>();
     private boolean loading = true;
     private String error = "";
+    private String activeTab = TAB_TICKETS;
 
     public TicketListScreen(@NonNull CarContext carContext) {
         super(carContext);
@@ -47,15 +56,44 @@ public class TicketListScreen extends Screen {
     @NonNull
     @Override
     public Template onGetTemplate() {
-        if (!loading && error.isEmpty() && !tickets.isEmpty()) return ticketMapTemplate();
-        return listTemplateForCurrentState();
+        return tabTemplateForCurrentState();
     }
 
-    private Template ticketMapTemplate() {
+    private Template tabTemplateForCurrentState() {
+        if (loading || !error.isEmpty()) return listTemplateForCurrentState(filteredTickets());
+        List<Ticket> visible = filteredTickets();
+        return new TabTemplate.Builder(new TabTemplate.TabCallback() {
+                @Override
+                public void onTabSelected(@NonNull String tabContentId) {
+                    if (TAB_MAP.equals(tabContentId)) {
+                        getScreenManager().push(new CarLiveMapScreen(getCarContext()));
+                        return;
+                    }
+                    activeTab = TAB_TICKETS;
+                    invalidate();
+                }
+            })
+            .setHeaderAction(Action.APP_ICON)
+            .addTab(new Tab.Builder()
+                .setTitle("Tickets")
+                .setIcon(androidx.car.app.model.CarIcon.APP_ICON)
+                .setContentId(TAB_TICKETS)
+                .build())
+            .addTab(new Tab.Builder()
+                .setTitle("Map")
+                .setIcon(androidx.car.app.model.CarIcon.PAN)
+                .setContentId(TAB_MAP)
+                .build())
+            .setActiveTabContentId(activeTab)
+            .setTabContents(new TabContents.Builder(listTemplateForCurrentState(visible, false)).build())
+            .build();
+    }
+
+    private Template ticketMapTemplate(List<Ticket> visibleTickets) {
         ItemList.Builder list = new ItemList.Builder();
         Place anchor = null;
         Location currentLocation = lastKnownLocation();
-        for (Ticket ticket : tickets) {
+        for (Ticket ticket : visibleTickets) {
             if (!ticket.hasCoordinates) continue;
             double distanceMiles = distanceMiles(currentLocation, ticket);
             PlaceMarker.Builder marker = new PlaceMarker.Builder()
@@ -75,17 +113,21 @@ public class TicketListScreen extends Screen {
             list.addItem(row.build());
         }
 
-        if (anchor == null) return listTemplateForCurrentState();
+        if (anchor == null) return listTemplateForCurrentState(visibleTickets);
 
         return new PlaceListMapTemplate.Builder()
-            .setTitle("Live tickets")
+            .setTitle(tabTitle())
             .setHeaderAction(Action.APP_ICON)
             .setAnchor(anchor)
             .setItemList(list.build())
             .build();
     }
 
-    private Template listTemplateForCurrentState() {
+    private Template listTemplateForCurrentState(List<Ticket> visibleTickets) {
+        return listTemplateForCurrentState(visibleTickets, true);
+    }
+
+    private ListTemplate listTemplateForCurrentState(List<Ticket> visibleTickets, boolean includeHeader) {
         ItemList.Builder list = new ItemList.Builder();
         if (loading) {
             list.addItem(new Row.Builder().setTitle("Loading tickets...").build());
@@ -94,10 +136,10 @@ public class TicketListScreen extends Screen {
                 .setTitle("Open phone app to sign in")
                 .addText(error)
                 .build());
-        } else if (tickets.isEmpty()) {
-            list.addItem(new Row.Builder().setTitle("No live tickets found").build());
+        } else if (visibleTickets.isEmpty()) {
+            list.addItem(new Row.Builder().setTitle("No tickets found").build());
         } else {
-            for (Ticket ticket : tickets) {
+            for (Ticket ticket : visibleTickets) {
                 Row.Builder row = new Row.Builder()
                     .setTitle(TicketCarStyle.title(ticket))
                     .addText(TicketCarStyle.statusLine(ticket))
@@ -107,11 +149,11 @@ public class TicketListScreen extends Screen {
             }
         }
 
-        return new ListTemplate.Builder()
-            .setSingleList(list.build())
-            .setTitle("Live tickets")
-            .setHeaderAction(Action.APP_ICON)
-            .build();
+        ListTemplate.Builder builder = new ListTemplate.Builder().setSingleList(list.build());
+        if (includeHeader) {
+            builder.setTitle(tabTitle()).setHeaderAction(Action.APP_ICON);
+        }
+        return builder.build();
     }
 
     private void reload() {
@@ -120,7 +162,8 @@ public class TicketListScreen extends Screen {
         invalidate();
         executor.execute(() -> {
             try {
-                List<Ticket> loaded = new TicketRepository(getCarContext()).loadTickets();
+                DashboardSnapshot snapshot = new TicketRepository(getCarContext()).loadSnapshot();
+                List<Ticket> loaded = snapshot.tickets;
                 main.post(() -> {
                     tickets.clear();
                     tickets.addAll(loaded);
@@ -136,6 +179,19 @@ public class TicketListScreen extends Screen {
                 });
             }
         });
+    }
+
+    private List<Ticket> filteredTickets() {
+        List<Ticket> visible = new ArrayList<>();
+        for (Ticket ticket : tickets) {
+            visible.add(ticket);
+            if (visible.size() >= MAX_TAB_TICKETS) break;
+        }
+        return visible;
+    }
+
+    private String tabTitle() {
+        return "Tickets";
     }
 
     private Location lastKnownLocation() {

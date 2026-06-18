@@ -8,11 +8,37 @@ let locatorNotesLayer;
 let locatorNotes = [];
 let locatorNoteMode = false;
 let pendingLocatorNoteTarget = null;
+let locationPhotos = [];
+let locationPhotosLoading = false;
+let locationPhotosMap = null;
+let locationPhotosLayer = null;
+let restorationJobs = [];
+let restorationCanManage = false;
+let restorationSearch = "";
+let selectedRestorationJobId = "";
+let restorationMap = null;
+let restorationMapMarkers = null;
+let restorationMapVetroLayer = null;
+let restorationPriorityFilter = "";
+let restorationStatusFilter = "";
+let inHouseRequests = [];
+let selectedInHouseRequestId = "";
+let inHouseMap = null;
+let inHouseBaseTileLayer = null;
+let inHouseMapMarker = null;
+let inHouseMapVetroLayer = null;
+let inHouseMapSearchTimer = null;
+let inHouseMapSearchToken = 0;
 let markers;
 let polygons;
 let userLocationLayer;
 let userLocationMarker = null;
 let userLocationAccuracy = null;
+let map3d = null;
+let map3dEnabled = false;
+let map3dStyle = localStorage.getItem("dashboard3dStyle") === "satellite" ? "satellite" : "standard";
+let map3dAssetsPromise = null;
+let map3dUserLocation = null;
 let mobileMap = null;
 let mobileMapMarkers = null;
 let mobileMapPolygons = null;
@@ -30,6 +56,7 @@ let mobileMeasureTool = null;
 let vetroGeojson = null;
 let vetroLayer = null;
 let vetroLoaded = false;
+let pendingVetroCaptureFile = null;
 let vitruviGeojson = null;
 let vitruviLayer = null;
 let vitruviLoaded = false;
@@ -50,6 +77,7 @@ let attachmentLoadingTickets = new Set();
 let settingsCloseTimer = null;
 let mapConfig = { mapboxAccessToken: "" };
 const maplibreStyleCache = {};
+let maplibreAssetsPromise = null;
 const undoStack = [];
 const redoStack = [];
 const MAX_HISTORY = 40;
@@ -57,16 +85,18 @@ const SELECTED_POLYGON_NEARBY_PIXELS = 96;
 const NEARBY_POLYGON_DIM_OPACITY = 0.035;
 const NEARBY_POLYGON_DIM_STROKE_OPACITY = 0.12;
 const DEFAULT_BRAND_LOGO = "/static/assets/tcw-logo.png?v=20260602150000";
-const DEFAULT_BRAND_SECONDARY_LOGO = "/static/assets/eldorado.locator.wide.png?v=20260602201000";
+const DEFAULT_BRAND_SECONDARY_LOGO = "/static/assets/finallandscapelocator.png?v=20260606120000";
 const JAMES_BRAND_LOGO = "/static/james-fiber-locator-logo.png?v=20260528190500";
 const STORAGE_KEYS = {
   hiddenTickets: "hiddenTickets",
   archivedTickets: "archivedTickets",
+  hiddenTicketUpdatedAt: "hiddenTicketUpdatedAt",
+  archivedTicketUpdatedAt: "archivedTicketUpdatedAt",
   ticketActions: "ticketActions",
   ticketActionUpdatedAt: "ticketActionUpdatedAt",
   ticketDescriptions: "ticketDescriptions",
   ticketMarkedBy: "ticketMarkedBy",
-  tcwClearedTickets: "tcwClearedTickets",
+  ticketPriorities: "ticketPriorities",
   ticketListCheckpoint: "ticketListCheckpoint",
   showHidden: "showHiddenTickets",
   countyFilterAll: "countyFilterAll",
@@ -114,7 +144,9 @@ const STORAGE_KEYS = {
   sheetSort: "sheetSort",
   sheetColumnFilters: "sheetColumnFilters",
   sheetSavedFilters: "sheetSavedFilters",
+  sheetColumnWidths: "sheetColumnWidths",
 };
+const DIG_TICKET_PRIORITIES = ["low", "medium", "high", "emergency"];
 
 const ACTIVE_COUNTIES = new Set(["UNION", "COLUMBIA"]);
 const FOCUS_ZOOM_THRESHOLD = 14;
@@ -309,7 +341,6 @@ const TICKET_ACTIONS = [
   { key: "partially-located-large-project", label: "Partially located/large project", hidesFromDashboard: true },
   { key: "excavation-started", label: "An excavation started", hidesFromDashboard: true },
 ];
-
 const DASHBOARD_TIME_ZONE = "America/Chicago";
 const DASHBOARD_TIME_FORMAT = {
   timeZone: DASHBOARD_TIME_ZONE,
@@ -484,6 +515,8 @@ function normalizeTicketListCheckpoint(value) {
     enabled: value.enabled !== false,
     hiddenTickets: Array.isArray(value.hiddenTickets) ? value.hiddenTickets.map(String) : [],
     archivedTickets: Array.isArray(value.archivedTickets) ? value.archivedTickets.map(String) : [],
+    hiddenTicketUpdatedAt: normalizeTicketActionUpdatedAt(value.hiddenTicketUpdatedAt),
+    archivedTicketUpdatedAt: normalizeTicketActionUpdatedAt(value.archivedTicketUpdatedAt),
     ticketActions: normalizeTicketActions(value.ticketActions),
     ticketActionUpdatedAt: normalizeTicketActionUpdatedAt(value.ticketActionUpdatedAt),
     savedAt: String(value.savedAt || ""),
@@ -515,17 +548,43 @@ function applyTicketListCheckpoint() {
     return;
   }
   ticketListCheckpoint = checkpoint;
-  for (const ticketNumber of checkpoint.hiddenTickets) hiddenTickets.add(ticketNumber);
-  for (const ticketNumber of checkpoint.archivedTickets) archivedTickets.add(ticketNumber);
-  for (const [ticketNumber, actions] of Object.entries(checkpoint.ticketActions || {})) {
-    if (Array.isArray(actions) && actions.length) ticketActions[ticketNumber] = actions;
+  for (const ticketNumber of checkpoint.hiddenTickets) {
+    const checkpointTime = Number(checkpoint.hiddenTicketUpdatedAt?.[ticketNumber] || 0);
+    const currentTime = Number(hiddenTicketUpdatedAt?.[ticketNumber] || 0);
+    if (!checkpointTime || checkpointTime >= currentTime) hiddenTickets.add(ticketNumber);
   }
-  ticketActionUpdatedAt = {
-    ...ticketActionUpdatedAt,
-    ...checkpoint.ticketActionUpdatedAt,
-  };
+  for (const ticketNumber of checkpoint.archivedTickets) {
+    const checkpointTime = Number(checkpoint.archivedTicketUpdatedAt?.[ticketNumber] || 0);
+    const currentTime = Number(archivedTicketUpdatedAt?.[ticketNumber] || 0);
+    if (!checkpointTime || checkpointTime >= currentTime) archivedTickets.add(ticketNumber);
+  }
+  hiddenTicketUpdatedAt = { ...hiddenTicketUpdatedAt };
+  for (const [ticketNumber, updatedAt] of Object.entries(checkpoint.hiddenTicketUpdatedAt || {})) {
+    const checkpointTime = Number(updatedAt || 0);
+    const currentTime = Number(hiddenTicketUpdatedAt[ticketNumber] || 0);
+    if (checkpointTime >= currentTime) hiddenTicketUpdatedAt[ticketNumber] = checkpointTime;
+  }
+  archivedTicketUpdatedAt = { ...archivedTicketUpdatedAt };
+  for (const [ticketNumber, updatedAt] of Object.entries(checkpoint.archivedTicketUpdatedAt || {})) {
+    const checkpointTime = Number(updatedAt || 0);
+    const currentTime = Number(archivedTicketUpdatedAt[ticketNumber] || 0);
+    if (checkpointTime >= currentTime) archivedTicketUpdatedAt[ticketNumber] = checkpointTime;
+  }
+  for (const [ticketNumber, actions] of Object.entries(checkpoint.ticketActions || {})) {
+    const checkpointTime = Number(checkpoint.ticketActionUpdatedAt?.[ticketNumber] || 0);
+    const currentTime = Number(ticketActionUpdatedAt?.[ticketNumber] || 0);
+    if (Array.isArray(actions) && actions.length && checkpointTime >= currentTime) ticketActions[ticketNumber] = actions;
+  }
+  ticketActionUpdatedAt = { ...ticketActionUpdatedAt };
+  for (const [ticketNumber, updatedAt] of Object.entries(checkpoint.ticketActionUpdatedAt || {})) {
+    const checkpointTime = Number(updatedAt || 0);
+    const currentTime = Number(ticketActionUpdatedAt[ticketNumber] || 0);
+    if (checkpointTime >= currentTime) ticketActionUpdatedAt[ticketNumber] = checkpointTime;
+  }
   writeJsonStorage(STORAGE_KEYS.hiddenTickets, [...hiddenTickets]);
   writeJsonStorage(STORAGE_KEYS.archivedTickets, [...archivedTickets]);
+  writeJsonStorage(STORAGE_KEYS.hiddenTicketUpdatedAt, hiddenTicketUpdatedAt);
+  writeJsonStorage(STORAGE_KEYS.archivedTicketUpdatedAt, archivedTicketUpdatedAt);
   writeJsonStorage(STORAGE_KEYS.ticketActions, ticketActions);
   writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
   writeTicketListCheckpoint();
@@ -539,6 +598,8 @@ async function saveDashboardCheckpoint() {
     enabled: true,
     hiddenTickets: [...hiddenTickets],
     archivedTickets: [...archivedTickets],
+    hiddenTicketUpdatedAt: normalizeTicketActionUpdatedAt(hiddenTicketUpdatedAt),
+    archivedTicketUpdatedAt: normalizeTicketActionUpdatedAt(archivedTicketUpdatedAt),
     ticketActions: normalizeTicketActions(ticketActions),
     ticketActionUpdatedAt: normalizeTicketActionUpdatedAt(ticketActionUpdatedAt),
     savedAt: new Date().toISOString(),
@@ -709,6 +770,7 @@ function showSettingsPanel() {
   if (elements.showSettingsMenu) elements.showSettingsMenu.setAttribute("aria-expanded", "true");
   cancelSettingsPanelClose();
   void refreshOneDriveStatus();
+  void refreshPhotoSettings();
 }
 
 function hideSettingsPanel() {
@@ -788,6 +850,55 @@ async function connectOneDrive() {
   setOneDriveStatus("OneDrive sign-in expired. Start again.");
 }
 
+function setPhotoSettingsStatus(message) {
+  if (elements.photoSettingsStatus) elements.photoSettingsStatus.textContent = message;
+}
+
+function downloadLocationPhotos(format) {
+  const endpoint = format === "zip" ? "/api/location-photos/export.zip" : "/api/location-photos/export.csv";
+  window.open(endpoint, "_blank", "noopener,noreferrer");
+}
+
+async function refreshPhotoSettings() {
+  if (!elements.photoSettingsStatus) return null;
+  setPhotoSettingsStatus("Checking photo library...");
+  try {
+    const response = await fetch("/api/location-photos/settings");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.message || `Photo settings failed: ${response.status}`);
+    const settings = payload.settings || {};
+    if (elements.photoSettingsSourceApp) elements.photoSettingsSourceApp.value = settings.sourceApp || "Timestamp Camera";
+    if (elements.photoSettingsGoogleFolder) elements.photoSettingsGoogleFolder.value = settings.googleDriveFolder || "Fiber Locator Photos";
+    if (elements.photoSettingsDriveMode) elements.photoSettingsDriveMode.value = settings.googleDriveMode || "export";
+    const summary = payload.summary || {};
+    setPhotoSettingsStatus(`${summary.total || 0} photo${summary.total === 1 ? "" : "s"} stored · ${summary.withCoordinates || 0} with GPS · Mode: ${settings.googleDriveMode || "export"}`);
+    return payload;
+  } catch (error) {
+    setPhotoSettingsStatus(error.message || "Unable to check photo library.");
+    return null;
+  }
+}
+
+async function savePhotoSettings() {
+  setPhotoSettingsStatus("Saving photo settings...");
+  try {
+    const response = await fetch("/api/location-photos/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceApp: elements.photoSettingsSourceApp?.value || "Timestamp Camera",
+        googleDriveFolder: elements.photoSettingsGoogleFolder?.value || "Fiber Locator Photos",
+        googleDriveMode: elements.photoSettingsDriveMode?.value || "export",
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.message || `Save failed: ${response.status}`);
+    setPhotoSettingsStatus("Photo settings saved.");
+  } catch (error) {
+    setPhotoSettingsStatus(error.message || "Unable to save photo settings.");
+  }
+}
+
 function employeeDashboardState() {
   return employeeDashboardConfig.enabled && employeeDashboardConfig.state && typeof employeeDashboardConfig.state === "object"
     ? employeeDashboardConfig.state
@@ -843,25 +954,19 @@ function savedViewStatePayload() {
   return {
     hiddenTickets: [...hiddenTickets],
     archivedTickets: [...archivedTickets],
+    hiddenTicketUpdatedAt,
+    archivedTicketUpdatedAt,
     ticketActions,
     ticketActionUpdatedAt,
     ticketDescriptions,
     ticketMarkedBy,
+    ticketPriorities,
     ticketListCheckpoint,
     showHiddenTickets,
     ticketSearch,
     countyFilterAll,
     countyFilterSelected: [...selectedCounties],
     vetroVisible,
-    vetroLayerFilterSelected: [...vetroSelectedLayers],
-    vetroPlanFilterSelected: [...vetroSelectedPlans],
-    vetroBuildFilterSelected: [...vetroSelectedBuilds],
-    vetroPlacementFilterSelected: [...vetroSelectedPlacements],
-    vetroStatusFilterSelected: [...vetroSelectedStatuses],
-    vetroGeometryFilterSelected: [...vetroSelectedGeometries],
-    vetroFiberFilterSelected: [...vetroSelectedFibers],
-    vetroRouteFilterSelected: [...vetroSelectedRoutes],
-    vetroPointFilterSelected: [...vetroSelectedPoints],
     vetroLayerColorOverrides,
     vetroLayerStyleOverrides,
     vetroLayerNameOverrides,
@@ -885,7 +990,6 @@ function savedViewStatePayload() {
     vetroSlOpacity,
     vetroSlSize,
     vetroSlLabels,
-    vetroSearch,
     vetroColor,
     vetroOpacity,
     polygonOpacity,
@@ -972,42 +1076,6 @@ async function applySavedViewState(state) {
       vetroVisible = state.vetroVisible;
       writeBooleanStorage(STORAGE_KEYS.vetroVisible, vetroVisible);
       elements.vetroToggle.checked = vetroVisible;
-    }
-    if (Array.isArray(state.vetroLayerFilterSelected)) {
-      vetroSelectedLayers = new Set(state.vetroLayerFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroLayers, [...vetroSelectedLayers]);
-    }
-    if (Array.isArray(state.vetroPlanFilterSelected)) {
-      vetroSelectedPlans = new Set(state.vetroPlanFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroPlan, [...vetroSelectedPlans]);
-    }
-    if (Array.isArray(state.vetroBuildFilterSelected)) {
-      vetroSelectedBuilds = new Set(state.vetroBuildFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroBuild, [...vetroSelectedBuilds]);
-    }
-    if (Array.isArray(state.vetroPlacementFilterSelected)) {
-      vetroSelectedPlacements = new Set(state.vetroPlacementFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroPlacement, [...vetroSelectedPlacements]);
-    }
-    if (Array.isArray(state.vetroStatusFilterSelected)) {
-      vetroSelectedStatuses = new Set(state.vetroStatusFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroStatus, [...vetroSelectedStatuses]);
-    }
-    if (Array.isArray(state.vetroGeometryFilterSelected)) {
-      vetroSelectedGeometries = new Set(state.vetroGeometryFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroGeometry, [...vetroSelectedGeometries]);
-    }
-    if (Array.isArray(state.vetroFiberFilterSelected)) {
-      vetroSelectedFibers = new Set(state.vetroFiberFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroFiber, [...vetroSelectedFibers]);
-    }
-    if (Array.isArray(state.vetroRouteFilterSelected)) {
-      vetroSelectedRoutes = new Set(state.vetroRouteFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroRoute, [...vetroSelectedRoutes]);
-    }
-    if (Array.isArray(state.vetroPointFilterSelected)) {
-      vetroSelectedPoints = new Set(state.vetroPointFilterSelected.map(String));
-      writeJsonStorage(STORAGE_KEYS.vetroPoint, [...vetroSelectedPoints]);
     }
     if (state.vetroLayerColorOverrides && typeof state.vetroLayerColorOverrides === "object") {
       vetroLayerColorOverrides = state.vetroLayerColorOverrides;
@@ -1113,11 +1181,6 @@ async function applySavedViewState(state) {
       writeBooleanStorage(STORAGE_KEYS.vetroSlLabels, vetroSlLabels);
       if (elements.vetroSlLabels) elements.vetroSlLabels.checked = vetroSlLabels;
     }
-    if (typeof state.vetroSearch === "string") {
-      vetroSearch = state.vetroSearch;
-      localStorage.setItem(STORAGE_KEYS.vetroSearch, vetroSearch);
-      elements.vetroSearch.value = vetroSearch;
-    }
     if (typeof state.vetroColor === "string") {
       vetroColor = state.vetroColor;
       localStorage.setItem("vetroColor", vetroColor);
@@ -1188,7 +1251,7 @@ function applyEmployeeDashboardState() {
 
 function updateDashboardMenuLabel() {
   if (!elements.showDashboardView) return;
-  elements.showDashboardView.textContent = currentUserRole === "employee" || currentProfileMode === "employee" ? "Dashboard" : "Admin Dashboard";
+  elements.showDashboardView.textContent = "Dashboard";
 }
 
 function applyAuditAccess(username = "") {
@@ -1272,8 +1335,11 @@ function setProfileMode(mode) {
 function setCurrentView(view) {
   if (view === "mobile-admin") view = "admin-console";
   if (view === "admin-console" && !canWriteEmployeeDashboard()) view = "dashboard";
-  currentView = view === "sheet" || view === "live-tickets" || view === "mobile" || view === "activity" || view === "admin-console" ? view : "dashboard";
+  currentView = view === "sheet" || view === "restoration" || view === "in-house-requests" || view === "location-photos" || view === "live-tickets" || view === "mobile" || view === "activity" || view === "admin-console" ? view : "dashboard";
   document.body.classList.toggle("sheet-mode", currentView === "sheet");
+  document.body.classList.toggle("restoration-mode", currentView === "restoration");
+  document.body.classList.toggle("in-house-requests-mode", currentView === "in-house-requests");
+  document.body.classList.toggle("location-photos-mode", currentView === "location-photos");
   document.body.classList.toggle("live-tickets-mode", currentView === "live-tickets");
   document.body.classList.toggle("mobile-mode", currentView === "mobile");
   document.body.classList.toggle("activity-mode", currentView === "activity");
@@ -1281,6 +1347,9 @@ function setCurrentView(view) {
   document.body.classList.toggle("admin-console-mode", currentView === "admin-console");
   document.body.classList.toggle("mobile-map-open", currentView === "mobile" && mobilePanel === "map");
   if (elements.sheetView) elements.sheetView.hidden = currentView !== "sheet";
+  if (elements.restorationView) elements.restorationView.hidden = currentView !== "restoration";
+  if (elements.inHouseRequestsView) elements.inHouseRequestsView.hidden = currentView !== "in-house-requests";
+  if (elements.locationPhotosView) elements.locationPhotosView.hidden = currentView !== "location-photos";
   if (elements.liveTicketsView) elements.liveTicketsView.hidden = currentView !== "live-tickets";
   if (elements.mobileView) elements.mobileView.hidden = currentView !== "mobile";
   if (elements.activityView) elements.activityView.hidden = currentView !== "activity";
@@ -1290,8 +1359,32 @@ function setCurrentView(view) {
     historicalDigTicketSearch = ticketSearch;
     renderSheetView();
     void loadHistoricalDigTickets().then(renderSheetView);
+  } else if (currentView === "restoration") {
+    renderRestorationView();
+    void loadRestorationJobs().then(renderRestorationView).catch((error) => {
+      if (elements.restorationFormStatus) elements.restorationFormStatus.textContent = error.message || "Restoration jobs failed to load.";
+      console.error(error);
+    });
+  } else if (currentView === "in-house-requests") {
+    fillInHouseForm({});
+    if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = "Ready for a new in-house locate request.";
+    renderInHouseRequestsView();
+    void loadInHouseRequests().then(renderInHouseRequestsView).catch((error) => {
+      if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = error.message || "In-house requests failed to load.";
+      console.error(error);
+    });
   } else if (currentView === "live-tickets") {
     renderLiveTicketsView();
+  } else if (currentView === "location-photos") {
+    renderLocationPhotosView();
+    requestAnimationFrame(() => {
+      initLocationPhotosMap();
+      renderLocationPhotosMap();
+    });
+    void loadLocationPhotos().then(renderLocationPhotosView).catch((error) => {
+      if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = error.message || "Location photos failed to load.";
+      console.error(error);
+    });
   } else if (currentView === "mobile") {
     renderMobileView();
   } else if (currentView === "admin-console") {
@@ -1313,15 +1406,11 @@ function setCurrentView(view) {
 }
 
 function setDashboardTicketMode(mode) {
-  dashboardTicketMode = mode === "tcw" ? "tcw" : "main";
+  dashboardTicketMode = "main";
   localStorage.setItem("dashboardTicketMode", dashboardTicketMode);
-  document.body.classList.toggle("tcw-dashboard-mode", dashboardTicketMode === "tcw");
-  if (elements.showTcwDashboardView) {
-    elements.showTcwDashboardView.textContent = dashboardTicketMode === "tcw" ? "Main Dashboard" : "One-Calls Done For TCW";
-  }
+  document.body.classList.remove("tcw-dashboard-mode");
   if (elements.sourcePath && tickets.length) {
-    const label = dashboardTicketMode === "tcw" ? "One-Calls Done For TCW" : "Fiber Locator";
-    elements.sourcePath.dataset.dashboardMode = label;
+    elements.sourcePath.dataset.dashboardMode = "Fiber Locator";
   }
   selectedTicket = null;
   pendingSelectedTicketNumber = "";
@@ -1370,10 +1459,13 @@ function dashboardStatePayload({ employeeViewMode = currentView, applyCheckpoint
   return {
     hiddenTickets: [...hiddenTickets],
     archivedTickets: [...archivedTickets],
+    hiddenTicketUpdatedAt,
+    archivedTicketUpdatedAt,
     ticketActions,
     ticketActionUpdatedAt,
     ticketDescriptions,
     ticketMarkedBy,
+    ticketPriorities,
     ticketListCheckpoint,
     showHiddenTickets,
     ticketSearch,
@@ -1435,6 +1527,8 @@ function ticketWorkflowStatePayload() {
   return {
     hiddenTickets: [...hiddenTickets],
     archivedTickets: [...archivedTickets],
+    hiddenTicketUpdatedAt,
+    archivedTicketUpdatedAt,
     ticketActions,
     ticketActionUpdatedAt,
     ticketDescriptions,
@@ -1455,6 +1549,14 @@ function applyDashboardState(state) {
       archivedTickets = new Set(state.archivedTickets.map(String));
       writeJsonStorage(STORAGE_KEYS.archivedTickets, [...archivedTickets]);
     }
+    if (state.hiddenTicketUpdatedAt && typeof state.hiddenTicketUpdatedAt === "object") {
+      hiddenTicketUpdatedAt = normalizeTicketActionUpdatedAt(state.hiddenTicketUpdatedAt);
+      writeJsonStorage(STORAGE_KEYS.hiddenTicketUpdatedAt, hiddenTicketUpdatedAt);
+    }
+    if (state.archivedTicketUpdatedAt && typeof state.archivedTicketUpdatedAt === "object") {
+      archivedTicketUpdatedAt = normalizeTicketActionUpdatedAt(state.archivedTicketUpdatedAt);
+      writeJsonStorage(STORAGE_KEYS.archivedTicketUpdatedAt, archivedTicketUpdatedAt);
+    }
     if (state.ticketActions && typeof state.ticketActions === "object") {
       ticketActions = normalizeTicketActions(state.ticketActions);
       writeJsonStorage(STORAGE_KEYS.ticketActions, ticketActions);
@@ -1470,6 +1572,10 @@ function applyDashboardState(state) {
     if (state.ticketMarkedBy && typeof state.ticketMarkedBy === "object") {
       ticketMarkedBy = normalizeTicketMarkedBy(state.ticketMarkedBy);
       writeJsonStorage(STORAGE_KEYS.ticketMarkedBy, ticketMarkedBy);
+    }
+    if (state.ticketPriorities && typeof state.ticketPriorities === "object") {
+      ticketPriorities = normalizeTicketPriorities(state.ticketPriorities);
+      writeJsonStorage(STORAGE_KEYS.ticketPriorities, ticketPriorities);
     }
     if ("ticketListCheckpoint" in state) {
       ticketListCheckpoint = normalizeTicketListCheckpoint(state.ticketListCheckpoint);
@@ -1721,6 +1827,15 @@ async function saveTicketWorkflowStateToServer() {
   if (!response.ok) {
     throw new Error(`Failed to save ticket workflow state: ${response.status}`);
   }
+}
+
+async function saveTicketWorkflowStateNow() {
+  if (!dashboardStateReady || dashboardStateHydrating) return;
+  if (ticketWorkflowSaveTimer) {
+    window.clearTimeout(ticketWorkflowSaveTimer);
+    ticketWorkflowSaveTimer = null;
+  }
+  await saveTicketWorkflowStateToServer();
 }
 
 function scheduleTicketWorkflowServerSave() {
@@ -1983,6 +2098,7 @@ async function runAdminTicketFetch(event) {
     elements.adminTicketFetchLog.textContent = "";
   }
   try {
+    await saveTicketWorkflowStateNow();
     const response = await fetch("/api/admin/geocall-fetch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2132,11 +2248,13 @@ async function loadDashboardState() {
 
 let hiddenTickets = new Set(readJsonStorage(STORAGE_KEYS.hiddenTickets, []));
 let archivedTickets = new Set(readJsonStorage(STORAGE_KEYS.archivedTickets, []));
+let hiddenTicketUpdatedAt = normalizeTicketActionUpdatedAt(readObjectStorage(STORAGE_KEYS.hiddenTicketUpdatedAt));
+let archivedTicketUpdatedAt = normalizeTicketActionUpdatedAt(readObjectStorage(STORAGE_KEYS.archivedTicketUpdatedAt));
 let ticketActions = normalizeTicketActions(readObjectStorage(STORAGE_KEYS.ticketActions));
 let ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(readObjectStorage(STORAGE_KEYS.ticketActionUpdatedAt));
 let ticketDescriptions = normalizeTicketDescriptions(readObjectStorage(STORAGE_KEYS.ticketDescriptions));
 let ticketMarkedBy = normalizeTicketMarkedBy(readObjectStorage(STORAGE_KEYS.ticketMarkedBy));
-let tcwClearedTickets = new Set(readJsonStorage(STORAGE_KEYS.tcwClearedTickets, []));
+let ticketPriorities = normalizeTicketPriorities(readObjectStorage(STORAGE_KEYS.ticketPriorities));
 let ticketListCheckpoint = normalizeTicketListCheckpoint(readJsonStorage(STORAGE_KEYS.ticketListCheckpoint, null));
 applyTicketListCheckpoint();
 let polygonColor = localStorage.getItem("polygonColor") || "#1f7a4d";
@@ -2154,6 +2272,7 @@ if (!isValidMapDataOverlay(mapDataOverlay)) mapDataOverlay = "none";
 let sheetSort = readJsonStorage(STORAGE_KEYS.sheetSort, { column: "Due Date", direction: "desc" });
 let sheetColumnFilters = readObjectStorage(STORAGE_KEYS.sheetColumnFilters);
 let sheetSavedFilters = readJsonStorage(STORAGE_KEYS.sheetSavedFilters, []);
+let sheetColumnWidths = readObjectStorage(STORAGE_KEYS.sheetColumnWidths);
 let showHiddenTickets = readBooleanStorage(STORAGE_KEYS.showHidden, false);
 let vetroVisible = readBooleanStorage(STORAGE_KEYS.vetroVisible, false);
 let vetroSelectedLayers = new Set(readJsonStorage(STORAGE_KEYS.vetroLayers, []));
@@ -2230,11 +2349,19 @@ const elements = {
   ticketQuickSearch: document.querySelector("#ticketQuickSearch"),
   mapSearchForm: document.querySelector("#mapSearchForm"),
   mapSearch: document.querySelector("#mapSearch"),
+  map: document.querySelector("#map"),
   locateMe: document.querySelector("#locateMe"),
   measureToggle: document.querySelector("#measureToggle"),
   measureClear: document.querySelector("#measureClear"),
   measureUnit: document.querySelector("#measureUnit"),
   measureStatus: document.querySelector("#measureStatus"),
+  map3d: document.querySelector("#map3d"),
+  dashboard3dToggle: document.querySelector("#dashboard3dToggle"),
+  dashboard3dStyle: document.querySelector("#dashboard3dStyle"),
+  dashboard3dTilt: document.querySelector("#dashboard3dTilt"),
+  dashboard3dTiltUp: document.querySelector("#dashboard3dTiltUp"),
+  dashboard3dTiltDown: document.querySelector("#dashboard3dTiltDown"),
+  dashboard3dRotate: document.querySelector("#dashboard3dRotate"),
   countyFilter: document.querySelector("#countyFilter"),
   countyFilterSummary: document.querySelector("#countyFilterSummary"),
   countyAll: document.querySelector("#countyAll"),
@@ -2248,6 +2375,7 @@ const elements = {
   employeeBar: document.querySelector("#employeeBar"),
   saveToast: document.querySelector("#saveToast"),
   refresh: document.querySelector("#refresh"),
+  vetroDrawer: document.querySelector("#vetroDrawer"),
   vetroToggle: document.querySelector("#vetroToggle"),
   vetroStatus: document.querySelector("#vetroStatus"),
   updateVetro: document.querySelector("#updateVetro"),
@@ -2326,6 +2454,9 @@ const elements = {
   undoAction: document.querySelector("#undoAction"),
   redoAction: document.querySelector("#redoAction"),
   showSheetView: document.querySelector("#showSheetView"),
+  showRestorationView: document.querySelector("#showRestorationView"),
+  showInHouseRequestsView: document.querySelector("#showInHouseRequestsView"),
+  showLocationPhotosView: document.querySelector("#showLocationPhotosView"),
   showLiveTicketsView: document.querySelector("#showLiveTicketsView"),
   showTcwDashboardView: document.querySelector("#showTcwDashboardView"),
   dashboardSatelliteToggle: document.querySelector("#dashboardSatelliteToggle"),
@@ -2342,11 +2473,94 @@ const elements = {
   oneDriveStatus: document.querySelector("#oneDriveStatus"),
   refreshOneDriveStatus: document.querySelector("#refreshOneDriveStatus"),
   connectOneDrive: document.querySelector("#connectOneDrive"),
+  openPhotoManager: document.querySelector("#openPhotoManager"),
+  downloadPhotoCsv: document.querySelector("#downloadPhotoCsv"),
+  downloadPhotoZip: document.querySelector("#downloadPhotoZip"),
+  photoSettingsSourceApp: document.querySelector("#photoSettingsSourceApp"),
+  photoSettingsGoogleFolder: document.querySelector("#photoSettingsGoogleFolder"),
+  photoSettingsDriveMode: document.querySelector("#photoSettingsDriveMode"),
+  savePhotoSettings: document.querySelector("#savePhotoSettings"),
+  photoSettingsStatus: document.querySelector("#photoSettingsStatus"),
   deployAppUpdate: document.querySelector("#deployAppUpdate"),
   sheetBackToDashboard: document.querySelector("#sheetBackToDashboard"),
   sheetView: document.querySelector("#sheetView"),
   sheetFilterToolbar: document.querySelector("#sheetFilterToolbar"),
+  sheetHorizontalScroll: document.querySelector("#sheetHorizontalScroll"),
+  sheetHorizontalScrollInner: document.querySelector("#sheetHorizontalScrollInner"),
   sheetTableWrap: document.querySelector("#sheetTableWrap"),
+  restorationView: document.querySelector("#restorationView"),
+  restorationSearch: document.querySelector("#restorationSearch"),
+  restorationPriorityFilter: document.querySelector("#restorationPriorityFilter"),
+  restorationStatusFilter: document.querySelector("#restorationStatusFilter"),
+  newRestorationJob: document.querySelector("#newRestorationJob"),
+  restorationBackToDashboard: document.querySelector("#restorationBackToDashboard"),
+  restorationMap: document.querySelector("#restorationMap"),
+  restorationModal: document.querySelector("#restorationModal"),
+  restorationCancel: document.querySelector("#restorationCancel"),
+  restorationForm: document.querySelector("#restorationForm"),
+  restorationJobId: document.querySelector("#restorationJobId"),
+  restorationTitle: document.querySelector("#restorationTitle"),
+  restorationTicket: document.querySelector("#restorationTicket"),
+  restorationLocation: document.querySelector("#restorationLocation"),
+  restorationEntity: document.querySelector("#restorationEntity"),
+  restorationLat: document.querySelector("#restorationLat"),
+  restorationLng: document.querySelector("#restorationLng"),
+  restorationPriority: document.querySelector("#restorationPriority"),
+  restorationStatus: document.querySelector("#restorationStatus"),
+  restorationScheduled: document.querySelector("#restorationScheduled"),
+  restorationAssigned: document.querySelector("#restorationAssigned"),
+  restorationNotes: document.querySelector("#restorationNotes"),
+  restorationFormStatus: document.querySelector("#restorationFormStatus"),
+  restorationJobsTable: document.querySelector("#restorationJobsTable"),
+  restorationDetail: document.querySelector("#restorationDetail"),
+  inHouseRequestsView: document.querySelector("#inHouseRequestsView"),
+  inHouseBackToDashboard: document.querySelector("#inHouseBackToDashboard"),
+  inHouseForm: document.querySelector("#inHouseForm"),
+  inHouseId: document.querySelector("#inHouseId"),
+  inHouseTitle: document.querySelector("#inHouseTitle"),
+  inHouseRequestor: document.querySelector("#inHouseRequestor"),
+  inHouseContactPhone: document.querySelector("#inHouseContactPhone"),
+  inHouseCrew: document.querySelector("#inHouseCrew"),
+  inHouseProject: document.querySelector("#inHouseProject"),
+  inHouseAddress: document.querySelector("#inHouseAddress"),
+  inHouseCounty: document.querySelector("#inHouseCounty"),
+  inHousePlace: document.querySelector("#inHousePlace"),
+  inHouseLat: document.querySelector("#inHouseLat"),
+  inHouseLng: document.querySelector("#inHouseLng"),
+  inHousePriority: document.querySelector("#inHousePriority"),
+  inHouseStatus: document.querySelector("#inHouseStatus"),
+  inHouseDue: document.querySelector("#inHouseDue"),
+  inHouseAssigned: document.querySelector("#inHouseAssigned"),
+  inHouseUtilities: document.querySelector("#inHouseUtilities"),
+  inHouseScope: document.querySelector("#inHouseScope"),
+  inHouseNotes: document.querySelector("#inHouseNotes"),
+  inHouseFormStatus: document.querySelector("#inHouseFormStatus"),
+  inHouseNewRequest: document.querySelector("#inHouseNewRequest"),
+  inHouseMap: document.querySelector("#inHouseMap"),
+  inHouseMapStatus: document.querySelector("#inHouseMapStatus"),
+  inHouseUseMapCenter: document.querySelector("#inHouseUseMapCenter"),
+  inHouseRefreshRequests: document.querySelector("#inHouseRefreshRequests"),
+  inHouseRequestList: document.querySelector("#inHouseRequestList"),
+  locationPhotosView: document.querySelector("#locationPhotosView"),
+  locationPhotosForm: document.querySelector("#locationPhotosForm"),
+  locationPhotosFiles: document.querySelector("#locationPhotosFiles"),
+  locationPhotosTicket: document.querySelector("#locationPhotosTicket"),
+  locationPhotosLocationLabel: document.querySelector("#locationPhotosLocationLabel"),
+  locationPhotosAddress: document.querySelector("#locationPhotosAddress"),
+  locationPhotosLat: document.querySelector("#locationPhotosLat"),
+  locationPhotosLng: document.querySelector("#locationPhotosLng"),
+  locationPhotosNote: document.querySelector("#locationPhotosNote"),
+  locationPhotosUpload: document.querySelector("#locationPhotosUpload"),
+  locationPhotosStatus: document.querySelector("#locationPhotosStatus"),
+  locationPhotosProgress: document.querySelector("#locationPhotosProgress"),
+  locationPhotosProgressBar: document.querySelector("#locationPhotosProgressBar"),
+  locationPhotosMap: document.querySelector("#locationPhotosMap"),
+  locationPhotosList: document.querySelector("#locationPhotosList"),
+  locationPhotosSummary: document.querySelector("#locationPhotosSummary"),
+  refreshLocationPhotos: document.querySelector("#refreshLocationPhotos"),
+  exportLocationPhotosCsv: document.querySelector("#exportLocationPhotosCsv"),
+  exportLocationPhotosZip: document.querySelector("#exportLocationPhotosZip"),
+  locationPhotosBackToDashboard: document.querySelector("#locationPhotosBackToDashboard"),
   liveTicketsView: document.querySelector("#liveTicketsView"),
   liveTicketsSummary: document.querySelector("#liveTicketsSummary"),
   liveTicketsSearch: document.querySelector("#liveTicketsSearch"),
@@ -3036,16 +3250,303 @@ function renderLocatorNotes() {
     const marker = L.marker([lat, lng], {
       icon: L.divIcon({
         className: "",
-        html: `<span class="locator-note-flag" style="--flag-color:${escapeHtml(locatorNoteCategoryColor(note.category))}"></span>`,
+        html: `<span class="locator-note-flag" style="--flag-color:${escapeHtml(locatorNoteCategoryColor(note.category))};--flag-opacity:${locatorNoteMarkerOpacity(note)}"></span>`,
         iconSize: [18, 22],
         iconAnchor: [4, 21],
         popupAnchor: [4, -20],
       }),
-      title: locatorNoteCategoryLabel(note.category),
     });
     marker.bindPopup(locatorNotePopupHtml(note), { maxWidth: 360 });
     marker.addTo(locatorNotesLayer);
   }
+}
+
+function locatorNoteMarkerOpacity(note) {
+  const targetType = String(note?.target_type || "");
+  const layerId = String(note?.layer_id || "");
+  if (targetType === "vetro" && layerId) return Math.max(0.035, Math.min(0.12, vetroLayerOpacity(layerId) * 0.18));
+  if (targetType === "vitruvi" && layerId) return Math.max(0.035, Math.min(0.12, vitruviLayerOpacity(layerId) * 0.18));
+  return 0.08;
+}
+
+function locatorNotesForTicket(ticket) {
+  if (!ticket) return [];
+  return locatorNotes.filter((note) => (
+    note?.ticket === ticket.ticket_number
+    || note?.target_id === ticket.ticket_number
+    || locatorNoteFallsInsideTicket(note, ticket)
+  ));
+}
+
+function locationPhotosForTicket(ticket) {
+  if (!ticket) return [];
+  return locationPhotos.filter((photo) => (
+    photo?.ticket === ticket.ticket_number
+    || pointFallsInsideTicket(photo, ticket)
+  ));
+}
+
+function openPhotoHistoryForTicket(ticketNumber) {
+  const ticket = tickets.find((item) => item.ticket_number === ticketNumber);
+  if (!ticket) return;
+  setCurrentView("location-photos");
+  if (elements.locationPhotosTicket) elements.locationPhotosTicket.value = ticket.ticket_number;
+  if (elements.locationPhotosLocationLabel && !elements.locationPhotosLocationLabel.value) {
+    elements.locationPhotosLocationLabel.value = ticketAddress(ticket) || ticket.place || ticket.county || "";
+  }
+  if (elements.locationPhotosAddress && !elements.locationPhotosAddress.value) {
+    elements.locationPhotosAddress.value = ticketAddress(ticket) || "";
+  }
+  renderLocationPhotosView(ticket);
+  window.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+}
+
+function locatorNoteFallsInsideTicket(note, ticket) {
+  return pointFallsInsideTicket(note, ticket);
+}
+
+function pointFallsInsideTicket(point, ticket) {
+  const lat = Number(point?.lat);
+  const lng = Number(point?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !ticket?.polygon) return false;
+  const geometry = ticket.polygon.type === "Feature" ? ticket.polygon.geometry : ticket.polygon;
+  const coordinates = geometry?.coordinates;
+  if (!Array.isArray(coordinates)) return false;
+  if (geometry.type === "Polygon") return pointInGeoJsonPolygon(lng, lat, coordinates);
+  if (geometry.type === "MultiPolygon") return coordinates.some((polygon) => pointInGeoJsonPolygon(lng, lat, polygon));
+  return false;
+}
+
+function locatorNoteFallsInsideTicketLegacy(note, ticket) {
+  const lat = Number(note?.lat);
+  const lng = Number(note?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !ticket?.polygon) return false;
+  const geometry = ticket.polygon.type === "Feature" ? ticket.polygon.geometry : ticket.polygon;
+  const coordinates = geometry?.coordinates;
+  if (!Array.isArray(coordinates)) return false;
+  if (geometry.type === "Polygon") return pointInGeoJsonPolygon(lng, lat, coordinates);
+  if (geometry.type === "MultiPolygon") return coordinates.some((polygon) => pointInGeoJsonPolygon(lng, lat, polygon));
+  return false;
+}
+
+function pointInGeoJsonPolygon(x, y, polygon) {
+  if (!Array.isArray(polygon?.[0]) || !pointInGeoJsonRing(x, y, polygon[0])) return false;
+  return !polygon.slice(1).some((ring) => pointInGeoJsonRing(x, y, ring));
+}
+
+function pointInGeoJsonRing(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const pi = ring[i] || [];
+    const pj = ring[j] || [];
+    const xi = Number(pi[0]);
+    const yi = Number(pi[1]);
+    const xj = Number(pj[0]);
+    const yj = Number(pj[1]);
+    if (![xi, yi, xj, yj].every(Number.isFinite)) continue;
+    const intersects = ((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-12) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function locatorNoteSummaryHtml(notes = []) {
+  if (!notes.length) return "";
+  return `
+    <div class="locator-note-summary">
+      <strong>Locator note attached</strong>
+      ${notes.map((note) => `
+        <div>
+          <span>${escapeHtml(locatorNoteCategoryLabel(note.category))}</span>
+          ${note.text ? `<p>${escapeHtml(note.text)}</p>` : ""}
+          ${note.created_by || note.created_at ? `<em>Added by ${escapeHtml([note.created_by, note.created_at].filter(Boolean).join(" - "))}</em>` : ""}
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function locationPhotoSummaryHtml(photos = []) {
+  if (!photos.length) return "";
+  return `
+    <div class="location-photo-summary">
+      <strong>Previous location photos in this area</strong>
+      ${photos.map((photo) => `
+        <a href="${escapeHtml(photo.url || "#")}" target="_blank" rel="noreferrer">
+          <span>${escapeHtml(photo.original_name || "Location photo")}</span>
+          <em>${escapeHtml([photo.uploaded_by, photo.uploaded_at].filter(Boolean).join(" - "))}</em>
+          <small>${escapeHtml(locationPhotoCoordinateLabel(photo))}</small>
+          ${photo.note ? `<p>${escapeHtml(photo.note)}</p>` : ""}
+        </a>
+      `).join("")}
+    </div>
+  `;
+}
+
+function photoHistoryButtonHtml(ticket, photos = []) {
+  if (!photos.length) return "";
+  return `
+    <button class="photo-history-button" type="button" data-photo-history-ticket="${escapeHtml(ticket.ticket_number)}">
+      Photo History (${photos.length})
+    </button>
+  `;
+}
+
+function locationPhotoCoordinateLabel(photo) {
+  const lat = Number(photo?.lat);
+  const lng = Number(photo?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "No coordinates";
+  const source = photo.coordinate_source === "exif" ? "photo GPS" : photo.coordinate_source === "manual" ? "manual" : "coordinates";
+  return `${lat.toFixed(6)}, ${lng.toFixed(6)} (${source})`;
+}
+
+async function loadLocationPhotos() {
+  if (locationPhotosLoading) return;
+  locationPhotosLoading = true;
+  try {
+    const response = await fetch("/api/location-photos");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) throw new Error(payload.message || `Location photos failed: ${response.status}`);
+    locationPhotos = Array.isArray(payload.photos) ? payload.photos : [];
+  } finally {
+    locationPhotosLoading = false;
+  }
+}
+
+function renderLocationPhotosView(focusTicket = null) {
+  if (!elements.locationPhotosList) return;
+  initLocationPhotosMap();
+  const visiblePhotos = focusTicket ? locationPhotosForTicket(focusTicket) : locationPhotos;
+  renderLocationPhotosMap(visiblePhotos);
+  if (elements.locationPhotosSummary) {
+    const label = focusTicket
+      ? `Photo history for ${focusTicket.ticket_number}: ${visiblePhotos.length} matching photo${visiblePhotos.length === 1 ? "" : "s"}`
+      : `${locationPhotos.length} stored photo${locationPhotos.length === 1 ? "" : "s"}`;
+    elements.locationPhotosSummary.textContent = label;
+  }
+  if (!visiblePhotos.length) {
+    elements.locationPhotosList.innerHTML = '<div class="location-photo-empty">No location photos uploaded yet.</div>';
+    return;
+  }
+  elements.locationPhotosList.innerHTML = visiblePhotos.map((photo) => `
+    <a class="location-photo-row" href="${escapeHtml(photo.url || "#")}" target="_blank" rel="noreferrer">
+      <strong>${escapeHtml(photo.original_name || "Location photo")}</strong>
+      <em>${escapeHtml([photo.ticket, photo.location_label, photo.review_status].filter(Boolean).join(" - "))}</em>
+      <span>${escapeHtml(locationPhotoCoordinateLabel(photo))}</span>
+      ${photo.address ? `<span>${escapeHtml(photo.address)}</span>` : ""}
+      <small>${escapeHtml([photo.uploaded_by, photo.uploaded_at].filter(Boolean).join(" - "))}</small>
+      ${photo.note ? `<p>${escapeHtml(photo.note)}</p>` : ""}
+    </a>
+  `).join("");
+}
+
+function initLocationPhotosMap() {
+  if (!elements.locationPhotosMap || typeof L === "undefined") return;
+  if (locationPhotosMap) {
+    locationPhotosMap.invalidateSize();
+    return;
+  }
+  locationPhotosMap = L.map(elements.locationPhotosMap, { zoomControl: true, preferCanvas: true }).setView([33.23, -92.67], 11);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors",
+    subdomains: "abc",
+    maxZoom: 20,
+  }).addTo(locationPhotosMap);
+  locationPhotosLayer = L.layerGroup().addTo(locationPhotosMap);
+}
+
+function renderLocationPhotosMap(photos = locationPhotos) {
+  if (!locationPhotosMap || !locationPhotosLayer) return;
+  locationPhotosLayer.clearLayers();
+  const bounds = [];
+  for (const photo of photos) {
+    const lat = Number(photo?.lat);
+    const lng = Number(photo?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const marker = L.circleMarker([lat, lng], {
+      radius: 7,
+      color: "#1d4ed8",
+      fillColor: "#60a5fa",
+      fillOpacity: 0.84,
+      weight: 2,
+    });
+    marker.bindPopup(`
+      <div class="location-photo-popup">
+        <strong>${escapeHtml(photo.original_name || "Location photo")}</strong>
+        <span>${escapeHtml(locationPhotoCoordinateLabel(photo))}</span>
+        ${photo.note ? `<p>${escapeHtml(photo.note)}</p>` : ""}
+        <a href="${escapeHtml(photo.url || "#")}" target="_blank" rel="noreferrer">Open photo</a>
+      </div>
+    `);
+    marker.addTo(locationPhotosLayer);
+    bounds.push([lat, lng]);
+  }
+  if (bounds.length) {
+    locationPhotosMap.fitBounds(bounds, { padding: [24, 24], maxZoom: 16 });
+  }
+  locationPhotosMap.invalidateSize();
+}
+
+function setLocationPhotosProgress(percent, text = "") {
+  if (elements.locationPhotosProgress) elements.locationPhotosProgress.hidden = false;
+  if (elements.locationPhotosProgressBar) elements.locationPhotosProgressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (elements.locationPhotosStatus && text) elements.locationPhotosStatus.textContent = text;
+}
+
+function uploadLocationPhotos(event) {
+  event.preventDefault();
+  const files = [...(elements.locationPhotosFiles?.files || [])];
+  if (!files.length) {
+    if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = "Choose photos to upload.";
+    return;
+  }
+  if (files.length > 80) {
+    if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = "Select 80 photos or fewer.";
+    return;
+  }
+  const data = new FormData();
+  for (const file of files) data.append("files", file, file.name);
+  if (elements.locationPhotosTicket?.value) data.set("ticket", elements.locationPhotosTicket.value);
+  if (elements.locationPhotosLocationLabel?.value) data.set("locationLabel", elements.locationPhotosLocationLabel.value);
+  if (elements.locationPhotosAddress?.value) data.set("address", elements.locationPhotosAddress.value);
+  if (elements.locationPhotosLat?.value) data.set("lat", elements.locationPhotosLat.value);
+  if (elements.locationPhotosLng?.value) data.set("lng", elements.locationPhotosLng.value);
+  if (elements.locationPhotosNote?.value) data.set("note", elements.locationPhotosNote.value);
+  const xhr = new XMLHttpRequest();
+  if (elements.locationPhotosUpload) elements.locationPhotosUpload.disabled = true;
+  setLocationPhotosProgress(2, `Preparing ${files.length} photo${files.length === 1 ? "" : "s"}...`);
+  xhr.upload.addEventListener("progress", (progress) => {
+    if (!progress.lengthComputable) {
+      setLocationPhotosProgress(35, "Uploading photos...");
+      return;
+    }
+    setLocationPhotosProgress(Math.min(90, Math.round((progress.loaded / progress.total) * 90)), "Uploading photos...");
+  });
+  xhr.addEventListener("load", async () => {
+    try {
+      const payload = JSON.parse(xhr.responseText || "{}");
+      if (xhr.status < 200 || xhr.status >= 300 || payload.ok === false) throw new Error(payload.message || `Upload failed: ${xhr.status}`);
+      setLocationPhotosProgress(96, "Refreshing location photos...");
+      await loadLocationPhotos();
+      renderLocationPhotosView();
+      renderLocationPhotosMap();
+      renderDetail();
+      renderMobileTicketDetail();
+      if (elements.locationPhotosFiles) elements.locationPhotosFiles.value = "";
+      if (elements.locationPhotosNote) elements.locationPhotosNote.value = "";
+      setLocationPhotosProgress(100, "Location photos uploaded.");
+    } catch (error) {
+      if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = error.message || "Location photo upload failed.";
+    } finally {
+      if (elements.locationPhotosUpload) elements.locationPhotosUpload.disabled = false;
+    }
+  });
+  xhr.addEventListener("error", () => {
+    if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = "Upload failed before reaching the server.";
+    if (elements.locationPhotosUpload) elements.locationPhotosUpload.disabled = false;
+  });
+  xhr.open("POST", "/api/location-photos");
+  xhr.send(data);
 }
 
 function locatorNotePopupHtml(note) {
@@ -3271,6 +3772,7 @@ function updateUserLocation(position, { center = true } = {}) {
     userLocationAccuracy.setRadius(Number.isFinite(accuracy) ? accuracy : 0);
   }
   if (center) map.flyTo(latlng, Math.max(map.getZoom(), 17), { duration: 0.45 });
+  updateMap3dUserLocation(position, { center });
   updateMobileUserLocation(latlng, accuracy, { center });
   showSavedToast("Location shown on map");
 }
@@ -3436,7 +3938,110 @@ function mapboxTileLayer(tile) {
   });
 }
 
+function loadCssOnce(href) {
+  if ([...document.styleSheets].some((sheet) => sheet.href === href)) return Promise.resolve();
+  if (document.querySelector(`link[href="${href}"]`)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    link.onload = resolve;
+    link.onerror = () => reject(new Error(`Stylesheet failed to load: ${href}`));
+    document.head.appendChild(link);
+  });
+}
+
+function loadScriptOnce(src, timeoutMs = 15000) {
+  const existing = document.querySelector(`script[src="${src}"]`);
+  if (existing?.dataset.loaded === "true") return Promise.resolve();
+  if (existing?.dataset.failed === "true") existing.remove();
+  const active = document.querySelector(`script[src="${src}"]`);
+  if (active) {
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error(`Script timed out: ${src}`)), timeoutMs);
+      active.addEventListener("load", () => {
+        window.clearTimeout(timer);
+        resolve();
+      }, { once: true });
+      active.addEventListener("error", () => {
+        window.clearTimeout(timer);
+        active.dataset.failed = "true";
+        active.remove();
+        reject(new Error(`Script failed to load: ${src}`));
+      }, { once: true });
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.async = true;
+    const timer = window.setTimeout(() => {
+      script.dataset.failed = "true";
+      script.remove();
+      reject(new Error(`Script timed out: ${src}`));
+    }, timeoutMs);
+    script.onload = () => {
+      window.clearTimeout(timer);
+      script.dataset.loaded = "true";
+      resolve();
+    };
+    script.onerror = () => {
+      window.clearTimeout(timer);
+      script.dataset.failed = "true";
+      script.remove();
+      reject(new Error(`Script failed to load: ${src}`));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function ensureMaplibreAssets() {
+  if (window.maplibregl && L.maplibreGL) return;
+  if (!maplibreAssetsPromise) {
+    maplibreAssetsPromise = (async () => {
+      await loadCssOnce("https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css");
+      await loadScriptOnce("https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.js");
+      await loadScriptOnce("https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js");
+    })();
+  }
+  await maplibreAssetsPromise;
+}
+
+async function ensureMapbox3dAssets() {
+  if (window.mapboxgl) return;
+  if (!map3dAssetsPromise) {
+    map3dAssetsPromise = (async () => {
+      const css = "https://api.mapbox.com/mapbox-gl-js/v3.24.0/mapbox-gl.css";
+      const js = "https://api.mapbox.com/mapbox-gl-js/v3.24.0/mapbox-gl.js";
+      let lastError = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          await loadCssOnce(css);
+          await loadScriptOnce(js);
+          if (window.mapboxgl) return;
+        } catch (error) {
+          lastError = error;
+          document.querySelector(`script[src="${js}"]`)?.remove();
+          await wait(500 + attempt * 500);
+        }
+      }
+      throw lastError || new Error("Mapbox GL JS did not load.");
+    })();
+  }
+  try {
+    await map3dAssetsPromise;
+  } catch (error) {
+    map3dAssetsPromise = null;
+    throw error;
+  }
+}
+
 async function maplibreTileLayer(tile) {
+  await ensureMaplibreAssets();
   if (!window.maplibregl || !L.maplibreGL) {
     throw new Error("MapLibre basemap libraries did not load.");
   }
@@ -3599,6 +4204,7 @@ async function setMapTileStyle(style, save = true) {
   }
   scheduleMapDataOverlayRefresh();
   syncDashboardSatelliteToggle();
+  void renderInHouseBaseLayer();
   if (save) scheduleDashboardStateSave();
 }
 
@@ -3621,6 +4227,428 @@ function syncDashboardSatelliteToggle() {
   elements.dashboardSatelliteToggle.classList.toggle("active", active);
   elements.dashboardSatelliteToggle.setAttribute("aria-pressed", active ? "true" : "false");
   elements.dashboardSatelliteToggle.textContent = active ? "Streets" : "Satellite";
+}
+
+function map3dStyleUrl() {
+  return map3dStyle === "satellite" ? "mapbox://styles/mapbox/satellite-streets-v12" : "mapbox://styles/mapbox/streets-v12";
+}
+
+function isMapboxStandard3dStyle() {
+  return false;
+}
+
+function map3dStyleLayers() {
+  if (!map3d) return null;
+  try {
+    return map3d.getStyle()?.layers || null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function configureMap3dBasemap() {
+  if (!map3d || !isMapboxStandard3dStyle()) return;
+  try {
+    map3d.setConfigProperty("basemap", "show3dObjects", true);
+    map3d.setConfigProperty("basemap", "showRoadLabels", true);
+    map3d.setConfigProperty("basemap", "showPlaceLabels", true);
+    map3d.setConfigProperty("basemap", "showPointOfInterestLabels", true);
+    map3d.setConfigProperty("basemap", "lightPreset", "day");
+  } catch (error) {
+    console.warn("3D basemap configuration failed", error);
+  }
+}
+
+function syncMap3dControls() {
+  if (elements.map) elements.map.classList.toggle("map-2d-hidden", map3dEnabled);
+  if (elements.dashboard3dToggle) {
+    elements.dashboard3dToggle.classList.toggle("active", map3dEnabled);
+    elements.dashboard3dToggle.setAttribute("aria-pressed", map3dEnabled ? "true" : "false");
+    elements.dashboard3dToggle.textContent = map3dEnabled ? "2D" : "3D";
+  }
+  if (elements.dashboard3dStyle) {
+    elements.dashboard3dStyle.hidden = !map3dEnabled;
+    elements.dashboard3dStyle.textContent = map3dStyle === "satellite" ? "Street 3D" : "Satellite 3D";
+  }
+  if (elements.dashboard3dTilt) elements.dashboard3dTilt.hidden = !map3dEnabled;
+  if (elements.map3d) elements.map3d.hidden = !map3dEnabled;
+}
+
+function map3dTicketCollection(kind) {
+  const features = [];
+  for (const ticket of visibleTickets()) {
+    const colors = ticketMapColors(ticket);
+    if (kind === "polygon" && ticket.polygon) {
+      const geometry = ticket.polygon.type === "Feature" ? ticket.polygon.geometry : ticket.polygon;
+      features.push({
+        type: "Feature",
+        properties: { id: ticket.ticket_number, color: colors.stroke, fill: colors.fill },
+        geometry,
+      });
+    }
+    if (kind === "point" && typeof ticket.latitude === "number" && typeof ticket.longitude === "number") {
+      features.push({
+        type: "Feature",
+        properties: { id: ticket.ticket_number, color: colors.stroke, fill: colors.fill },
+        geometry: { type: "Point", coordinates: [ticket.longitude, ticket.latitude] },
+      });
+    }
+  }
+  return { type: "FeatureCollection", features };
+}
+
+function map3dLocatorNoteCollection() {
+  return {
+    type: "FeatureCollection",
+    features: locatorNotes
+      .filter((note) => Number.isFinite(Number(note.lat)) && Number.isFinite(Number(note.lng)))
+      .map((note) => ({
+        type: "Feature",
+        properties: { id: note.id || "", color: locatorNoteCategoryColor(note.category) },
+        geometry: { type: "Point", coordinates: [Number(note.lng), Number(note.lat)] },
+      })),
+  };
+}
+
+function map3dStyledFeature(kind, feature) {
+  const layerId = kind === "vetro" ? vetroLayerControlId(feature) : vitruviLayerId(feature);
+  const geometry = feature?.geometry?.type || "";
+  const serviceLocation = kind === "vetro" && isSlFeature(feature);
+  const opacity = serviceLocation ? vetroSlOpacity : (kind === "vetro" ? vetroLayerOpacity(layerId) : vitruviLayerOpacity(layerId));
+  const size = serviceLocation ? vetroSlSize : (kind === "vetro" ? vetroLayerSize(layerId) : vitruviLayerSize(layerId));
+  const style = serviceLocation ? vetroSlShape : (kind === "vetro" ? vetroLayerShape(layerId) : (vitruviLayerStyleOverrides[String(layerId)] || (geometry.startsWith("Line") ? "solid" : "circle")));
+  const color = serviceLocation ? vetroSlColor : (kind === "vetro" ? colorForVetroLayer(layerId) : colorForVitruviLayer(layerId));
+  const outline = serviceLocation ? vetroSlOutlineColor : "#ffffff";
+  const label = serviceLocation && vetroSlLabels ? slLabel(feature) : "";
+  return {
+    ...feature,
+    properties: {
+      ...(feature.properties || {}),
+      _layerId: layerId,
+      _color: color,
+      _outline: outline,
+      _opacity: opacity,
+      _size: size,
+      _style: style,
+      _icon: map3dShapeIconName(kind, style, color, outline),
+      _label: label,
+    },
+  };
+}
+
+function map3dStyledCollection(kind) {
+  const geojson = kind === "vetro" ? filteredVetroGeojson() : filteredVitruviGeojson();
+  const features = Array.isArray(geojson?.features) ? geojson.features : [];
+  return { type: "FeatureCollection", features: features.map((feature) => map3dStyledFeature(kind, feature)) };
+}
+
+function map3dAddSource(id, data) {
+  if (!map3d) return;
+  const spec = { type: "geojson", data };
+  try {
+    const source = map3d.getSource(id);
+    if (source?.setData) source.setData(data);
+    else map3d.addSource(id, spec);
+  } catch (error) {
+    console.warn("3D source failed", id, error);
+  }
+}
+
+function map3dAddLayer(spec) {
+  if (!map3d || map3d.getLayer(spec.id)) return;
+  try {
+    const layerSpec = isMapboxStandard3dStyle() && !spec.slot ? { ...spec, slot: "top" } : spec;
+    map3d.addLayer(layerSpec);
+  } catch (error) {
+    console.warn("3D layer failed", spec.id, error);
+  }
+}
+
+function map3dShapeIconName(kind, shape, color, outline = "#ffffff") {
+  const normalizedShape = ["circle", "square", "diamond", "pin", "house"].includes(String(shape || "")) ? String(shape) : "circle";
+  const normalizedColor = normalizeHexColor(color) || "#2563eb";
+  const normalizedOutline = normalizeHexColor(outline) || "#ffffff";
+  return `${kind}-${normalizedShape}-${normalizedColor.slice(1)}-${normalizedOutline.slice(1)}`;
+}
+
+function map3dMakeShapeIcon(shape, color, outline = "#ffffff") {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  context.translate(32, 32);
+  context.fillStyle = normalizeHexColor(color) || "#2563eb";
+  context.strokeStyle = normalizeHexColor(outline) || "#ffffff";
+  context.lineWidth = 5;
+  context.shadowColor = "rgba(15,23,42,.35)";
+  context.shadowBlur = 5;
+  if (shape === "square") {
+    context.rect(-18, -18, 36, 36);
+  } else if (shape === "diamond") {
+    context.rotate(Math.PI / 4);
+    context.rect(-17, -17, 34, 34);
+  } else if (shape === "pin") {
+    context.rotate(-Math.PI / 4);
+    context.beginPath();
+    context.arc(0, 0, 18, 0, Math.PI * 2);
+    context.lineTo(18, 18);
+    context.closePath();
+  } else if (shape === "house") {
+    context.beginPath();
+    context.moveTo(0, -22);
+    context.lineTo(22, -3);
+    context.lineTo(22, 22);
+    context.lineTo(-22, 22);
+    context.lineTo(-22, -3);
+    context.closePath();
+  } else {
+    context.beginPath();
+    context.arc(0, 0, 19, 0, Math.PI * 2);
+  }
+  context.fill();
+  context.stroke();
+  try {
+    return context.getImageData(0, 0, canvas.width, canvas.height);
+  } catch (error) {
+    return canvas;
+  }
+}
+
+function map3dEnsureShapeImages(data) {
+  if (!map3d) return;
+  for (const feature of data?.features || []) {
+    const icon = feature?.properties?._icon;
+    if (!icon || map3d.hasImage(icon)) continue;
+    try {
+      map3d.addImage(
+        icon,
+        map3dMakeShapeIcon(feature.properties._style, feature.properties._color, feature.properties._outline),
+        { pixelRatio: 2 },
+      );
+    } catch (error) {
+      console.warn("3D icon failed", icon, error);
+    }
+  }
+}
+
+function addMap3dBuildingExtrusions() {
+  if (!map3d || map3d.getLayer("map3d-buildings") || !map3d.getSource("composite")) return;
+  const layers = map3dStyleLayers() || [];
+  const labelLayer = layers.find((layer) => layer.type === "symbol" && layer.layout && layer.layout["text-field"]);
+  const buildingLayer = {
+    id: "map3d-buildings",
+    source: "composite",
+    "source-layer": "building",
+    filter: ["==", "extrude", "true"],
+    type: "fill-extrusion",
+    minzoom: 14,
+    paint: {
+      "fill-extrusion-color": "#c9d2dc",
+      "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 14, 0, 16, ["coalesce", ["get", "height"], 12]],
+      "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 14, 0, 16, ["coalesce", ["get", "min_height"], 0]],
+      "fill-extrusion-opacity": 0.72,
+    },
+  };
+  try {
+    map3d.addLayer(buildingLayer, labelLayer?.id);
+  } catch (error) {
+    console.warn("3D buildings failed", error);
+  }
+}
+
+function map3dLineFilter(style) {
+  return [
+    "all",
+    ["any", ["==", ["geometry-type"], "LineString"], ["==", ["geometry-type"], "MultiLineString"]],
+    ...(style === "solid"
+      ? [["!=", ["get", "_style"], "dashed"], ["!=", ["get", "_style"], "dotted"]]
+      : [["==", ["get", "_style"], style]]),
+  ];
+}
+
+function map3dApplyStyledSource(kind, data) {
+  const source = `${kind}-3d`;
+  map3dEnsureShapeImages(data);
+  map3dAddSource(source, data);
+  map3dAddLayer({
+    id: `${kind}-3d-fill`,
+    type: "fill",
+    source,
+    filter: ["any", ["==", ["geometry-type"], "Polygon"], ["==", ["geometry-type"], "MultiPolygon"]],
+    paint: { "fill-color": ["coalesce", ["get", "_color"], "#2563eb"], "fill-opacity": ["*", ["coalesce", ["to-number", ["get", "_opacity"]], 0.72], 0.32] },
+  });
+  for (const style of ["solid", "dashed", "dotted"]) {
+    map3dAddLayer({
+      id: `${kind}-3d-line-${style}`,
+      type: "line",
+      source,
+      filter: map3dLineFilter(style),
+      paint: {
+        "line-color": ["coalesce", ["get", "_color"], "#2563eb"],
+        "line-width": ["coalesce", ["to-number", ["get", "_size"]], 3],
+        "line-opacity": ["coalesce", ["to-number", ["get", "_opacity"]], 0.72],
+        ...(style === "dashed" ? { "line-dasharray": [2, 1.5] } : {}),
+        ...(style === "dotted" ? { "line-dasharray": [0.4, 1.6] } : {}),
+      },
+    });
+  }
+  map3dAddLayer({
+    id: `${kind}-3d-point-symbol`,
+    type: "symbol",
+    source,
+    filter: ["any", ["==", ["geometry-type"], "Point"], ["==", ["geometry-type"], "MultiPoint"]],
+    layout: {
+      "icon-image": ["get", "_icon"],
+      "icon-size": ["interpolate", ["linear"], ["coalesce", ["to-number", ["get", "_size"]], 12], 4, 0.42, 13, 0.72, 28, 1.2],
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
+    },
+    paint: {
+      "icon-opacity": ["coalesce", ["to-number", ["get", "_opacity"]], 0.72],
+    },
+  });
+  map3dAddLayer({
+    id: `${kind}-3d-point-label`,
+    type: "symbol",
+    source,
+    filter: ["all", ["any", ["==", ["geometry-type"], "Point"], ["==", ["geometry-type"], "MultiPoint"]], ["!=", ["get", "_label"], ""]],
+    layout: {
+      "text-field": ["get", "_label"],
+      "text-size": 12,
+      "text-offset": [0, 1.25],
+      "text-anchor": "top",
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
+    },
+    paint: {
+      "text-color": "#111827",
+      "text-halo-color": "#ffffff",
+      "text-halo-width": 1.4,
+      "text-opacity": ["coalesce", ["to-number", ["get", "_opacity"]], 0.85],
+    },
+  });
+}
+
+function refreshMap3dLayers() {
+  if (!map3dEnabled || !map3d || !map3dStyleLayers()) return;
+  map3dAddSource("tickets-poly-3d", map3dTicketCollection("polygon"));
+  map3dAddLayer({ id: "tickets-poly-3d-fill", type: "fill", source: "tickets-poly-3d", paint: { "fill-color": ["coalesce", ["get", "fill"], "#16a34a"], "fill-opacity": 0.18 } });
+  map3dAddLayer({ id: "tickets-poly-3d-line", type: "line", source: "tickets-poly-3d", paint: { "line-color": ["coalesce", ["get", "color"], "#16a34a"], "line-width": 3 } });
+  map3dAddSource("tickets-point-3d", map3dTicketCollection("point"));
+  map3dAddLayer({ id: "tickets-point-3d-dot", type: "circle", source: "tickets-point-3d", paint: { "circle-color": ["coalesce", ["get", "fill"], "#16a34a"], "circle-radius": 7, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+  map3dAddSource("notes-3d", map3dLocatorNoteCollection());
+  map3dAddLayer({ id: "notes-3d-dot", type: "circle", source: "notes-3d", paint: { "circle-color": ["coalesce", ["get", "color"], "#2563eb"], "circle-radius": 6, "circle-opacity": 0.55, "circle-stroke-color": "#ffffff", "circle-stroke-width": 1 } });
+  if (elements.vetroToggle?.checked && vetroGeojson) map3dApplyStyledSource("vetro", map3dStyledCollection("vetro"));
+  else map3dApplyStyledSource("vetro", { type: "FeatureCollection", features: [] });
+  if (elements.vitruviToggle?.checked && vitruviGeojson && isSiteOwner()) map3dApplyStyledSource("vitruvi", map3dStyledCollection("vitruvi"));
+  else map3dApplyStyledSource("vitruvi", { type: "FeatureCollection", features: [] });
+  if (map3dUserLocation) updateMap3dUserLocation(map3dUserLocation, { center: false });
+}
+
+function prepareMap3dTerrainAndLayers() {
+  if (!map3dEnabled || !map3d || !map3dStyleLayers()) return;
+  configureMap3dBasemap();
+  try {
+    if (!map3d.getSource("mapbox-dem")) {
+      map3d.addSource("mapbox-dem", { type: "raster-dem", url: "mapbox://mapbox.mapbox-terrain-dem-v1", tileSize: 512, maxzoom: 14 });
+    }
+    map3d.setTerrain({ source: "mapbox-dem", exaggeration: 1.4 });
+  } catch (error) {
+    console.warn("3D terrain failed", error);
+  }
+  addMap3dBuildingExtrusions();
+  refreshMap3dLayers();
+}
+
+function scheduleMap3dRefresh() {
+  if (!map3dEnabled || !map3d) return;
+  let attempts = 0;
+  const tick = () => {
+    if (!map3dEnabled || !map3d) return;
+    prepareMap3dTerrainAndLayers();
+    attempts += 1;
+    if (attempts < 30) window.setTimeout(tick, 1000);
+  };
+  tick();
+  window.setTimeout(tick, 250);
+  window.setTimeout(tick, 1200);
+}
+
+function updateMap3dUserLocation(position, { center = false } = {}) {
+  map3dUserLocation = position;
+  if (!map3dEnabled || !map3d || !map3dStyleLayers()) return;
+  const coords = position.coords || {};
+  const lat = Number(coords.latitude);
+  const lng = Number(coords.longitude);
+  const accuracy = Number(coords.accuracy || 0);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  map3dAddSource("user-3d", {
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: { accuracy }, geometry: { type: "Point", coordinates: [lng, lat] } }],
+  });
+  map3dAddLayer({ id: "user-3d-accuracy", type: "circle", source: "user-3d", paint: { "circle-color": "#38bdf8", "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 10, 16, 34, 20, 90], "circle-opacity": 0.16, "circle-stroke-color": "#0284c7", "circle-stroke-width": 1 } });
+  map3dAddLayer({ id: "user-3d-dot", type: "circle", source: "user-3d", paint: { "circle-color": "#38bdf8", "circle-radius": 9, "circle-stroke-color": "#ffffff", "circle-stroke-width": 3 } });
+  if (center) map3d.easeTo({ center: [lng, lat], zoom: Math.max(map3d.getZoom(), 17), duration: 450 });
+}
+
+async function enableMap3d() {
+  if (!elements.map3d || !map) return;
+  if (!mapConfig.mapboxAccessToken) {
+    window.alert("Mapbox access token is not configured on this server.");
+    return;
+  }
+  await ensureMapbox3dAssets();
+  window.mapboxgl.accessToken = mapConfig.mapboxAccessToken;
+  const center = map.getCenter();
+  map3dEnabled = true;
+  syncMap3dControls();
+  window.setTimeout(() => {
+    if (map3d) map3d.resize();
+  }, 100);
+  if (!map3d) {
+    map3d = new window.mapboxgl.Map({
+      container: elements.map3d,
+      style: map3dStyleUrl(),
+      center: [center.lng, center.lat],
+      zoom: Math.max(map.getZoom(), 14),
+      pitch: 68,
+      bearing: 0,
+      antialias: true,
+    });
+    map3d.on("load", scheduleMap3dRefresh);
+    map3d.on("style.load", scheduleMap3dRefresh);
+    map3d.on("styledata", scheduleMap3dRefresh);
+    map3d.on("idle", scheduleMap3dRefresh);
+    scheduleMap3dRefresh();
+  } else {
+    map3d.jumpTo({ center: [center.lng, center.lat], zoom: Math.max(map.getZoom(), 14) });
+    map3d.resize();
+    scheduleMap3dRefresh();
+  }
+}
+
+function disableMap3d() {
+  map3dEnabled = false;
+  syncMap3dControls();
+  if (map && typeof map.invalidateSize === "function") window.setTimeout(() => map.invalidateSize(), 50);
+}
+
+async function toggleMap3d() {
+  if (map3dEnabled) {
+    disableMap3d();
+    return;
+  }
+  await enableMap3d();
+}
+
+function setMap3dStyle(nextStyle) {
+  map3dStyle = nextStyle === "satellite" ? "satellite" : "standard";
+  localStorage.setItem("dashboard3dStyle", map3dStyle);
+  syncMap3dControls();
+  if (map3d) {
+    map3d.setStyle(map3dStyleUrl());
+    scheduleMap3dRefresh();
+  }
 }
 
 async function toggleMapView() {
@@ -4554,6 +5582,7 @@ function renderVitruviLayer() {
   }
   if (!elements.vitruviToggle?.checked || !vitruviGeojson) {
     elements.vitruviStatus.textContent = vitruviGeojson ? "Off" : "Owner only";
+    refreshMap3dLayers();
     scheduleDashboardStateSave();
     return;
   }
@@ -4566,6 +5595,7 @@ function renderVitruviLayer() {
   }).addTo(map);
   const total = Array.isArray(vitruviGeojson?.features) ? vitruviGeojson.features.length : 0;
   elements.vitruviStatus.textContent = `${features.length.toLocaleString()} / ${total.toLocaleString()}`;
+  refreshMap3dLayers();
   scheduleDashboardStateSave();
 }
 
@@ -4646,6 +5676,8 @@ function renderVetroLayer() {
     vetroLayer = null;
   }
   if (!elements.vetroToggle.checked || !vetroGeojson) {
+    renderInHouseVetroLayer();
+    refreshMap3dLayers();
     scheduleDashboardStateSave();
     return;
   }
@@ -4664,6 +5696,8 @@ function renderVetroLayer() {
   const shown = features.length;
   const total = Array.isArray(vetroGeojson?.features) ? vetroGeojson.features.length : 0;
   elements.vetroStatus.textContent = `${shown.toLocaleString()} / ${total.toLocaleString()}`;
+  renderInHouseVetroLayer();
+  refreshMap3dLayers();
   scheduleDashboardStateSave();
 }
 
@@ -4838,9 +5872,9 @@ async function startVetroRefresh() {
 
 async function saveVetroCapture() {
   if (!elements.vetroCaptureText || !elements.saveVetroCapture) return;
-  const content = elements.vetroCaptureText.value.trim();
+  const content = pendingVetroCaptureFile ? await pendingVetroCaptureFile.text() : elements.vetroCaptureText.value.trim();
   if (!content) {
-    if (elements.vetroCaptureStatus) elements.vetroCaptureStatus.textContent = "Paste a HAR or copied cURL first.";
+    if (elements.vetroCaptureStatus) elements.vetroCaptureStatus.textContent = "Choose a HAR/text file or paste copied cURL first.";
     return;
   }
   elements.saveVetroCapture.disabled = true;
@@ -4848,8 +5882,8 @@ async function saveVetroCapture() {
   try {
     const response = await fetch("/api/vetro-capture", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content }),
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      body: content,
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload.ok === false) throw new Error(payload.message || `VETRO capture failed: ${response.status}`);
@@ -4885,6 +5919,7 @@ async function refreshServerData() {
   elements.refresh.textContent = "Refreshing...";
   showSavedToast("Refreshing tickets...");
   try {
+    await saveTicketWorkflowStateNow();
     const response = await fetch("/api/refresh", { method: "POST" });
     if (!response.ok && response.status !== 409) {
       throw new Error(`Refresh request failed: ${response.status}`);
@@ -4956,6 +5991,52 @@ function normalizeTicketMarkedBy(value) {
   return normalized;
 }
 
+function normalizeTicketPriorities(value) {
+  const normalized = {};
+  for (const [ticketNumber, priority] of Object.entries(value || {})) {
+    const text = String(priority || "").trim().toLowerCase();
+    if (DIG_TICKET_PRIORITIES.includes(text)) normalized[String(ticketNumber)] = text;
+  }
+  return normalized;
+}
+
+function canManagePriorities() {
+  return currentUserRole !== "employee";
+}
+
+function ticketAssignedPriority(ticketNumber) {
+  return ticketPriorities[String(ticketNumber)] || "";
+}
+
+function ticketAssignedPriorityLabel(ticketNumber) {
+  const priority = ticketAssignedPriority(ticketNumber);
+  if (!priority) return "";
+  return priority.charAt(0).toUpperCase() + priority.slice(1);
+}
+
+function ticketPriorityControlHtml(ticketNumber) {
+  const priority = ticketAssignedPriority(ticketNumber);
+  if (!canManagePriorities()) return priority ? `<span class="sheet-priority-pill priority-${escapeHtml(priority)}">${escapeHtml(ticketAssignedPriorityLabel(ticketNumber))}</span>` : '<span class="sheet-muted">No priority</span>';
+  return `
+    <select class="sheet-priority-select" data-ticket-priority="${escapeHtml(ticketNumber)}">
+      <option value="">No priority</option>
+      ${DIG_TICKET_PRIORITIES.map((item) => `<option value="${escapeHtml(item)}" ${priority === item ? "selected" : ""}>${escapeHtml(item.charAt(0).toUpperCase() + item.slice(1))}</option>`).join("")}
+    </select>
+  `;
+}
+
+function setTicketPriority(ticketNumber, priority) {
+  if (!canManagePriorities()) return;
+  const normalized = String(priority || "").trim().toLowerCase();
+  if (DIG_TICKET_PRIORITIES.includes(normalized)) ticketPriorities[ticketNumber] = normalized;
+  else delete ticketPriorities[ticketNumber];
+  writeJsonStorage(STORAGE_KEYS.ticketPriorities, ticketPriorities);
+  scheduleDashboardStateSave();
+  auditEvent("ticket_priority_changed", { ticket: ticketNumber, priority: normalized || "none" });
+  render();
+  if (currentView === "sheet") renderSheetView();
+}
+
 function ticketSelectedActions(ticketNumber) {
   return Array.isArray(ticketActions[ticketNumber]) ? ticketActions[ticketNumber] : [];
 }
@@ -4983,6 +6064,33 @@ function stampTicketAction(ticketNumber, timestamp = Date.now()) {
   writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
 }
 
+function stampTicketVisibility(ticketNumber, kind, timestamp = Date.now()) {
+  const key = String(ticketNumber || "");
+  if (!key) return;
+  if (kind === "archive") {
+    archivedTicketUpdatedAt[key] = timestamp;
+    writeJsonStorage(STORAGE_KEYS.archivedTicketUpdatedAt, archivedTicketUpdatedAt);
+  } else {
+    hiddenTicketUpdatedAt[key] = timestamp;
+    writeJsonStorage(STORAGE_KEYS.hiddenTicketUpdatedAt, hiddenTicketUpdatedAt);
+  }
+}
+
+function ticketWorkDateKey(ticket) {
+  const raw = String(ticket?.work_begin_date || "").trim();
+  if (!raw) return "";
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return [
+      parsed.getFullYear(),
+      String(parsed.getMonth() + 1).padStart(2, "0"),
+      String(parsed.getDate()).padStart(2, "0"),
+    ].join("-");
+  }
+  const match = raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : "";
+}
+
 function stampTicketActionDifferences(beforeActions, afterActions, timestamp = Date.now()) {
   const ticketNumbers = new Set([
     ...Object.keys(beforeActions || {}),
@@ -5002,14 +6110,27 @@ function ticketDescription(ticketNumber) {
 
 function saveTicketWorkflowState() {
   applyTicketListCheckpoint();
+  hiddenTicketUpdatedAt = normalizeTicketActionUpdatedAt(hiddenTicketUpdatedAt);
+  archivedTicketUpdatedAt = normalizeTicketActionUpdatedAt(archivedTicketUpdatedAt);
   ticketActions = normalizeTicketActions(ticketActions);
   ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(ticketActionUpdatedAt);
   ticketDescriptions = normalizeTicketDescriptions(ticketDescriptions);
   ticketMarkedBy = normalizeTicketMarkedBy(ticketMarkedBy);
+  if (ticketListCheckpoint?.enabled) {
+    ticketListCheckpoint.ticketActions = normalizeTicketActions(ticketActions);
+    ticketListCheckpoint.hiddenTicketUpdatedAt = normalizeTicketActionUpdatedAt(hiddenTicketUpdatedAt);
+    ticketListCheckpoint.archivedTicketUpdatedAt = normalizeTicketActionUpdatedAt(archivedTicketUpdatedAt);
+    ticketListCheckpoint.ticketActionUpdatedAt = normalizeTicketActionUpdatedAt(ticketActionUpdatedAt);
+    writeTicketListCheckpoint();
+  }
+  writeJsonStorage(STORAGE_KEYS.hiddenTicketUpdatedAt, hiddenTicketUpdatedAt);
+  writeJsonStorage(STORAGE_KEYS.archivedTicketUpdatedAt, archivedTicketUpdatedAt);
+  ticketPriorities = normalizeTicketPriorities(ticketPriorities);
   writeJsonStorage(STORAGE_KEYS.ticketActions, ticketActions);
   writeJsonStorage(STORAGE_KEYS.ticketActionUpdatedAt, ticketActionUpdatedAt);
   writeJsonStorage(STORAGE_KEYS.ticketDescriptions, ticketDescriptions);
   writeJsonStorage(STORAGE_KEYS.ticketMarkedBy, ticketMarkedBy);
+  writeJsonStorage(STORAGE_KEYS.ticketPriorities, ticketPriorities);
   scheduleTicketWorkflowServerSave();
   scheduleDashboardStateSave();
   void saveDashboardState().catch((error) => {
@@ -5170,6 +6291,7 @@ function attachmentUploadHtml(ticketNumber, compact = false) {
 
 const SHEET_COLUMNS = [
   ["Submit", sheetSubmitHtml, "html"],
+  ["Priority", (ticket) => ticketPriorityControlHtml(ticket.ticket_number), "html"],
   ["Action", (ticket, expanded) => expanded ? actionControlHtml(ticket.ticket_number, true, { deferred: true, externalSubmit: true }) : sheetActionSummaryHtml(ticket.ticket_number), "html"],
   ["Attachments", (ticket) => attachmentUploadHtml(ticket.ticket_number, true), "html"],
   ["Description", (ticket, expanded) => expanded ? `
@@ -5247,9 +6369,95 @@ function normalizeSheetSavedFilters(value) {
     .filter((item) => item.name);
 }
 
+function defaultSheetColumnWidth(label) {
+  const widths = {
+    Submit: 92,
+    Priority: 132,
+    Action: 310,
+    Attachments: 260,
+    Description: 360,
+    "Marked By": 150,
+    Comment: 160,
+    "811 Ticket #": 150,
+    "Due Date": 170,
+    "Latitude & Longitude": 190,
+    "Work Address": 280,
+    "Work Area": 180,
+    "Done For": 210,
+    "Excavator Name": 220,
+    "Location Information": 420,
+    "Excavator Phone": 170,
+  };
+  return widths[label] || 165;
+}
+
+function normalizeSheetColumnWidths(value) {
+  const validColumns = new Set(SHEET_COLUMNS.map(([label]) => label));
+  const normalized = {};
+  for (const [label, width] of Object.entries(value || {})) {
+    if (!validColumns.has(label)) continue;
+    const number = Number(width);
+    if (Number.isFinite(number)) normalized[label] = Math.max(70, Math.min(720, Math.round(number)));
+  }
+  return normalized;
+}
+
+function sheetColumnWidth(label) {
+  return sheetColumnWidths[label] || defaultSheetColumnWidth(label);
+}
+
+function sheetTableWidth() {
+  return SHEET_COLUMNS.reduce((total, [label]) => total + sheetColumnWidth(label), 0);
+}
+
+function sheetColgroupHtml() {
+  return `<colgroup>${SHEET_COLUMNS.map(([label]) => `<col style="width:${sheetColumnWidth(label)}px">`).join("")}</colgroup>`;
+}
+
+function saveSheetColumnWidths() {
+  sheetColumnWidths = normalizeSheetColumnWidths(sheetColumnWidths);
+  writeJsonStorage(STORAGE_KEYS.sheetColumnWidths, sheetColumnWidths);
+}
+
+let syncingSheetHorizontalScroll = false;
+
+function syncSheetHorizontalScroller() {
+  if (!elements.sheetTableWrap || !elements.sheetHorizontalScroll || !elements.sheetHorizontalScrollInner) return;
+  const table = elements.sheetTableWrap.querySelector(".sheet-table");
+  const width = table ? Math.max(table.scrollWidth, table.offsetWidth, sheetTableWidth()) : sheetTableWidth();
+  elements.sheetHorizontalScrollInner.style.width = `${width}px`;
+  elements.sheetHorizontalScroll.scrollLeft = elements.sheetTableWrap.scrollLeft;
+  elements.sheetHorizontalScroll.hidden = width <= elements.sheetTableWrap.clientWidth + 2;
+}
+
+function bindSheetHorizontalScroller() {
+  if (!elements.sheetTableWrap || !elements.sheetHorizontalScroll) return;
+  if (elements.sheetHorizontalScroll.dataset.bound === "true") return;
+  elements.sheetHorizontalScroll.dataset.bound = "true";
+  elements.sheetHorizontalScroll.addEventListener("scroll", () => {
+    if (syncingSheetHorizontalScroll) return;
+    syncingSheetHorizontalScroll = true;
+    elements.sheetTableWrap.scrollLeft = elements.sheetHorizontalScroll.scrollLeft;
+    syncingSheetHorizontalScroll = false;
+  });
+  elements.sheetHorizontalScroll.addEventListener("wheel", (event) => {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    event.preventDefault();
+    elements.sheetHorizontalScroll.scrollLeft += event.deltaY;
+    elements.sheetTableWrap.scrollLeft = elements.sheetHorizontalScroll.scrollLeft;
+  }, { passive: false });
+  elements.sheetTableWrap.addEventListener("scroll", () => {
+    if (syncingSheetHorizontalScroll) return;
+    syncingSheetHorizontalScroll = true;
+    elements.sheetHorizontalScroll.scrollLeft = elements.sheetTableWrap.scrollLeft;
+    syncingSheetHorizontalScroll = false;
+  });
+}
+
 sheetSort = normalizeSheetSort(sheetSort);
 sheetColumnFilters = normalizeSheetColumnFilters(sheetColumnFilters);
 sheetSavedFilters = normalizeSheetSavedFilters(sheetSavedFilters);
+sheetColumnWidths = normalizeSheetColumnWidths(sheetColumnWidths);
 
 function saveSheetGridState() {
   sheetSort = normalizeSheetSort(sheetSort);
@@ -5343,7 +6551,7 @@ function sheetHeaderHtml(label) {
   const visibleValues = values.slice(0, 250);
   const checkedAll = !active;
   return `
-    <th class="${active ? "sheet-filtered-column" : ""}">
+    <th class="${active ? "sheet-filtered-column" : ""}" data-sheet-column="${escapeHtml(label)}" style="width:${sheetColumnWidth(label)}px">
       <details class="sheet-filter-menu" data-sheet-filter-menu="${escapeHtml(label)}">
         <summary>${escapeHtml(label)}${sortMark}</summary>
         <div class="sheet-filter-panel">
@@ -5367,6 +6575,7 @@ function sheetHeaderHtml(label) {
           </div>
         </div>
       </details>
+      <button class="sheet-column-resizer" type="button" data-sheet-resize-column="${escapeHtml(label)}" title="Drag to resize ${escapeHtml(label)} column" aria-label="Resize ${escapeHtml(label)} column"></button>
     </th>
   `;
 }
@@ -5601,12 +6810,15 @@ function renderSheetView() {
     })
     .join("");
   elements.sheetTableWrap.innerHTML = `
-    <table class="sheet-table">
+    <table class="sheet-table" style="width:${sheetTableWidth()}px; min-width:${sheetTableWidth()}px">
+      ${sheetColgroupHtml()}
       <thead><tr>${head}</tr></thead>
       <tbody>${body || `<tr><td colspan="${SHEET_COLUMNS.length}">No active tickets found.</td></tr>`}</tbody>
     </table>
     ${renderHistoricalDigTickets()}
   `;
+  bindSheetHorizontalScroller();
+  syncSheetHorizontalScroller();
   bindSheetFilterControls();
   const historySearch = elements.sheetTableWrap.querySelector("#historySearch");
   if (historySearch) {
@@ -5649,12 +6861,675 @@ function renderSheetView() {
     });
   }
   bindTicketActionControls(elements.sheetTableWrap);
+  bindSheetColumnResizers();
+  for (const select of elements.sheetTableWrap.querySelectorAll("[data-ticket-priority]")) {
+    select.addEventListener("change", () => {
+      setTicketPriority(select.dataset.ticketPriority, select.value);
+    });
+  }
   for (const input of elements.sheetTableWrap.querySelectorAll("[data-ticket-description]")) {
     input.addEventListener("change", () => {
       rememberUndoState();
       setTicketDescription(input.dataset.ticketDescription, input.value);
     });
   }
+}
+
+function bindSheetColumnResizers() {
+  if (!elements.sheetTableWrap) return;
+  const startResize = (event, handle, moveEventName, endEventName) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const label = handle.dataset.sheetResizeColumn || "";
+    if (!label) return;
+    const startX = event.clientX;
+    const startWidth = sheetColumnWidth(label);
+    document.body.classList.add("sheet-column-resizing");
+    const move = (moveEvent) => {
+      const nextWidth = Math.max(70, Math.min(720, Math.round(startWidth + moveEvent.clientX - startX)));
+      sheetColumnWidths[label] = nextWidth;
+      const table = elements.sheetTableWrap.querySelector(".sheet-table");
+      const columnIndex = SHEET_COLUMNS.findIndex(([columnLabel]) => columnLabel === label);
+      const col = table?.querySelectorAll("col")?.[columnIndex];
+      const th = [...(table?.querySelectorAll("[data-sheet-column]") || [])].find((cell) => cell.dataset.sheetColumn === label);
+      if (col) col.style.width = `${nextWidth}px`;
+      if (th) th.style.width = `${nextWidth}px`;
+      if (table) {
+        const width = sheetTableWidth();
+        table.style.width = `${width}px`;
+        table.style.minWidth = `${width}px`;
+      }
+      syncSheetHorizontalScroller();
+    };
+    const finish = () => {
+      document.removeEventListener(moveEventName, move);
+      document.removeEventListener(endEventName, finish);
+      document.body.classList.remove("sheet-column-resizing");
+      saveSheetColumnWidths();
+    };
+    document.addEventListener(moveEventName, move);
+    document.addEventListener(endEventName, finish, { once: true });
+  };
+  for (const handle of elements.sheetTableWrap.querySelectorAll("[data-sheet-resize-column]")) {
+    handle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      handle.setPointerCapture?.(event.pointerId);
+      startResize(event, handle, "pointermove", "pointerup");
+    });
+    handle.addEventListener("mousedown", (event) => {
+      if (window.PointerEvent) return;
+      startResize(event, handle, "mousemove", "mouseup");
+    });
+  }
+}
+
+async function loadRestorationJobs() {
+  const response = await fetch("/api/restoration-jobs");
+  if (!response.ok) throw new Error(`Restoration jobs failed to load: ${response.status}`);
+  const payload = await response.json();
+  restorationJobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+  restorationCanManage = Boolean(payload.canManage);
+  document.body.classList.toggle("restoration-can-manage", restorationCanManage);
+  return restorationJobs;
+}
+
+function restorationJobSearchText(job) {
+  return [
+    job.id,
+    job.ticket,
+    job.title,
+    job.location,
+    job.entity,
+    job.priority,
+    job.status,
+    job.assigned_to,
+    job.created_by,
+    job.completed_by,
+  ].join(" ").toLowerCase();
+}
+
+function filteredRestorationJobs() {
+  const query = restorationSearch.trim().toLowerCase();
+  const jobs = query ? restorationJobs.filter((job) => restorationJobSearchText(job).includes(query)) : restorationJobs;
+  return jobs
+    .filter((job) => !restorationPriorityFilter || job.priority === restorationPriorityFilter)
+    .filter((job) => !restorationStatusFilter || job.status === restorationStatusFilter)
+    .slice()
+    .sort((a, b) => {
+    const priorityOrder = { emergency: 0, high: 1, medium: 2, low: 3 };
+    const ap = priorityOrder[a.priority] ?? 4;
+    const bp = priorityOrder[b.priority] ?? 4;
+    if (ap !== bp) return ap - bp;
+    const ad = String(a.scheduled_for || "9999");
+    const bd = String(b.scheduled_for || "9999");
+    if (ad !== bd) return ad.localeCompare(bd);
+    return String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""));
+  });
+}
+
+function selectedRestorationJob() {
+  return restorationJobs.find((job) => job.id === selectedRestorationJobId) || null;
+}
+
+function fillRestorationForm(job = {}) {
+  selectedRestorationJobId = job.id || "";
+  if (elements.restorationJobId) elements.restorationJobId.value = job.id || "";
+  if (elements.restorationTitle) elements.restorationTitle.value = job.title || "";
+  if (elements.restorationTicket) elements.restorationTicket.value = job.ticket || "";
+  if (elements.restorationLocation) elements.restorationLocation.value = job.location || "";
+  if (elements.restorationEntity) elements.restorationEntity.value = job.entity || "";
+  if (elements.restorationLat) elements.restorationLat.value = job.lat ?? "";
+  if (elements.restorationLng) elements.restorationLng.value = job.lng ?? "";
+  if (elements.restorationPriority) elements.restorationPriority.value = job.priority || "medium";
+  if (elements.restorationStatus) elements.restorationStatus.value = job.status || "open";
+  if (elements.restorationScheduled) elements.restorationScheduled.value = String(job.scheduled_for || "").slice(0, 16);
+  if (elements.restorationAssigned) elements.restorationAssigned.value = job.assigned_to || "";
+  if (elements.restorationNotes) elements.restorationNotes.value = job.notes || "";
+  if (elements.restorationFormStatus) elements.restorationFormStatus.textContent = job.id ? `Editing ${job.id}` : "New restoration job";
+}
+
+function openRestorationForm(job = {}) {
+  fillRestorationForm(job);
+  if (elements.restorationModal) elements.restorationModal.hidden = false;
+}
+
+function closeRestorationForm() {
+  if (elements.restorationModal) elements.restorationModal.hidden = true;
+}
+
+function restorationFormPayload() {
+  return {
+    id: elements.restorationJobId?.value || "",
+    title: elements.restorationTitle?.value || "",
+    ticket: elements.restorationTicket?.value || "",
+    location: elements.restorationLocation?.value || "",
+    entity: elements.restorationEntity?.value || "",
+    lat: elements.restorationLat?.value || "",
+    lng: elements.restorationLng?.value || "",
+    priority: elements.restorationPriority?.value || "medium",
+    status: elements.restorationStatus?.value || "open",
+    scheduled_for: elements.restorationScheduled?.value || "",
+    assigned_to: elements.restorationAssigned?.value || "",
+    notes: elements.restorationNotes?.value || "",
+  };
+}
+
+async function saveRestorationJob(event) {
+  event?.preventDefault();
+  if (elements.restorationFormStatus) elements.restorationFormStatus.textContent = "Saving...";
+  const response = await fetch("/api/restoration-jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(restorationFormPayload()),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.ok === false) throw new Error(payload.message || `Save failed: ${response.status}`);
+  await loadRestorationJobs();
+  fillRestorationForm(payload.job || {});
+  closeRestorationForm();
+  renderRestorationView();
+  if (elements.restorationFormStatus) elements.restorationFormStatus.textContent = "Restoration job saved";
+}
+
+function restorationAttachmentListHtml(job) {
+  const items = Array.isArray(job.attachments) ? job.attachments : [];
+  if (!items.length) return '<span class="sheet-muted">No photos</span>';
+  const folder = job.folder_url;
+  return `
+    ${folder ? `<a href="${escapeHtml(folder)}" target="_blank" rel="noreferrer">Open OneDrive folder</a>` : ""}
+    <span>${items.length} photo${items.length === 1 ? "" : "s"}</span>
+  `;
+}
+
+function restorationJobsTableHtml(jobs) {
+  const grouped = new Map();
+  for (const job of jobs) {
+    const key = job.priority || "medium";
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(job);
+  }
+  const rows = ["emergency", "high", "medium", "low"].map((priority) => {
+    const items = grouped.get(priority) || [];
+    if (!items.length) return "";
+    return `
+      <tbody class="ops-priority-group">
+        <tr class="ops-group-row"><th colspan="7">${escapeHtml(priorityLabel(priority))} priority <span>${items.length} job${items.length === 1 ? "" : "s"}</span></th></tr>
+        ${items.map((job) => restorationJobRowHtml(job)).join("")}
+      </tbody>
+    `;
+  }).join("");
+  return `
+    <table class="sheet-table restoration-table">
+      <thead>
+        <tr><th>Job</th><th>Due</th><th>Location</th><th>Priority</th><th>Status</th><th>Photos</th><th>Upload</th></tr>
+      </thead>
+      ${rows || '<tbody><tr><td colspan="7">No restoration jobs found.</td></tr></tbody>'}
+    </table>
+  `;
+}
+
+function priorityLabel(priority) {
+  const text = String(priority || "medium");
+  return text.charAt(0).toUpperCase() + text.slice(1).replace(/_/g, " ");
+}
+
+function statusLabel(status) {
+  const text = String(status || "open").replace(/_/g, " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function restorationJobRowHtml(job) {
+  return `
+    <tr class="restoration-row restoration-priority-${escapeHtml(job.priority || "medium")} ${job.id === selectedRestorationJobId ? "selected" : ""}" data-restoration-job="${escapeHtml(job.id)}">
+      <td><strong>${escapeHtml(job.id)}</strong><span>${escapeHtml(job.ticket || job.title || "")}</span></td>
+      <td>${escapeHtml(String(job.scheduled_for || "").replace("T", " ")) || '<span class="sheet-muted">No due date</span>'}</td>
+      <td>${escapeHtml(job.location || job.entity || "")}<small>${escapeHtml(job.assigned_to || job.created_by || "")}</small></td>
+      <td><span class="sheet-priority-pill priority-${escapeHtml(job.priority || "medium")}">${escapeHtml(priorityLabel(job.priority))}</span></td>
+      <td>${escapeHtml(statusLabel(job.status))}</td>
+      <td class="restoration-photo-cell">${restorationAttachmentListHtml(job)}</td>
+      <td class="ops-upload-cell">
+        <input type="file" multiple accept="image/*,video/*" data-restoration-file-input="${escapeHtml(job.id)}">
+        <select data-restoration-upload-status="${escapeHtml(job.id)}">
+          <option value="submitted">Submitted</option>
+          <option value="completed">Completed</option>
+        </select>
+        <button type="button" data-restoration-upload="${escapeHtml(job.id)}">Upload</button>
+      </td>
+    </tr>
+  `;
+}
+
+function restorationDetailHtml(job) {
+  if (!job) return '<div class="live-ticket-empty">Select a restoration job</div>';
+  return `
+    <header>
+      <h3>${escapeHtml(job.title || job.id)}</h3>
+      <span class="sheet-priority-pill priority-${escapeHtml(job.priority || "medium")}">${escapeHtml(priorityLabel(job.priority))}</span>
+    </header>
+    <dl>
+      <dt>Job</dt><dd>${escapeHtml(job.id)}</dd>
+      <dt>Ticket</dt><dd>${escapeHtml(job.ticket || "None")}</dd>
+      <dt>Due</dt><dd>${escapeHtml(String(job.scheduled_for || "").replace("T", " ") || "Not scheduled")}</dd>
+      <dt>Status</dt><dd>${escapeHtml(statusLabel(job.status))}</dd>
+      <dt>Assigned</dt><dd>${escapeHtml(job.assigned_to || "Unassigned")}</dd>
+      <dt>Location</dt><dd>${escapeHtml(job.location || job.entity || "No location")}</dd>
+      <dt>Notes</dt><dd>${escapeHtml(job.notes || "No notes")}</dd>
+      <dt>Photos</dt><dd>${restorationAttachmentListHtml(job)}</dd>
+    </dl>
+    <button type="button" data-edit-restoration="${escapeHtml(job.id)}">Edit restoration ticket</button>
+  `;
+}
+
+function ensureRestorationMap() {
+  if (!elements.restorationMap || restorationMap || typeof L === "undefined") return;
+  restorationMap = L.map(elements.restorationMap, { zoomControl: true }).setView([33.21, -92.66], 11);
+  const restorationTile = MAP_TILE_STYLES[mapStyle]?.url ? MAP_TILE_STYLES[mapStyle] : MAP_TILE_STYLES.standard;
+  L.tileLayer(restorationTile.url, {
+    maxZoom: 20,
+    attribution: restorationTile.attribution || MAP_TILE_STYLES.standard.attribution,
+    ...(restorationTile.subdomains ? { subdomains: restorationTile.subdomains } : {}),
+  }).addTo(restorationMap);
+  restorationMap.on("click", (event) => {
+    if (elements.restorationLat) elements.restorationLat.value = event.latlng.lat.toFixed(6);
+    if (elements.restorationLng) elements.restorationLng.value = event.latlng.lng.toFixed(6);
+    if (elements.restorationFormStatus) elements.restorationFormStatus.textContent = "Map point selected";
+  });
+}
+
+function renderRestorationMap(jobs) {
+  ensureRestorationMap();
+  if (!restorationMap) return;
+  if (restorationMapMarkers) restorationMap.removeLayer(restorationMapMarkers);
+  if (restorationMapVetroLayer) {
+    restorationMap.removeLayer(restorationMapVetroLayer);
+    restorationMapVetroLayer = null;
+  }
+  restorationMapMarkers = L.layerGroup().addTo(restorationMap);
+  const bounds = [];
+  for (const job of jobs) {
+    const ticket = tickets.find((item) => item.ticket_number === job.ticket);
+    if (ticket?.polygon) {
+      const polygon = L.geoJSON(ticket.polygon, { style: { color: "#2563eb", weight: 2, fillOpacity: 0.08 } }).addTo(restorationMapMarkers);
+      const polygonBounds = polygon.getBounds();
+      if (polygonBounds?.isValid?.()) {
+        bounds.push([polygonBounds.getSouth(), polygonBounds.getWest()]);
+        bounds.push([polygonBounds.getNorth(), polygonBounds.getEast()]);
+      }
+    }
+    const lat = Number(job.lat ?? ticket?.latitude);
+    const lng = Number(job.lng ?? ticket?.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const marker = L.circleMarker([lat, lng], {
+      radius: job.priority === "emergency" ? 9 : 7,
+      color: job.priority === "emergency" ? "#dc2626" : job.priority === "high" ? "#d97706" : "#2563eb",
+      fillColor: job.priority === "low" ? "#2f855a" : job.priority === "medium" ? "#2563eb" : job.priority === "high" ? "#d97706" : "#dc2626",
+      fillOpacity: 0.9,
+      weight: 2,
+    }).addTo(restorationMapMarkers);
+    marker.bindPopup(`<strong>${escapeHtml(job.title || job.id)}</strong><br>${escapeHtml(job.ticket || job.location || "")}<br>${escapeHtml(job.status || "")}`);
+    marker.on("click", () => {
+      fillRestorationForm(job);
+      renderRestorationView();
+    });
+    bounds.push([lat, lng]);
+  }
+  if (!vetroGeojson) {
+    void ensureVetroLoaded().then(() => {
+      if (currentView === "restoration") renderRestorationMap(filteredRestorationJobs());
+    }).catch((error) => console.warn(error));
+  } else {
+    const filtered = filteredVetroGeojson();
+    if (filtered) {
+      restorationMapVetroLayer = L.geoJSON(filtered, {
+        style: vetroStyle,
+        pointToLayer: vetroPointToLayer,
+        onEachFeature: bindVetroPopup,
+      }).addTo(restorationMap);
+    }
+  }
+  requestAnimationFrame(() => {
+    restorationMap.invalidateSize();
+    if (bounds.length) restorationMap.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+  });
+}
+
+async function uploadRestorationPhotos(jobId) {
+  const input = [...(elements.restorationJobsTable?.querySelectorAll("[data-restoration-file-input]") || [])].find((item) => item.dataset.restorationFileInput === jobId);
+  const status = [...(elements.restorationJobsTable?.querySelectorAll("[data-restoration-upload-status]") || [])].find((item) => item.dataset.restorationUploadStatus === jobId);
+  const files = [...(input?.files || [])];
+  if (!files.length) return;
+  if (files.length > 80) throw new Error("Select 80 attachments or fewer.");
+  const data = new FormData();
+  data.set("job_id", jobId);
+  data.set("status", status?.value || "submitted");
+  for (const file of files) data.append("files", file, file.name);
+  const response = await fetch("/api/restoration-jobs/upload", { method: "POST", body: data });
+  const payload = await response.json();
+  if (!response.ok || payload.ok === false) throw new Error(payload.message || `Upload failed: ${response.status}`);
+  await loadRestorationJobs();
+  fillRestorationForm(payload.job || selectedRestorationJob() || {});
+  renderRestorationView();
+}
+
+function renderRestorationView() {
+  if (!elements.restorationView) return;
+  document.body.classList.toggle("restoration-can-manage", restorationCanManage);
+  for (const control of elements.restorationView.querySelectorAll(".restoration-admin-only input, .restoration-admin-only select")) {
+    control.disabled = !restorationCanManage;
+  }
+  const jobs = filteredRestorationJobs();
+  if (!selectedRestorationJobId && jobs.length) selectedRestorationJobId = jobs[0].id;
+  if (elements.restorationJobsTable) {
+    elements.restorationJobsTable.innerHTML = restorationJobsTableHtml(jobs);
+    for (const row of elements.restorationJobsTable.querySelectorAll("[data-restoration-job]")) {
+      row.addEventListener("click", (event) => {
+        if (event.target instanceof HTMLElement && event.target.closest("input, select, button, a")) return;
+        const job = restorationJobs.find((item) => item.id === row.dataset.restorationJob);
+        if (job) selectedRestorationJobId = job.id;
+        renderRestorationView();
+      });
+    }
+    for (const button of elements.restorationJobsTable.querySelectorAll("[data-restoration-upload]")) {
+      button.addEventListener("click", async () => {
+        try {
+          button.disabled = true;
+          await uploadRestorationPhotos(button.dataset.restorationUpload);
+        } catch (error) {
+          if (elements.restorationFormStatus) elements.restorationFormStatus.textContent = error.message || "Upload failed.";
+          console.error(error);
+        } finally {
+          button.disabled = false;
+        }
+      });
+    }
+  }
+  if (elements.restorationDetail) {
+    elements.restorationDetail.innerHTML = restorationDetailHtml(selectedRestorationJob());
+    const edit = elements.restorationDetail.querySelector("[data-edit-restoration]");
+    if (edit) edit.addEventListener("click", () => openRestorationForm(selectedRestorationJob() || {}));
+  }
+  renderRestorationMap(jobs);
+}
+
+async function loadInHouseRequests() {
+  const response = await fetch("/api/in-house-requests");
+  if (!response.ok) throw new Error(`In-house requests failed to load: ${response.status}`);
+  const payload = await response.json();
+  inHouseRequests = Array.isArray(payload.requests) ? payload.requests : [];
+  return inHouseRequests;
+}
+
+function inHouseRequestSearchLabel() {
+  const value = [
+    elements.inHouseAddress?.value,
+    elements.inHousePlace?.value,
+    elements.inHouseCounty?.value,
+  ].filter(Boolean).join(", ").trim();
+  if (!value) return "";
+  return /\b(arkansas|ar|usa|united states)\b/i.test(value) ? value : `${value}, Arkansas, USA`;
+}
+
+function inHouseCoordinatesFromForm() {
+  const lat = Number(elements.inHouseLat?.value);
+  const lng = Number(elements.inHouseLng?.value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return { latitude: lat, longitude: lng };
+}
+
+function ensureInHouseMap() {
+  if (!elements.inHouseMap || inHouseMap || typeof L === "undefined") return;
+  inHouseMap = L.map(elements.inHouseMap, { zoomControl: true }).setView([33.21, -92.66], 12);
+  void renderInHouseBaseLayer();
+  inHouseMap.on("click", (event) => {
+    setInHouseMapPoint(event.latlng.lat, event.latlng.lng, "Map point selected", { pan: false });
+  });
+}
+
+async function renderInHouseBaseLayer() {
+  if (!inHouseMap) return;
+  const priorLayer = inHouseBaseTileLayer;
+  let nextLayer = null;
+  const tile = MAP_TILE_STYLES[mapStyle] || MAP_TILE_STYLES["locator-dark-detail"] || MAP_TILE_STYLES.standard;
+  try {
+    if (tile.provider === "maplibre") {
+      nextLayer = await maplibreTileLayer(tile);
+    } else if (tile.provider === "mapbox") {
+      nextLayer = mapboxTileLayer(tile);
+    } else if (Array.isArray(tile.layers)) {
+      nextLayer = L.layerGroup(
+        tile.layers.map((item) => L.tileLayer(item.url, {
+          maxZoom: 20,
+          attribution: item.attribution || tile.attribution,
+          opacity: mapOpacity,
+          ...(item.subdomains ? { subdomains: item.subdomains } : {}),
+        })),
+      );
+    } else {
+      nextLayer = L.tileLayer(tile.url, {
+        maxZoom: 20,
+        attribution: tile.attribution,
+        opacity: mapOpacity,
+        ...(tile.subdomains ? { subdomains: tile.subdomains } : {}),
+      });
+    }
+  } catch (error) {
+    console.warn("In-house map base style fallback", error);
+    nextLayer = L.tileLayer(MAP_TILE_STYLES.contrast.url, {
+      maxZoom: 20,
+      attribution: MAP_TILE_STYLES.contrast.attribution,
+      opacity: mapOpacity,
+      subdomains: MAP_TILE_STYLES.contrast.subdomains,
+    });
+  }
+  if (priorLayer && inHouseMap.hasLayer(priorLayer)) inHouseMap.removeLayer(priorLayer);
+  inHouseBaseTileLayer = nextLayer.addTo(inHouseMap);
+  bringBaseLayerToBack(inHouseBaseTileLayer);
+  renderInHouseVetroLayer();
+}
+
+function renderInHouseVetroLayer() {
+  if (!inHouseMap) return;
+  if (inHouseMapVetroLayer) {
+    inHouseMap.removeLayer(inHouseMapVetroLayer);
+    inHouseMapVetroLayer = null;
+  }
+  if (!elements.vetroToggle?.checked || !vetroGeojson) return;
+  const filtered = filteredVetroGeojson();
+  const features = Array.isArray(filtered?.features) ? filtered.features : [];
+  if (!features.length) return;
+  inHouseMapVetroLayer = L.geoJSON(filtered, {
+    style: vetroStyle,
+    pointToLayer: vetroPointToLayer,
+    onEachFeature: bindVetroPopup,
+  }).addTo(inHouseMap);
+}
+
+function setInHouseMapPoint(latitude, longitude, label = "Selected point", options = {}) {
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  if (elements.inHouseLat) elements.inHouseLat.value = lat.toFixed(6);
+  if (elements.inHouseLng) elements.inHouseLng.value = lng.toFixed(6);
+  ensureInHouseMap();
+  if (inHouseMap) {
+    const latlng = [lat, lng];
+    if (!inHouseMapMarker) {
+      inHouseMapMarker = L.marker(latlng, { draggable: true }).addTo(inHouseMap);
+      inHouseMapMarker.on("dragend", () => {
+        const point = inHouseMapMarker.getLatLng();
+        setInHouseMapPoint(point.lat, point.lng, "Marker moved", { pan: false });
+      });
+    } else {
+      inHouseMapMarker.setLatLng(latlng);
+    }
+    if (options.pan !== false) inHouseMap.flyTo(latlng, Math.max(inHouseMap.getZoom(), 17), { duration: 0.35 });
+    inHouseMapMarker.bindPopup(`<strong>${escapeHtml(label)}</strong><br>${lat.toFixed(6)}, ${lng.toFixed(6)}`).openPopup();
+  }
+  if (elements.inHouseMapStatus) elements.inHouseMapStatus.textContent = `${label}: ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+}
+
+function clearInHouseMapSelection() {
+  if (inHouseMapMarker && inHouseMap) {
+    inHouseMap.removeLayer(inHouseMapMarker);
+    inHouseMapMarker = null;
+  }
+  if (elements.inHouseMapStatus) elements.inHouseMapStatus.textContent = "Type an address or click the map.";
+}
+
+function syncInHouseMapFromCoordinates() {
+  const coordinates = inHouseCoordinatesFromForm();
+  if (!coordinates) return false;
+  setInHouseMapPoint(coordinates.latitude, coordinates.longitude, "Coordinates selected");
+  return true;
+}
+
+function scheduleInHouseMapSearch(options = {}) {
+  window.clearTimeout(inHouseMapSearchTimer);
+  if (!options.forceAddress && syncInHouseMapFromCoordinates()) return;
+  const query = inHouseRequestSearchLabel();
+  if (!query || query.length < 4) {
+    if (elements.inHouseMapStatus) elements.inHouseMapStatus.textContent = "Type an address or click the map.";
+    return;
+  }
+  const token = ++inHouseMapSearchToken;
+  if (elements.inHouseMapStatus) elements.inHouseMapStatus.textContent = "Searching map...";
+  inHouseMapSearchTimer = window.setTimeout(async () => {
+    try {
+      const response = await fetch(`/api/map-search?q=${encodeURIComponent(query)}`);
+      if (!response.ok) throw new Error(`Map search failed: ${response.status}`);
+      const payload = await response.json();
+      if (token !== inHouseMapSearchToken) return;
+      if (!payload.ok) {
+        if (elements.inHouseMapStatus) elements.inHouseMapStatus.textContent = payload.message || "No map result found.";
+        return;
+      }
+      setInHouseMapPoint(Number(payload.latitude), Number(payload.longitude), payload.name || query);
+    } catch (error) {
+      if (token === inHouseMapSearchToken && elements.inHouseMapStatus) elements.inHouseMapStatus.textContent = error.message || "Map search failed.";
+      console.error(error);
+    }
+  }, 450);
+}
+
+function fillInHouseForm(item = {}) {
+  selectedInHouseRequestId = item.id || "";
+  if (elements.inHouseId) elements.inHouseId.value = item.id || "";
+  if (elements.inHouseTitle) elements.inHouseTitle.value = item.title || "";
+  if (elements.inHouseRequestor) elements.inHouseRequestor.value = item.requestor || "";
+  if (elements.inHouseContactPhone) elements.inHouseContactPhone.value = item.contact_phone || "";
+  if (elements.inHouseCrew) elements.inHouseCrew.value = item.crew || "";
+  if (elements.inHouseProject) elements.inHouseProject.value = item.project || "";
+  if (elements.inHouseAddress) elements.inHouseAddress.value = item.address || "";
+  if (elements.inHouseCounty) elements.inHouseCounty.value = item.county || "";
+  if (elements.inHousePlace) elements.inHousePlace.value = item.place || "";
+  if (elements.inHouseLat) elements.inHouseLat.value = item.lat ?? "";
+  if (elements.inHouseLng) elements.inHouseLng.value = item.lng ?? "";
+  if (elements.inHousePriority) elements.inHousePriority.value = item.priority || "medium";
+  if (elements.inHouseStatus) elements.inHouseStatus.value = item.status || "open";
+  if (elements.inHouseDue) elements.inHouseDue.value = String(item.due_at || "").slice(0, 16);
+  if (elements.inHouseAssigned) elements.inHouseAssigned.value = item.assigned_to || "";
+  if (elements.inHouseUtilities) elements.inHouseUtilities.value = item.utilities || "";
+  if (elements.inHouseScope) elements.inHouseScope.value = item.scope || "";
+  if (elements.inHouseNotes) elements.inHouseNotes.value = item.notes || "";
+  if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = item.id ? `Editing ${item.id}` : "Ready for a new in-house locate request.";
+  if (item.lat != null && item.lng != null) {
+    setInHouseMapPoint(item.lat, item.lng, item.address || item.title || item.id || "Saved request");
+  } else if (!item.id && !inHouseRequestSearchLabel()) {
+    clearInHouseMapSelection();
+  } else {
+    scheduleInHouseMapSearch();
+  }
+  renderInHouseRequestsView();
+}
+
+function inHouseFormPayload() {
+  return {
+    id: elements.inHouseId?.value || "",
+    title: elements.inHouseTitle?.value || "",
+    requestor: elements.inHouseRequestor?.value || "",
+    contact_phone: elements.inHouseContactPhone?.value || "",
+    crew: elements.inHouseCrew?.value || "",
+    project: elements.inHouseProject?.value || "",
+    address: elements.inHouseAddress?.value || "",
+    county: elements.inHouseCounty?.value || "",
+    place: elements.inHousePlace?.value || "",
+    lat: elements.inHouseLat?.value || "",
+    lng: elements.inHouseLng?.value || "",
+    priority: elements.inHousePriority?.value || "medium",
+    status: elements.inHouseStatus?.value || "open",
+    due_at: elements.inHouseDue?.value || "",
+    assigned_to: elements.inHouseAssigned?.value || "",
+    utilities: elements.inHouseUtilities?.value || "",
+    scope: elements.inHouseScope?.value || "",
+    notes: elements.inHouseNotes?.value || "",
+  };
+}
+
+async function saveInHouseRequest(event) {
+  event?.preventDefault();
+  if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = "Saving...";
+  const response = await fetch("/api/in-house-requests", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(inHouseFormPayload()),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.ok === false) throw new Error(payload.message || `Save failed: ${response.status}`);
+  const requestId = payload.request?.id || payload.ticket?.ticket_number || "request";
+  await loadInHouseRequests();
+  fillInHouseForm(payload.request || {});
+  await loadTickets();
+  if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = `${requestId} saved to the locator dashboard.`;
+  showSavedToast("In-house request saved");
+}
+
+function inHouseRequestRowHtml(item) {
+  return `
+    <article class="in-house-request-row ${item.id === selectedInHouseRequestId ? "selected" : ""}">
+      <div>
+        <strong>${escapeHtml(item.title || item.id)}</strong>
+        <p>${escapeHtml(item.address || item.place || "No address")}</p>
+        <div class="live-ticket-meta">
+          <span>${escapeHtml(item.id)}</span>
+          <span>${escapeHtml(priorityLabel(item.priority))}</span>
+          <span>${escapeHtml(statusLabel(item.status))}</span>
+          <span>${escapeHtml(String(item.due_at || "").replace("T", " ") || "No due date")}</span>
+        </div>
+      </div>
+      <button type="button" data-edit-in-house-request="${escapeHtml(item.id)}">Edit</button>
+    </article>
+  `;
+}
+
+function renderInHouseRequestsView() {
+  if (!elements.inHouseRequestList) return;
+  const rows = inHouseRequests.slice().sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")));
+  elements.inHouseRequestList.innerHTML = rows.length
+    ? rows.map(inHouseRequestRowHtml).join("")
+    : '<div class="live-ticket-empty">No in-house requests yet.</div>';
+  for (const button of elements.inHouseRequestList.querySelectorAll("[data-edit-in-house-request]")) {
+    button.addEventListener("click", () => {
+      const item = inHouseRequests.find((request) => request.id === button.dataset.editInHouseRequest);
+      if (item) fillInHouseForm(item);
+    });
+  }
+  requestAnimationFrame(() => {
+    ensureInHouseMap();
+    void renderInHouseBaseLayer();
+    if (!vetroGeojson) {
+      void ensureVetroLoaded().then(() => {
+        if (currentView === "in-house-requests") renderInHouseVetroLayer();
+      }).catch((error) => console.warn(error));
+    } else {
+      renderInHouseVetroLayer();
+    }
+    if (inHouseMap) inHouseMap.invalidateSize();
+    if (!inHouseMapMarker) syncInHouseMapFromCoordinates();
+  });
 }
 
 function bindSheetFilterControls() {
@@ -5955,6 +7830,7 @@ function visibleTickets() {
   return matchingTickets().filter(
     (ticket) => !archivedTickets.has(ticket.ticket_number)
       && !ticketIsActionHidden(ticket)
+      && ticketShouldShowOnDashboard(ticket)
       && !protectedTickets.has(ticket.ticket_number)
       && (elements.showHiddenToggle.checked || !hiddenTickets.has(ticket.ticket_number)),
   );
@@ -5964,6 +7840,7 @@ function fieldOpenTickets() {
   const query = ticketSearch.trim().toLowerCase();
   return scopedTickets().filter((ticket) => {
     if (ticketIsActionHidden(ticket)) return false;
+    if (!ticketShouldShowOnDashboard(ticket)) return false;
     if (!countyFilterAll && !selectedCounties.has(ticket.county || "")) return false;
     if (query && !searchable(ticket).includes(query)) return false;
     return true;
@@ -5976,6 +7853,7 @@ function matchingTickets() {
   return scopedTickets().filter((ticket) => {
     if (archivedTickets.has(ticket.ticket_number)) return false;
     if (ticketIsActionHidden(ticket)) return false;
+    if (!ticketShouldShowOnDashboard(ticket)) return false;
     if (protectedTickets.has(ticket.ticket_number)) return false;
     if (!countyFilterAll && !selectedCounties.has(ticket.county || "")) return false;
     if (query && !searchable(ticket).includes(query)) return false;
@@ -5985,7 +7863,7 @@ function matchingTickets() {
 
 function renderMetrics(list = []) {
   const protectedTickets = protectedTicketNumbersFromCheckpoint();
-  const activeTickets = scopedTickets().filter((ticket) => !archivedTickets.has(ticket.ticket_number) && !ticketIsActionHidden(ticket) && !protectedTickets.has(ticket.ticket_number));
+  const activeTickets = scopedTickets().filter((ticket) => !archivedTickets.has(ticket.ticket_number) && !ticketIsActionHidden(ticket) && ticketShouldShowOnDashboard(ticket) && !protectedTickets.has(ticket.ticket_number));
   const counties = new Set(activeTickets.map((ticket) => ticket.county).filter(Boolean));
   const activeCount = activeTickets.filter((ticket) => !hiddenTickets.has(ticket.ticket_number)).length;
   elements.totalCount.textContent = String(activeCount);
@@ -5996,6 +7874,7 @@ function renderMetrics(list = []) {
 function saveHiddenTickets() {
   applyTicketListCheckpoint();
   writeJsonStorage(STORAGE_KEYS.hiddenTickets, [...hiddenTickets]);
+  writeJsonStorage(STORAGE_KEYS.hiddenTicketUpdatedAt, hiddenTicketUpdatedAt);
   scheduleDashboardStateSave();
   void saveDashboardState().catch((error) => {
     console.warn("Unable to save hidden ticket state", error);
@@ -6005,6 +7884,7 @@ function saveHiddenTickets() {
 function saveArchivedTickets() {
   applyTicketListCheckpoint();
   writeJsonStorage(STORAGE_KEYS.archivedTickets, [...archivedTickets]);
+  writeJsonStorage(STORAGE_KEYS.archivedTicketUpdatedAt, archivedTicketUpdatedAt);
   scheduleDashboardStateSave();
   void saveDashboardState().catch((error) => {
     console.warn("Unable to save archived ticket state", error);
@@ -6038,8 +7918,10 @@ function toggleTicketHidden(ticketNumber) {
   let hidden = false;
   if (hiddenTickets.has(ticketNumber)) {
     hiddenTickets.delete(ticketNumber);
+    stampTicketVisibility(ticketNumber, "hidden");
   } else {
     hiddenTickets.add(ticketNumber);
+    stampTicketVisibility(ticketNumber, "hidden");
     hidden = true;
     if (selectedTicket?.ticket_number === ticketNumber && !elements.showHiddenToggle.checked) {
       selectedTicket = visibleTickets().find((ticket) => ticket.ticket_number !== ticketNumber) || null;
@@ -6055,8 +7937,10 @@ function toggleTicketArchived(ticketNumber) {
   let archived = false;
   if (archivedTickets.has(ticketNumber)) {
     archivedTickets.delete(ticketNumber);
+    stampTicketVisibility(ticketNumber, "archive");
   } else {
     archivedTickets.add(ticketNumber);
+    stampTicketVisibility(ticketNumber, "archive");
     archived = true;
     if (selectedTicket?.ticket_number === ticketNumber) {
       selectedTicket = null;
@@ -6190,6 +8074,10 @@ function ticketIsTcwDmiWork(ticket) {
   return companyTextMatchesOrangePriority(ticketCompanyPriorityText(ticket));
 }
 
+function ticketShouldShowOnDashboard(ticket) {
+  return !(ticketIsTcwDmiWork(ticket) && ticketDueDayIsPast(ticket));
+}
+
 function baseScopedTickets() {
   return Array.isArray(tickets) ? tickets.filter((ticket) => ACTIVE_COUNTIES.has(String(ticket.county || "").toUpperCase())) : [];
 }
@@ -6211,16 +8099,8 @@ function ticketDueDayIsToday(ticket) {
   return Boolean(due && due.getTime() === today.getTime());
 }
 
-function tcwTicketNeedsReview(ticket) {
-  return ticketIsTcwDmiWork(ticket) && ticketDueDayIsToday(ticket) && !tcwClearedTickets.has(ticket.ticket_number);
-}
-
 function dashboardModeTickets() {
-  const base = baseScopedTickets();
-  if (dashboardTicketMode === "tcw") {
-    return base.filter((ticket) => ticketIsTcwDmiWork(ticket) && !ticketDueDayIsPast(ticket) && !tcwClearedTickets.has(ticket.ticket_number));
-  }
-  return base.filter((ticket) => !ticketIsTcwDmiWork(ticket));
+  return baseScopedTickets();
 }
 
 function historicalRecordIsTcwDmiWork(record) {
@@ -6283,6 +8163,9 @@ function priorityLegendItems() {
   const nextDay = nextWorkingDay(today);
   const dateText = (date) => date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return [
+    { className: "legend-low", label: "Admin priority: Low" },
+    { className: "legend-medium", label: "Admin priority: Medium" },
+    { className: "legend-high", label: "Admin priority: High" },
     { className: "legend-emergency", label: "Emergency - immediate priority" },
     { className: "legend-remark", label: "Recall / second request - due within 24 hours" },
     { className: "legend-renewal", label: "Renewal request - excavator still working after 10 days" },
@@ -6321,9 +8204,10 @@ function showMapLegendTemporarily(duration = 3200) {
 
 function ticketPriorityClasses(ticket) {
   const classes = [];
+  const assignedPriority = ticketAssignedPriority(ticket.ticket_number);
+  if (assignedPriority) classes.push(`ticket-priority-${assignedPriority}`);
   if (ticketHasActions(ticket.ticket_number)) classes.push("ticket-actioned");
   if (ticketIsTcwDmiWork(ticket)) classes.push("ticket-tcw-dmi-work");
-  if (tcwTicketNeedsReview(ticket)) classes.push("ticket-tcw-review-needed");
   if (ticketIsEmergency(ticket)) classes.push("ticket-emergency-priority");
   if (ticketIsRemark(ticket)) classes.push("ticket-remark-priority");
   if (ticketIsRenewal(ticket)) classes.push("ticket-renewal-priority");
@@ -6333,6 +8217,16 @@ function ticketPriorityClasses(ticket) {
 }
 
 function ticketVisualColors(ticket) {
+  switch (ticketAssignedPriority(ticket.ticket_number)) {
+    case "low":
+      return { stroke: "#2f855a", fill: "#2f855a", fillOpacity: 0.2 };
+    case "medium":
+      return { stroke: "#2563eb", fill: "#2563eb", fillOpacity: 0.22 };
+    case "high":
+      return { stroke: "#d97706", fill: "#d97706", fillOpacity: 0.26 };
+    case "emergency":
+      return { stroke: "#dc2626", fill: "#dc2626", fillOpacity: 0.32 };
+  }
   if (ticketIsTcwDmiWork(ticket)) return { stroke: "#ff6a00", fill: "#ff6a00", fillOpacity: 0.26 };
   if (ticketIsEmergency(ticket)) return { stroke: "#ff0033", fill: "#ff0033", fillOpacity: 0.28 };
   if (ticketIsRemark(ticket)) return { stroke: "#a855f7", fill: "#a855f7", fillOpacity: 0.24 };
@@ -6403,9 +8297,11 @@ function setTicketsHidden(ticketNumbers, hidden) {
     if (hidden) {
       if (!hiddenTickets.has(ticketNumber)) {
         hiddenTickets.add(ticketNumber);
+        stampTicketVisibility(ticketNumber, "hidden");
         changed = true;
       }
     } else if (hiddenTickets.delete(ticketNumber)) {
+      stampTicketVisibility(ticketNumber, "hidden");
       changed = true;
     }
   }
@@ -6422,36 +8318,29 @@ function hideGroupTickets(ticketNumbers, hidden = true) {
   setTicketsHidden(ticketNumbers, hidden);
 }
 
-function clearTcwReviewTicket(ticketNumber) {
-  if (!ticketNumber) return;
-  tcwClearedTickets.add(String(ticketNumber));
-  writeJsonStorage(STORAGE_KEYS.tcwClearedTickets, [...tcwClearedTickets]);
-  auditEvent("tcw_ticket_review_cleared", { ticket: ticketNumber });
-  selectedTicket = null;
-  render();
-}
-
 function ticketCardHtml(ticket) {
   const hidden = hiddenTickets.has(ticket.ticket_number);
   const archived = archivedTickets.has(ticket.ticket_number);
   const priorityClasses = ticketPriorityClasses(ticket);
-  const tcwReadOnly = dashboardTicketMode === "tcw" && ticketIsTcwDmiWork(ticket);
+  const attachedLocatorNotes = locatorNotesForTicket(ticket);
+  const attachedLocationPhotos = locationPhotosForTicket(ticket);
   return `
     <div class="ticket-card ${priorityClasses} ${selectedTicket?.ticket_number === ticket.ticket_number ? "active" : ""} ${hidden ? "hidden-ticket" : ""} ${archived ? "archived-ticket" : ""}" data-ticket="${escapeHtml(ticket.ticket_number)}" role="button" tabindex="0">
       <div class="ticket-card-header">
         <span class="ticket-number">${escapeHtml(ticket.ticket_number)}</span>
         <span class="ticket-header-actions">
-          ${tcwReadOnly ? "" : `<button class="hide-ticket-button" type="button" data-hide-ticket="${escapeHtml(ticket.ticket_number)}" title="${hidden ? "Unhide ticket" : "Hide ticket"}" aria-label="${hidden ? "Unhide ticket" : "Hide ticket"}">
+          <button class="hide-ticket-button" type="button" data-hide-ticket="${escapeHtml(ticket.ticket_number)}" title="${hidden ? "Unhide ticket" : "Hide ticket"}" aria-label="${hidden ? "Unhide ticket" : "Hide ticket"}">
             ${hideIcon(hidden)}
-          </button>`}
+          </button>
           <span class="badge">${escapeHtml(ticket.county || "UNKNOWN")}</span>
         </span>
       </div>
       <div class="ticket-actions-row">
-        ${tcwTicketNeedsReview(ticket) ? '<span class="mini-status action-status">Due today - review reports</span>' : ""}
         ${hidden ? '<span class="mini-status hidden-status">Hidden</span>' : ""}
         ${archived ? '<span class="mini-status archived-status">Archived</span>' : ""}
         ${ticketActionLabels(ticket.ticket_number).map((label) => `<span class="mini-status action-status">${escapeHtml(label)}</span>`).join("")}
+        ${attachedLocatorNotes.length ? '<span class="mini-status action-status">Locator note attached</span>' : ""}
+        ${attachedLocationPhotos.length ? '<span class="mini-status action-status">Previous photos nearby</span>' : ""}
         ${ticket.portal_html_available ? `<a class="mini-link" href="/api/portal-html?ticket=${encodeURIComponent(ticket.ticket_number)}" target="_blank" rel="noreferrer">Open page</a>` : ""}
         ${ticket.portal_url && !ticket.portal_html_available ? `<a class="mini-link" href="${escapeHtml(ticket.portal_url)}" target="_blank" rel="noreferrer">Open GeoCall</a>` : ""}
         ${ticket.polygon ? '<span class="mini-status">Polygon</span>' : ""}
@@ -6509,7 +8398,6 @@ async function runMapSearch() {
 }
 
 function groupActionButtonHtml(items = []) {
-  if (dashboardTicketMode === "tcw") return "";
   const activeItems = items.filter((ticket) => !archivedTickets.has(ticket.ticket_number));
   const hiddenCount = activeItems.filter((ticket) => hiddenTickets.has(ticket.ticket_number)).length;
   const shouldHide = hiddenCount < activeItems.length;
@@ -6807,6 +8695,7 @@ function renderMap(list = []) {
     initialTicketBoundsApplied = true;
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
   }
+  refreshMap3dLayers();
 }
 
 function ticketPopupContent(ticket) {
@@ -7340,6 +9229,8 @@ function renderMobileTicketDetail() {
   const actionLabels = ticketActionLabels(ticket.ticket_number);
   const completed = ticketIsActionHidden(ticket);
   const backLabel = mobilePanel === "map" ? "Map" : "Tickets";
+  const attachedLocatorNotes = locatorNotesForTicket(ticket);
+  const attachedLocationPhotos = locationPhotosForTicket(ticket);
   if (!Array.isArray(attachmentCache[ticket.ticket_number])) {
     void loadTicketAttachments(ticket.ticket_number).then(() => {
       if (currentView === "mobile" && selectedTicket?.ticket_number === ticket.ticket_number) renderMobileTicketDetail();
@@ -7406,10 +9297,14 @@ function renderMobileTicketDetail() {
         </label>
       </section>
 
+      ${attachedLocatorNotes.length ? `<section><h4>Locator notes attached</h4>${locatorNoteSummaryHtml(attachedLocatorNotes)}</section>` : ""}
+      ${attachedLocationPhotos.length ? `<section><h4>Previous location photos</h4>${locationPhotoSummaryHtml(attachedLocationPhotos)}</section>` : ""}
+      ${photoHistoryButtonHtml(ticket, attachedLocationPhotos)}
+
       <section>
         <h4>Photos & videos</h4>
         <form class="mobile-upload-form" data-mobile-upload="${escapeHtml(ticket.ticket_number)}">
-          <input type="file" name="files" multiple accept="image/*,video/*" capture="environment">
+          <input type="file" name="files" multiple accept="image/*,video/*,.jpg,.jpeg,.png,.heic,.heif,.mp4,.mov">
           <textarea name="note" rows="2" placeholder="Optional upload note"></textarea>
           <button type="submit">Upload to ticket</button>
         </form>
@@ -7486,6 +9381,9 @@ function bindMobileDetailControls() {
   if (prevButton) prevButton.addEventListener("click", () => selectMobileTicketByOffset(-1));
   const nextButton = elements.mobileTicketDetail.querySelector("[data-mobile-next-ticket]");
   if (nextButton) nextButton.addEventListener("click", () => selectMobileTicketByOffset(1));
+  for (const button of elements.mobileTicketDetail.querySelectorAll("[data-photo-history-ticket]")) {
+    button.addEventListener("click", () => openPhotoHistoryForTicket(button.dataset.photoHistoryTicket || ""));
+  }
   for (const form of elements.mobileTicketDetail.querySelectorAll("[data-mobile-upload]")) {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -7652,7 +9550,6 @@ function renderDetail() {
       "ticket-remark-priority",
       "ticket-renewal-priority",
       "ticket-tcw-dmi-work",
-      "ticket-tcw-review-needed",
       "ticket-due-today",
       "ticket-due-next",
       "ticket-due-later",
@@ -7664,33 +9561,28 @@ function renderDetail() {
 
   const ticket = selectedTicket;
   const priorityClasses = ticketPriorityClasses(ticket);
-  const tcwReadOnly = dashboardTicketMode === "tcw" && ticketIsTcwDmiWork(ticket);
+  const attachedLocatorNotes = locatorNotesForTicket(ticket);
+  const attachedLocationPhotos = locationPhotosForTicket(ticket);
   elements.detail.hidden = false;
   elements.detail.classList.toggle("ticket-emergency-priority", ticketIsEmergency(ticket));
   elements.detail.classList.toggle("ticket-remark-priority", ticketIsRemark(ticket));
   elements.detail.classList.toggle("ticket-renewal-priority", ticketIsRenewal(ticket));
   elements.detail.classList.toggle("ticket-tcw-dmi-work", ticketIsTcwDmiWork(ticket));
-  elements.detail.classList.toggle("ticket-tcw-review-needed", tcwTicketNeedsReview(ticket));
   elements.detail.classList.toggle("ticket-due-today", ticketDueStatus(ticket) === "due-today");
   elements.detail.classList.toggle("ticket-due-next", ticketDueStatus(ticket) === "due-next");
   elements.detail.classList.toggle("ticket-due-later", ticketDueStatus(ticket) === "due-later");
   elements.detail.classList.toggle("ticket-actioned", ticketHasActions(ticket.ticket_number));
-  elements.detail.innerHTML = `
-    <div class="detail-content ${priorityClasses}">
-      <h2>${escapeHtml(ticket.ticket_number)}</h2>
-      <div class="badge">${escapeHtml(ticket.county)} · ${escapeHtml(ticket.message_type)}</div>
+	  elements.detail.innerHTML = `
+	    <div class="detail-content ${priorityClasses}">
+	      <div class="detail-head">
+	        <h2>${escapeHtml(ticket.ticket_number)}</h2>
+	        <button class="detail-close" type="button" data-close-ticket-detail aria-label="Close ticket detail" title="Close">x</button>
+	      </div>
+	      <div class="badge">${escapeHtml(ticket.county)} · ${escapeHtml(ticket.message_type)}</div>
       ${portalActions(ticket)}
 
-      <h3>${tcwReadOnly ? "TCW Review" : "Actions"}</h3>
-      ${tcwReadOnly ? `
-        <div class="tcw-review-box">
-          <p>Read-only TCW ticket. It stays here through the due date and does not use normal locate actions.</p>
-          ${ticketDueDayIsToday(ticket) ? `<p class="tcw-review-alert">Due today. Check the Arkansas One Call ticket page for outside utility reporting.</p>` : ""}
-          ${ticket.portal_html_available ? `<a class="action" href="/api/portal-html?ticket=${encodeURIComponent(ticket.ticket_number)}" target="_blank" rel="noreferrer">Open ticket page</a>` : ""}
-          ${ticket.portal_url ? `<a class="action" href="${escapeHtml(ticket.portal_url)}" target="_blank" rel="noreferrer">Open live GeoCall page</a>` : ""}
-          ${tcwTicketNeedsReview(ticket) ? `<button type="button" data-tcw-clear-ticket="${escapeHtml(ticket.ticket_number)}">Manual clear</button>` : ""}
-        </div>
-      ` : actionControlHtml(ticket.ticket_number, false, { deferred: true, includeDescription: true })}
+      <h3>Actions</h3>
+      ${actionControlHtml(ticket.ticket_number, false, { deferred: true, includeDescription: true })}
 
       <h3>Work Description</h3>
       <div class="description-box">${escapeHtml(workDescription(ticket))}</div>
@@ -7705,6 +9597,9 @@ function renderDetail() {
       ${field("Work Type", ticket.work_type)}
       ${field("Directional Boring", ticket.directional_boring)}
       ${field("White Paint", ticket.white_paint)}
+      ${attachedLocatorNotes.length ? `<h3>Locator Notes Attached</h3>${locatorNoteSummaryHtml(attachedLocatorNotes)}` : ""}
+      ${attachedLocationPhotos.length ? `<h3>Previous Location Photos</h3>${locationPhotoSummaryHtml(attachedLocationPhotos)}` : ""}
+      ${photoHistoryButtonHtml(ticket, attachedLocationPhotos)}
 
       <h3>Schedule</h3>
       ${field("Prepared", `${ticket.prepared_date} ${ticket.prepared_time}`)}
@@ -7724,13 +9619,13 @@ function renderDetail() {
       <div class="raw">${linkifyContactText(ticket.raw_text)}</div>
     </div>
   `;
-  if (!tcwReadOnly) {
-    bindTicketActionControls(elements.detail);
-    bindTicketDescriptionControls(elements.detail);
-  }
-  for (const button of elements.detail.querySelectorAll("[data-tcw-clear-ticket]")) {
-    button.addEventListener("click", () => clearTcwReviewTicket(button.dataset.tcwClearTicket));
-  }
+	  bindTicketActionControls(elements.detail);
+	  bindTicketDescriptionControls(elements.detail);
+	  const closeButton = elements.detail.querySelector("[data-close-ticket-detail]");
+	  if (closeButton) closeButton.addEventListener("click", clearSelectedTicket);
+    for (const button of elements.detail.querySelectorAll("[data-photo-history-ticket]")) {
+      button.addEventListener("click", () => openPhotoHistoryForTicket(button.dataset.photoHistoryTicket || ""));
+    }
 }
 
 function selectTicket(ticketNumber, options = {}) {
@@ -7768,8 +9663,7 @@ function render() {
   const matching = matchingTickets();
   const list = visibleTickets();
   if (elements.sourcePath) {
-    const modeLabel = dashboardTicketMode === "tcw" ? "One-Calls Done For TCW" : "Fiber Locator";
-    elements.sourcePath.textContent = elements.sourcePath.textContent.replace(/^(TCW Dashboard|One-Calls Done For TCW|Fiber Locator):/, `${modeLabel}:`);
+    elements.sourcePath.textContent = elements.sourcePath.textContent.replace(/^(TCW Dashboard|One-Calls Done For TCW|Fiber Locator):/, "Fiber Locator:");
   }
   if (selectedTicket && !matching.some((ticket) => ticket.ticket_number === selectedTicket.ticket_number)) {
     selectedTicket = null;
@@ -7801,7 +9695,7 @@ async function loadTickets() {
   const polygonStatus = scopedMissingPolygonCount
     ? `${scopedPolygonCount} polygon(s) loaded, ${scopedMissingPolygonCount} waiting on GeoCall cache`
     : `${scopedPolygonCount} polygon(s) loaded`;
-  const modeLabel = dashboardTicketMode === "tcw" ? "One-Calls Done For TCW" : "Fiber Locator";
+  const modeLabel = "Fiber Locator";
   elements.sourcePath.textContent = `${modeLabel}: reading ${activeDashboardTickets.length} dashboard ticket(s) from ${payload.inbox_dir || payload.downloads_dir} - ${polygonStatus}`;
   if (pendingSelectedTicketNumber) {
     selectedTicket = tickets.find((ticket) => ticket.ticket_number === pendingSelectedTicketNumber) || null;
@@ -7851,8 +9745,14 @@ if (elements.liveTicketsSearch) {
 elements.undoAction.addEventListener("click", undoLastChange);
 elements.redoAction.addEventListener("click", redoLastChange);
 elements.showSheetView.addEventListener("click", () => setCurrentView("sheet"));
+if (elements.showRestorationView) elements.showRestorationView.addEventListener("click", () => setCurrentView("restoration"));
+if (elements.showInHouseRequestsView) elements.showInHouseRequestsView.addEventListener("click", () => setCurrentView("in-house-requests"));
+if (elements.showLocationPhotosView) elements.showLocationPhotosView.addEventListener("click", () => {
+  setCurrentView("location-photos");
+  closeMoreMenu();
+  window.scrollTo({ top: 0, left: 0 });
+});
 if (elements.showLiveTicketsView) elements.showLiveTicketsView.addEventListener("click", () => setCurrentView("live-tickets"));
-if (elements.showTcwDashboardView) elements.showTcwDashboardView.addEventListener("click", () => setDashboardTicketMode(dashboardTicketMode === "tcw" ? "main" : "tcw"));
 if (elements.showMobileView) elements.showMobileView.addEventListener("click", () => setCurrentView("mobile"));
 elements.showDashboardView.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.showMobileAdminView) elements.showMobileAdminView.addEventListener("click", () => setCurrentView("admin-console"));
@@ -7868,6 +9768,67 @@ if (elements.downloadActivityCsv) elements.downloadActivityCsv.addEventListener(
 if (elements.downloadActivityExcel) elements.downloadActivityExcel.addEventListener("click", () => downloadActivityLog("excel"));
 if (elements.downloadActivityJson) elements.downloadActivityJson.addEventListener("click", () => downloadActivityLog("json"));
 if (elements.activityBackToDashboard) elements.activityBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.restorationBackToDashboard) elements.restorationBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.inHouseBackToDashboard) elements.inHouseBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.newRestorationJob) elements.newRestorationJob.addEventListener("click", () => openRestorationForm({}));
+if (elements.restorationCancel) elements.restorationCancel.addEventListener("click", closeRestorationForm);
+if (elements.restorationForm) elements.restorationForm.addEventListener("submit", (event) => {
+  void saveRestorationJob(event).catch((error) => {
+    if (elements.restorationFormStatus) elements.restorationFormStatus.textContent = error.message || "Save failed.";
+    console.error(error);
+  });
+});
+if (elements.restorationSearch) elements.restorationSearch.addEventListener("input", () => {
+  restorationSearch = elements.restorationSearch.value;
+  renderRestorationView();
+});
+if (elements.restorationPriorityFilter) elements.restorationPriorityFilter.addEventListener("change", () => {
+  restorationPriorityFilter = elements.restorationPriorityFilter.value;
+  renderRestorationView();
+});
+if (elements.restorationStatusFilter) elements.restorationStatusFilter.addEventListener("change", () => {
+  restorationStatusFilter = elements.restorationStatusFilter.value;
+  renderRestorationView();
+});
+if (elements.inHouseForm) elements.inHouseForm.addEventListener("submit", (event) => {
+  void saveInHouseRequest(event).catch((error) => {
+    if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = error.message || "Save failed.";
+    console.error(error);
+  });
+});
+if (elements.inHouseNewRequest) elements.inHouseNewRequest.addEventListener("click", () => fillInHouseForm({}));
+if (elements.inHouseRefreshRequests) {
+  elements.inHouseRefreshRequests.addEventListener("click", () => {
+    void loadInHouseRequests().then(renderInHouseRequestsView).catch((error) => {
+      if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = error.message || "Unable to refresh requests.";
+      console.error(error);
+    });
+  });
+}
+if (elements.inHouseUseMapCenter) {
+  elements.inHouseUseMapCenter.addEventListener("click", () => {
+    ensureInHouseMap();
+    if (!inHouseMap) return;
+    const center = inHouseMap.getCenter();
+    setInHouseMapPoint(center.lat, center.lng, "Map center selected", { pan: false });
+  });
+}
+for (const input of [elements.inHouseLat, elements.inHouseLng]) {
+  if (input) input.addEventListener("input", syncInHouseMapFromCoordinates);
+}
+for (const input of [elements.inHouseAddress, elements.inHousePlace, elements.inHouseCounty]) {
+  if (input) input.addEventListener("input", () => scheduleInHouseMapSearch({ forceAddress: true }));
+}
+if (elements.locationPhotosBackToDashboard) elements.locationPhotosBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.refreshLocationPhotos) elements.refreshLocationPhotos.addEventListener("click", () => {
+  void loadLocationPhotos().then(renderLocationPhotosView).catch((error) => {
+    if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = error.message || "Unable to refresh location photos.";
+    console.error(error);
+  });
+});
+if (elements.exportLocationPhotosCsv) elements.exportLocationPhotosCsv.addEventListener("click", () => downloadLocationPhotos("csv"));
+if (elements.exportLocationPhotosZip) elements.exportLocationPhotosZip.addEventListener("click", () => downloadLocationPhotos("zip"));
+if (elements.locationPhotosForm) elements.locationPhotosForm.addEventListener("submit", uploadLocationPhotos);
 if (elements.mobileAdminBackToDashboard) elements.mobileAdminBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.publishMobileConfig) elements.publishMobileConfig.addEventListener("click", publishMobileConfig);
 if (elements.copyMobileAppLink) elements.copyMobileAppLink.addEventListener("click", () => copyText(mobileAppUrl(), "Mobile app link copied"));
@@ -7892,6 +9853,13 @@ if (elements.settingsFlyout) {
 }
 if (elements.refreshOneDriveStatus) elements.refreshOneDriveStatus.addEventListener("click", () => void refreshOneDriveStatus());
 if (elements.connectOneDrive) elements.connectOneDrive.addEventListener("click", () => void connectOneDrive());
+if (elements.openPhotoManager) elements.openPhotoManager.addEventListener("click", () => {
+  setCurrentView("location-photos");
+  hideSettingsPanel();
+});
+if (elements.downloadPhotoCsv) elements.downloadPhotoCsv.addEventListener("click", () => downloadLocationPhotos("csv"));
+if (elements.downloadPhotoZip) elements.downloadPhotoZip.addEventListener("click", () => downloadLocationPhotos("zip"));
+if (elements.savePhotoSettings) elements.savePhotoSettings.addEventListener("click", () => void savePhotoSettings());
 if (elements.deployAppUpdate) elements.deployAppUpdate.addEventListener("click", () => void deployAppUpdate());
 elements.sheetBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
 if (elements.liveTicketsBackToDashboard) elements.liveTicketsBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
@@ -7914,6 +9882,35 @@ if (elements.mobileFollowLocation) elements.mobileFollowLocation.addEventListene
 if (elements.mobileMapTickets) elements.mobileMapTickets.addEventListener("click", () => setMobilePanel("tickets"));
 if (elements.mobileMapFitAll) elements.mobileMapFitAll.addEventListener("click", fitMobileMapToTickets);
 if (elements.dashboardSatelliteToggle) elements.dashboardSatelliteToggle.addEventListener("click", () => void toggleDashboardSatellite().catch((error) => console.error(error)));
+if (elements.dashboard3dToggle) {
+  elements.dashboard3dToggle.addEventListener("click", () => {
+    void toggleMap3d().catch((error) => {
+      console.error(error);
+      window.alert(error.message || "3D map failed.");
+      disableMap3d();
+    });
+  });
+}
+if (elements.dashboard3dStyle) {
+  elements.dashboard3dStyle.addEventListener("click", () => {
+    setMap3dStyle(map3dStyle === "satellite" ? "standard" : "satellite");
+  });
+}
+if (elements.dashboard3dTiltUp) {
+  elements.dashboard3dTiltUp.addEventListener("click", () => {
+    if (map3d) map3d.easeTo({ pitch: Math.min(80, map3d.getPitch() + 10), duration: 250 });
+  });
+}
+if (elements.dashboard3dTiltDown) {
+  elements.dashboard3dTiltDown.addEventListener("click", () => {
+    if (map3d) map3d.easeTo({ pitch: Math.max(0, map3d.getPitch() - 10), duration: 250 });
+  });
+}
+if (elements.dashboard3dRotate) {
+  elements.dashboard3dRotate.addEventListener("click", () => {
+    if (map3d) map3d.easeTo({ bearing: map3d.getBearing() + 45, duration: 350 });
+  });
+}
 if (elements.mobileDeployAppUpdate) elements.mobileDeployAppUpdate.addEventListener("click", () => void deployAppUpdate());
 if (elements.mobileSaveEmployeeDashboard) {
   elements.mobileSaveEmployeeDashboard.addEventListener("click", async () => {
@@ -8097,8 +10094,13 @@ if (elements.vetroCaptureFile && elements.vetroCaptureText) {
   elements.vetroCaptureFile.addEventListener("change", async () => {
     const file = elements.vetroCaptureFile.files?.[0];
     if (!file) return;
-    elements.vetroCaptureText.value = await file.text();
-    if (elements.vetroCaptureStatus) elements.vetroCaptureStatus.textContent = `${file.name} loaded. Hit Save capture.`;
+    pendingVetroCaptureFile = file;
+    elements.vetroCaptureText.value = "";
+    if (elements.vetroCaptureStatus) elements.vetroCaptureStatus.textContent = `${file.name} selected (${file.size.toLocaleString()} bytes). Hit Save capture.`;
+  });
+  elements.vetroCaptureText.addEventListener("input", () => {
+    pendingVetroCaptureFile = null;
+    elements.vetroCaptureFile.value = "";
   });
 }
 if (elements.saveVetroCapture) {
@@ -8592,6 +10594,11 @@ elements.sidebarCollapse.addEventListener("click", () => {
 if (elements.ticketList) {
   elements.ticketList.addEventListener("scroll", applyTicketListScrolled, { passive: true });
 }
+if (elements.vetroDrawer) {
+  elements.vetroDrawer.addEventListener("toggle", () => {
+    if (elements.vetroDrawer.open) void ensureVetroControlsLoaded();
+  });
+}
 if (elements.legendToggle) {
   elements.legendToggle.addEventListener("click", () => showMapLegendTemporarily(3200));
 }
@@ -8633,9 +10640,11 @@ document.addEventListener("visibilitychange", () => {
 
 async function bootstrap() {
   unregisterWebAppServiceWorkers();
-  document.body.classList.toggle("tcw-dashboard-mode", dashboardTicketMode === "tcw");
+  dashboardTicketMode = "main";
+  localStorage.setItem("dashboardTicketMode", "main");
+  document.body.classList.remove("tcw-dashboard-mode");
   if (elements.showTcwDashboardView) {
-    elements.showTcwDashboardView.textContent = dashboardTicketMode === "tcw" ? "Main Dashboard" : "One-Calls Done For TCW";
+    elements.showTcwDashboardView.hidden = true;
   }
   closeDashboardLayerDrawers();
   await loadMapConfig();
@@ -8646,6 +10655,7 @@ async function bootstrap() {
   renderProfile();
   initMap();
   await loadLocatorNotes();
+  await loadLocationPhotos().catch((error) => console.warn("Unable to load location photos", error));
   applySidebarCollapsed();
   try {
     await loadTickets();
@@ -8655,6 +10665,12 @@ async function bootstrap() {
   }
   if (window.location.hash === "#sheet") {
     setCurrentView("sheet");
+  } else if (window.location.hash === "#restoration") {
+    setCurrentView("restoration");
+  } else if (window.location.hash === "#in-house-requests" || window.location.hash === "#inhouse") {
+    setCurrentView("in-house-requests");
+  } else if (window.location.hash === "#location-photos") {
+    setCurrentView("location-photos");
   } else if (window.location.hash === "#live-tickets") {
     setCurrentView("live-tickets");
   } else if (window.location.hash === "#admin-console" || window.location.hash === "#mobile-admin") {
@@ -8665,17 +10681,33 @@ async function bootstrap() {
   dashboardStateReady = true;
   updateHistoryButtons();
   scheduleDashboardStateSave();
-  await loadVetroControls().catch((error) => {
-    elements.vetroStatus.textContent = "Error";
-    console.error(error);
-  });
   if (elements.vetroToggle.checked) {
-    await setVetroVisible(true).catch((error) => {
-      elements.vetroStatus.textContent = "Error";
-      console.error(error);
+    scheduleIdleTask(() => {
+      void loadVetroControls().catch((error) => {
+        elements.vetroStatus.textContent = "Error";
+        console.error(error);
+      });
     });
+  } else if (elements.vetroStatus) {
+    elements.vetroStatus.textContent = "Off";
   }
   scheduleDashboardStateSave();
+}
+
+function scheduleIdleTask(callback, timeout = 1600) {
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(callback, { timeout });
+  } else {
+    window.setTimeout(callback, 0);
+  }
+}
+
+async function ensureVetroControlsLoaded() {
+  if (vetroLoaded) return;
+  await loadVetroControls().catch((error) => {
+      elements.vetroStatus.textContent = "Error";
+      console.error(error);
+  });
 }
 
 bootstrap().catch((error) => {

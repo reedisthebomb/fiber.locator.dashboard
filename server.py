@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import gzip
 import html
+import io
 import json
 import hashlib
 import mimetypes
@@ -14,6 +16,7 @@ import re
 import shlex
 import sys
 import subprocess
+import struct
 import xml.etree.ElementTree as ET
 import threading
 import secrets
@@ -28,6 +31,7 @@ from typing import Iterable
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+import zipfile
 from zoneinfo import ZoneInfo
 
 
@@ -67,6 +71,9 @@ AUTH_FILE: Path | None = None
 AUDIT_LOCK = threading.Lock()
 ATTACHMENT_LOCK = threading.Lock()
 LOCATOR_NOTES_LOCK = threading.Lock()
+LOCATION_PHOTOS_LOCK = threading.Lock()
+RESTORATION_JOBS_LOCK = threading.Lock()
+IN_HOUSE_REQUESTS_LOCK = threading.Lock()
 ONEDRIVE_AUTH_LOCK = threading.Lock()
 ONEDRIVE_PENDING_AUTH: dict[str, object] = {}
 VETRO_CACHE_LOCK = threading.Lock()
@@ -78,7 +85,12 @@ MICROSOFT_AUTH_BASE = "https://login.microsoftonline.com"
 ONEDRIVE_DEFAULT_SCOPE = "offline_access Files.ReadWrite User.Read"
 ONEDRIVE_DEFAULT_ROOT = "Fiber Locator Attachments"
 ONEDRIVE_MAX_ATTACHMENTS = 80
+RESTORATION_PRIORITIES = {"low", "medium", "high", "emergency"}
+RESTORATION_STATUSES = {"open", "scheduled", "in_progress", "submitted", "completed"}
+IN_HOUSE_REQUEST_PRIORITIES = {"low", "medium", "high", "emergency"}
+IN_HOUSE_REQUEST_STATUSES = {"open", "scheduled", "in_progress", "completed", "canceled"}
 LOCATOR_NOTE_MAX_ATTACHMENTS = 20
+LOCATION_PHOTO_MAX_ATTACHMENTS = 80
 DASHBOARD_TIME_ZONE = ZoneInfo(os.getenv("DASHBOARD_TIME_ZONE", "America/Chicago"))
 AUDIT_VIEW_USERS = {item.strip() for item in os.getenv("AUDIT_VIEW_USERS", "site_owner").split(",") if item.strip()}
 SHARED_DASHBOARD_WRITE_USERS = {
@@ -670,6 +682,261 @@ def locator_note_dir(data_dir: Path, note_id: str) -> Path:
     return locator_notes_root(data_dir) / "files" / safe_file_component(note_id, "note")
 
 
+def restoration_jobs_root(data_dir: Path) -> Path:
+    return data_dir / "restoration_jobs"
+
+
+def restoration_jobs_index_path(data_dir: Path) -> Path:
+    return restoration_jobs_root(data_dir) / "jobs.json"
+
+
+def restoration_attachment_dir(data_dir: Path, job_id: str) -> Path:
+    return restoration_jobs_root(data_dir) / "files" / safe_file_component(job_id, "restoration")
+
+
+def in_house_requests_root(data_dir: Path) -> Path:
+    return data_dir / "in_house_requests"
+
+
+def in_house_requests_index_path(data_dir: Path) -> Path:
+    return in_house_requests_root(data_dir) / "requests.json"
+
+
+def location_photos_root(data_dir: Path) -> Path:
+    return data_dir / "location_photos"
+
+
+def location_photos_index_path(data_dir: Path) -> Path:
+    return location_photos_root(data_dir) / "photos.json"
+
+
+def location_photo_files_root(data_dir: Path) -> Path:
+    return location_photos_root(data_dir) / "files"
+
+
+def location_photo_dir(data_dir: Path, photo_id: str) -> Path:
+    return location_photo_files_root(data_dir) / safe_file_component(photo_id, "photo")
+
+
+def load_location_photos(data_dir: Path) -> dict:
+    path = location_photos_index_path(data_dir)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"photos": []}
+    except Exception as exc:
+        print(f"Skipping location photos index {path}: {exc}")
+        return {"photos": []}
+    if not isinstance(payload, dict):
+        return {"photos": []}
+    if not isinstance(payload.get("photos"), list):
+        payload["photos"] = []
+    return payload
+
+
+def save_location_photos(data_dir: Path, payload: dict) -> None:
+    path = location_photos_index_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def load_restoration_jobs(data_dir: Path) -> dict:
+    path = restoration_jobs_index_path(data_dir)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"jobs": []}
+    except Exception as exc:
+        print(f"Skipping restoration jobs index {path}: {exc}")
+        return {"jobs": []}
+    if not isinstance(payload, dict):
+        return {"jobs": []}
+    if not isinstance(payload.get("jobs"), list):
+        payload["jobs"] = []
+    return payload
+
+
+def save_restoration_jobs(data_dir: Path, payload: dict) -> None:
+    path = restoration_jobs_index_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def load_in_house_requests(data_dir: Path) -> dict:
+    path = in_house_requests_index_path(data_dir)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"requests": []}
+    except Exception as exc:
+        print(f"Skipping in-house requests index {path}: {exc}")
+        return {"requests": []}
+    if not isinstance(payload, dict):
+        return {"requests": []}
+    if not isinstance(payload.get("requests"), list):
+        payload["requests"] = []
+    return payload
+
+
+def save_in_house_requests(data_dir: Path, payload: dict) -> None:
+    path = in_house_requests_index_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def restoration_job_id() -> str:
+    return f"RJ-{dashboard_now().strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(3).upper()}"
+
+
+def in_house_request_id() -> str:
+    return f"IHR-{dashboard_now().strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(3).upper()}"
+
+
+def clean_restoration_text(value: object, max_length: int = 2000) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    return text[:max_length]
+
+
+def optional_float(value: object) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def normalize_restoration_job(job: dict) -> dict:
+    if not isinstance(job, dict):
+        job = {}
+    job_id = str(job.get("id") or restoration_job_id())
+    status = str(job.get("status") or "open").lower()
+    priority = str(job.get("priority") or "medium").lower()
+    return {
+        "id": job_id,
+        "ticket": str(job.get("ticket") or "").strip(),
+        "source": str(job.get("source") or "manual").strip()[:40],
+        "title": clean_restoration_text(job.get("title"), 160) or "Restoration job",
+        "location": clean_restoration_text(job.get("location"), 240),
+        "entity": clean_restoration_text(job.get("entity"), 180),
+        "layer_id": str(job.get("layer_id") or ""),
+        "feature_id": str(job.get("feature_id") or ""),
+        "lat": optional_float(job.get("lat")),
+        "lng": optional_float(job.get("lng")),
+        "notes": clean_restoration_text(job.get("notes")),
+        "status": status if status in RESTORATION_STATUSES else "open",
+        "priority": priority if priority in RESTORATION_PRIORITIES else "medium",
+        "scheduled_for": clean_restoration_text(job.get("scheduled_for"), 80),
+        "assigned_to": clean_restoration_text(job.get("assigned_to"), 120),
+        "created_at": str(job.get("created_at") or dashboard_now_iso()),
+        "created_by": str(job.get("created_by") or ""),
+        "updated_at": str(job.get("updated_at") or ""),
+        "updated_by": str(job.get("updated_by") or ""),
+        "completed_at": str(job.get("completed_at") or ""),
+        "completed_by": str(job.get("completed_by") or ""),
+        "folder_url": str(job.get("folder_url") or ""),
+        "folder_name": str(job.get("folder_name") or job_id),
+        "attachments": job.get("attachments") if isinstance(job.get("attachments"), list) else [],
+    }
+
+
+def normalize_in_house_request(item: dict) -> dict:
+    if not isinstance(item, dict):
+        item = {}
+    request_id = str(item.get("id") or in_house_request_id())
+    status = str(item.get("status") or "open").lower()
+    priority = str(item.get("priority") or "medium").lower()
+    return {
+        "id": request_id,
+        "title": clean_restoration_text(item.get("title"), 160) or "In-house locate request",
+        "requestor": clean_restoration_text(item.get("requestor"), 120),
+        "contact_phone": clean_restoration_text(item.get("contact_phone"), 80),
+        "crew": clean_restoration_text(item.get("crew"), 120),
+        "project": clean_restoration_text(item.get("project"), 160),
+        "address": clean_restoration_text(item.get("address"), 220),
+        "county": clean_restoration_text(item.get("county"), 80).upper(),
+        "place": clean_restoration_text(item.get("place"), 120),
+        "lat": optional_float(item.get("lat")),
+        "lng": optional_float(item.get("lng")),
+        "scope": clean_restoration_text(item.get("scope")),
+        "utilities": clean_restoration_text(item.get("utilities"), 1000),
+        "notes": clean_restoration_text(item.get("notes")),
+        "priority": priority if priority in IN_HOUSE_REQUEST_PRIORITIES else "medium",
+        "status": status if status in IN_HOUSE_REQUEST_STATUSES else "open",
+        "due_at": clean_restoration_text(item.get("due_at"), 80),
+        "assigned_to": clean_restoration_text(item.get("assigned_to"), 120),
+        "created_at": str(item.get("created_at") or dashboard_now_iso()),
+        "created_by": str(item.get("created_by") or ""),
+        "updated_at": str(item.get("updated_at") or ""),
+        "updated_by": str(item.get("updated_by") or ""),
+        "completed_at": str(item.get("completed_at") or ""),
+        "completed_by": str(item.get("completed_by") or ""),
+    }
+
+
+def in_house_request_ticket(item: dict) -> dict:
+    request = normalize_in_house_request(item)
+    due_at = str(request.get("due_at") or "")
+    due_date = due_at[:10] if len(due_at) >= 10 else ""
+    due_time = due_at[11:16] if len(due_at) >= 16 else ""
+    county = request.get("county") or "UNION"
+    title = request.get("title") or "In-house locate request"
+    scope = request.get("scope") or request.get("notes") or ""
+    raw_lines = [
+        f"In-house locate request {request['id']}",
+        f"Priority: {request.get('priority', '')}",
+        f"Status: {request.get('status', '')}",
+        f"Requestor: {request.get('requestor', '')}",
+        f"Crew/Project: {request.get('crew', '')} {request.get('project', '')}".strip(),
+        f"Utilities: {request.get('utilities', '')}",
+        scope,
+    ]
+    return {
+        "ticket_number": request["id"],
+        "message_type": "IN-HOUSE LOCATE",
+        "prepared_date": request.get("created_at", "")[:10],
+        "prepared_time": request.get("created_at", "")[11:16],
+        "county": county,
+        "place": request.get("place") or "",
+        "street": "",
+        "address": request.get("address") or request.get("project") or title,
+        "nearest_intersection": "",
+        "work_begin_date": due_date,
+        "work_begin_time": due_time,
+        "caller": request.get("requestor") or request.get("created_by") or "",
+        "contractor": request.get("crew") or "In-house",
+        "company_phone": request.get("contact_phone") or "",
+        "contact": request.get("requestor") or "",
+        "contact_phone": request.get("contact_phone") or "",
+        "contact_email": "",
+        "location_information": scope,
+        "work_type": title,
+        "done_for": request.get("project") or "In-house locate request",
+        "extent": request.get("utilities") or "",
+        "explosives": "",
+        "white_paint": "",
+        "directional_boring": "",
+        "raw_text": "\n".join(line for line in raw_lines if line.strip()),
+        "utilities_notified": [part.strip() for part in re.split(r"[,;\n]+", request.get("utilities") or "") if part.strip()],
+        "latitude": request.get("lat"),
+        "longitude": request.get("lng"),
+        "polygon": None,
+        "portal_url": "",
+        "portal_html_available": False,
+        "source": "in_house_request",
+        "priority": request.get("priority") or "medium",
+        "request_status": request.get("status") or "open",
+    }
+
+
 def clean_locator_note_text(value: object, max_length: int = 2000) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     text = re.sub(r"\n{4,}", "\n\n\n", text)
@@ -734,6 +1001,192 @@ def public_locator_note(note: dict) -> dict:
         "created_at": str(note.get("created_at") or ""),
         "created_by": str(note.get("created_by") or ""),
         "attachments": attachments,
+    }
+
+
+def exif_rational(data: bytes, offset: int, endian: str, signed: bool = False) -> float | None:
+    try:
+        numerator, denominator = struct.unpack_from(endian + ("ii" if signed else "II"), data, offset)
+    except struct.error:
+        return None
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def exif_ascii(data: bytes, offset: int, count: int) -> str:
+    try:
+        return data[offset : offset + count].decode("ascii", errors="ignore").strip("\x00 ").upper()
+    except Exception:
+        return ""
+
+
+def exif_value(data: bytes, tiff_start: int, entry_offset: int, endian: str):
+    try:
+        tag, field_type, count, raw_value = struct.unpack_from(endian + "HHII", data, entry_offset)
+    except struct.error:
+        return None
+    type_sizes = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 9: 4, 10: 8}
+    size = type_sizes.get(field_type, 1) * count
+    value_offset = entry_offset + 8 if size <= 4 else tiff_start + raw_value
+    if value_offset < 0 or value_offset + size > len(data):
+        return None
+    if field_type == 2:
+        return exif_ascii(data, value_offset, count)
+    if field_type == 3:
+        values = struct.unpack_from(endian + "H" * count, data, value_offset)
+        return values[0] if count == 1 else values
+    if field_type == 4:
+        values = struct.unpack_from(endian + "I" * count, data, value_offset)
+        return values[0] if count == 1 else values
+    if field_type == 5:
+        values = [exif_rational(data, value_offset + (index * 8), endian) for index in range(count)]
+        return values[0] if count == 1 else values
+    return raw_value
+
+
+def exif_ifd_entries(data: bytes, tiff_start: int, ifd_offset: int, endian: str) -> dict[int, object]:
+    entries: dict[int, object] = {}
+    absolute = tiff_start + ifd_offset
+    if absolute < 0 or absolute + 2 > len(data):
+        return entries
+    try:
+        count = struct.unpack_from(endian + "H", data, absolute)[0]
+    except struct.error:
+        return entries
+    for index in range(count):
+        entry_offset = absolute + 2 + (index * 12)
+        if entry_offset + 12 > len(data):
+            break
+        try:
+            tag = struct.unpack_from(endian + "H", data, entry_offset)[0]
+        except struct.error:
+            continue
+        entries[tag] = exif_value(data, tiff_start, entry_offset, endian)
+    return entries
+
+
+def gps_decimal(values: object, ref: str) -> float | None:
+    if not isinstance(values, list) or len(values) < 3:
+        return None
+    parts = [float(value) for value in values[:3] if value is not None]
+    if len(parts) < 3:
+        return None
+    decimal = parts[0] + (parts[1] / 60.0) + (parts[2] / 3600.0)
+    if ref in {"S", "W"}:
+        decimal *= -1
+    return decimal
+
+
+def extract_jpeg_gps(file_body: bytes) -> tuple[float | None, float | None]:
+    if not file_body.startswith(b"\xff\xd8"):
+        return None, None
+    offset = 2
+    while offset + 4 <= len(file_body):
+        if file_body[offset] != 0xFF:
+            break
+        marker = file_body[offset + 1]
+        offset += 2
+        if marker in {0xD8, 0xD9}:
+            continue
+        try:
+            segment_length = struct.unpack_from(">H", file_body, offset)[0]
+        except struct.error:
+            break
+        segment_start = offset + 2
+        segment_end = offset + segment_length
+        segment = file_body[segment_start:segment_end]
+        if marker == 0xE1 and segment.startswith(b"Exif\x00\x00"):
+            tiff_start = 6
+            endian = "<" if segment[tiff_start:tiff_start + 2] == b"II" else ">"
+            try:
+                first_ifd = struct.unpack_from(endian + "I", segment, tiff_start + 4)[0]
+            except struct.error:
+                return None, None
+            zeroth = exif_ifd_entries(segment, tiff_start, first_ifd, endian)
+            gps_ifd = zeroth.get(0x8825)
+            if not isinstance(gps_ifd, int):
+                return None, None
+            gps = exif_ifd_entries(segment, tiff_start, gps_ifd, endian)
+            lat = gps_decimal(gps.get(0x0002), str(gps.get(0x0001) or "N"))
+            lng = gps_decimal(gps.get(0x0004), str(gps.get(0x0003) or "E"))
+            return lat, lng
+        offset = segment_end
+    return None, None
+
+
+def location_bucket_name(lat: float | None, lng: float | None) -> str:
+    if isinstance(lat, float) and isinstance(lng, float) and -90 <= lat <= 90 and -180 <= lng <= 180:
+        return safe_file_component(f"{lat:.6f}_{lng:.6f}", "location")
+    return "Unknown_Location"
+
+
+def photo_group_folder_name(ticket: str, location_label: str, lat: float | None, lng: float | None) -> str:
+    parts = []
+    if TICKET_RE.fullmatch(ticket):
+        parts.append(ticket)
+    if location_label:
+        parts.append(location_label[:80])
+    if not parts:
+        parts.append(location_bucket_name(lat, lng))
+    return safe_file_component(" - ".join(parts), "Unknown_Location")
+
+
+def photo_review_status(value: object) -> str:
+    clean = str(value or "").strip().lower().replace(" ", "_")
+    return clean if clean in {"new", "reviewed", "needs_review", "exported", "synced"} else "new"
+
+
+def public_location_photo(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    photo_id = safe_file_component(str(item.get("id") or ""), "")
+    return {
+        "id": photo_id,
+        "original_name": str(item.get("original_name") or ""),
+        "content_type": str(item.get("content_type") or "application/octet-stream"),
+        "size": int(item.get("size") or 0),
+        "lat": optional_float(item.get("lat")),
+        "lng": optional_float(item.get("lng")),
+        "coordinate_source": str(item.get("coordinate_source") or "unknown"),
+        "ticket": str(item.get("ticket") or ""),
+        "location_label": str(item.get("location_label") or ""),
+        "address": str(item.get("address") or ""),
+        "review_status": photo_review_status(item.get("review_status")),
+        "evidence_source": str(item.get("evidence_source") or "timestamp_camera"),
+        "note": str(item.get("note") or ""),
+        "uploaded_at": str(item.get("uploaded_at") or ""),
+        "uploaded_by": str(item.get("uploaded_by") or ""),
+        "stored_name": str(item.get("stored_name") or ""),
+        "url": str(item.get("url") or f"/api/location-photos/file?id={quote(photo_id)}"),
+        "folder_url": str(item.get("folder_url") or ""),
+        "folder_name": str(item.get("folder_name") or ""),
+    }
+
+
+def location_photo_summary(photos: list[dict]) -> dict:
+    by_ticket: dict[str, int] = {}
+    by_location: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    with_coordinates = 0
+    total_bytes = 0
+    for item in photos:
+        ticket = str(item.get("ticket") or "").strip() or "No ticket"
+        location = str(item.get("location_label") or item.get("folder_name") or "").strip() or "Unknown location"
+        status = photo_review_status(item.get("review_status"))
+        by_ticket[ticket] = by_ticket.get(ticket, 0) + 1
+        by_location[location] = by_location.get(location, 0) + 1
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if optional_float(item.get("lat")) is not None and optional_float(item.get("lng")) is not None:
+            with_coordinates += 1
+        total_bytes += int(item.get("size") or 0)
+    return {
+        "total": len(photos),
+        "withCoordinates": with_coordinates,
+        "totalBytes": total_bytes,
+        "byTicket": by_ticket,
+        "byLocation": by_location,
+        "statusCounts": status_counts,
     }
 
 
@@ -867,7 +1320,7 @@ def analyze_vetro_capture(content: str) -> dict:
                     url = token
                 index += 1
             parsed = urlparse(url)
-            if parsed.netloc == "app.vetro.io":
+            if parsed.netloc == "app.vetro.io" or parsed.netloc.endswith(".vetro.io"):
                 for key in ("cookie", "authorization"):
                     if headers.get(key):
                         fallback_headers.setdefault(key, headers[key])
@@ -1157,6 +1610,10 @@ def get_dashboard_user_state(username: str) -> dict:
 
 
 TICKET_WORKFLOW_KEYS = {
+    "hiddenTickets",
+    "archivedTickets",
+    "hiddenTicketUpdatedAt",
+    "archivedTicketUpdatedAt",
     "ticketActions",
     "ticketActionUpdatedAt",
     "ticketDescriptions",
@@ -1168,6 +1625,12 @@ def ticket_workflow_from_state(state: dict) -> dict:
     if not isinstance(state, dict):
         return {}
     workflow = {}
+    for list_key in ("hiddenTickets", "archivedTickets"):
+        if list_key in state and isinstance(state.get(list_key), list):
+            workflow[list_key] = [str(ticket_number) for ticket_number in state.get(list_key, []) if str(ticket_number or "").strip()]
+    for timestamp_key in ("hiddenTicketUpdatedAt", "archivedTicketUpdatedAt"):
+        if timestamp_key in state:
+            workflow[timestamp_key] = normalize_ticket_action_timestamps(state.get(timestamp_key))
     if "ticketActions" in state:
         workflow["ticketActions"] = normalize_ticket_actions_state(state.get("ticketActions"))
     if "ticketActionUpdatedAt" in state:
@@ -1191,6 +1654,12 @@ def ticket_workflow_from_state(state: dict) -> dict:
 
 def merge_ticket_workflow(existing: dict, incoming: dict) -> dict:
     merged = dict(existing if isinstance(existing, dict) else {})
+    hidden_tickets, hidden_timestamps = merge_ticket_visibility(merged, incoming if isinstance(incoming, dict) else {}, "hiddenTickets", "hiddenTicketUpdatedAt")
+    archived_tickets, archived_timestamps = merge_ticket_visibility(merged, incoming if isinstance(incoming, dict) else {}, "archivedTickets", "archivedTicketUpdatedAt")
+    merged["hiddenTickets"] = hidden_tickets
+    merged["hiddenTicketUpdatedAt"] = hidden_timestamps
+    merged["archivedTickets"] = archived_tickets
+    merged["archivedTicketUpdatedAt"] = archived_timestamps
     merged_actions, merged_timestamps = merge_ticket_actions(merged, incoming if isinstance(incoming, dict) else {})
     merged["ticketActions"] = merged_actions
     merged["ticketActionUpdatedAt"] = merged_timestamps
@@ -1245,6 +1714,8 @@ def get_effective_dashboard_state(username: str, role: str = "admin") -> dict:
         employee_writable_keys = {
             "hiddenTickets",
             "archivedTickets",
+            "hiddenTicketUpdatedAt",
+            "archivedTicketUpdatedAt",
             "ticketActions",
             "ticketActionUpdatedAt",
             "ticketDescriptions",
@@ -1270,6 +1741,8 @@ def filter_employee_user_state(state: dict) -> dict:
     employee_writable_keys = {
         "hiddenTickets",
         "archivedTickets",
+        "hiddenTicketUpdatedAt",
+        "archivedTicketUpdatedAt",
         "ticketActions",
         "ticketActionUpdatedAt",
         "ticketDescriptions",
@@ -1299,7 +1772,7 @@ def get_locator_default_state() -> dict:
         state = default_state.get("state", {})
         return {
             "enabled": bool(default_state.get("enabled", False)),
-            "state": state if isinstance(state, dict) else {},
+            "state": strip_vetro_view_filters(state),
             "saved_at": str(default_state.get("saved_at") or ""),
             "saved_by": str(default_state.get("saved_by") or ""),
         }
@@ -1316,7 +1789,7 @@ def get_employee_dashboard_state() -> dict:
         state = employee_state.get("state", {})
         return {
             "enabled": bool(employee_state.get("enabled", False)),
-            "state": state if isinstance(state, dict) else {},
+            "state": strip_vetro_view_filters(state),
             "saved_at": str(employee_state.get("saved_at") or ""),
             "saved_by": str(employee_state.get("saved_by") or ""),
         }
@@ -1328,15 +1801,6 @@ VIEW_PRESET_STATE_KEYS = {
     "countyFilterAll",
     "countyFilterSelected",
     "vetroVisible",
-    "vetroLayerFilterSelected",
-    "vetroPlanFilterSelected",
-    "vetroBuildFilterSelected",
-    "vetroPlacementFilterSelected",
-    "vetroStatusFilterSelected",
-    "vetroGeometryFilterSelected",
-    "vetroFiberFilterSelected",
-    "vetroRouteFilterSelected",
-    "vetroPointFilterSelected",
     "vetroLayerColorOverrides",
     "vetroLayerStyleOverrides",
     "vetroLayerNameOverrides",
@@ -1350,7 +1814,6 @@ VIEW_PRESET_STATE_KEYS = {
     "vetroSlOpacity",
     "vetroSlSize",
     "vetroSlLabels",
-    "vetroSearch",
     "vetroColor",
     "vetroOpacity",
     "polygonOpacity",
@@ -1361,11 +1824,32 @@ VIEW_PRESET_STATE_KEYS = {
     "mapView",
 }
 
+VETRO_VIEW_FILTER_KEYS = {
+    "vetroLayerFilterSelected",
+    "vetroPlanFilterSelected",
+    "vetroBuildFilterSelected",
+    "vetroPlacementFilterSelected",
+    "vetroStatusFilterSelected",
+    "vetroGeometryFilterSelected",
+    "vetroFiberFilterSelected",
+    "vetroRouteFilterSelected",
+    "vetroPointFilterSelected",
+    "vetroSearch",
+}
+
+VIEW_PRESET_STATE_KEYS.update(VETRO_VIEW_FILTER_KEYS)
+
 
 def normalize_view_state(state: dict) -> dict:
     if not isinstance(state, dict):
         return {}
     return {key: value for key, value in state.items() if key in VIEW_PRESET_STATE_KEYS}
+
+
+def strip_vetro_view_filters(state: dict) -> dict:
+    if not isinstance(state, dict):
+        return {}
+    return dict(state)
 
 
 def normalize_view_preset(item: dict) -> dict:
@@ -1404,7 +1888,7 @@ def get_view_presets() -> list[dict]:
                 presets.insert(0, {
                     "id": "current-default",
                     "name": "Current default",
-                    "state": state,
+                    "state": normalize_view_state(state),
                     "saved_at": str(default_state.get("saved_at") or ""),
                     "saved_by": str(default_state.get("saved_by") or ""),
                 })
@@ -1457,6 +1941,36 @@ def normalize_ticket_action_timestamps(value: object) -> dict:
     return normalized
 
 
+def normalize_ticket_visibility_list(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {str(ticket_number) for ticket_number in value if str(ticket_number or "").strip()}
+
+
+def merge_ticket_visibility(existing: dict, incoming: dict, list_key: str, timestamp_key: str) -> tuple[list[str], dict]:
+    existing_set = normalize_ticket_visibility_list(existing.get(list_key))
+    incoming_set = normalize_ticket_visibility_list(incoming.get(list_key))
+    existing_timestamps = normalize_ticket_action_timestamps(existing.get(timestamp_key))
+    incoming_timestamps = normalize_ticket_action_timestamps(incoming.get(timestamp_key))
+    merged_set = set(existing_set)
+    merged_timestamps = dict(existing_timestamps)
+    ticket_numbers = existing_set | incoming_set | set(existing_timestamps) | set(incoming_timestamps)
+    for ticket_number in ticket_numbers:
+        if ticket_number not in incoming_timestamps:
+            if ticket_number in incoming_set and ticket_number not in existing_set:
+                merged_set.add(ticket_number)
+            continue
+        incoming_time = incoming_timestamps.get(ticket_number, 0)
+        existing_time = existing_timestamps.get(ticket_number, 0)
+        if incoming_time >= existing_time:
+            if ticket_number in incoming_set:
+                merged_set.add(ticket_number)
+            else:
+                merged_set.discard(ticket_number)
+            merged_timestamps[ticket_number] = incoming_time
+    return sorted(merged_set), merged_timestamps
+
+
 def merge_ticket_actions(existing: dict, incoming: dict) -> tuple[dict, dict]:
     existing_actions = normalize_ticket_actions_state(existing.get("ticketActions"))
     incoming_actions = normalize_ticket_actions_state(incoming.get("ticketActions"))
@@ -1486,6 +2000,12 @@ def merge_ticket_actions(existing: dict, incoming: dict) -> tuple[dict, dict]:
 def merge_dashboard_user_state(existing: dict, incoming: dict) -> dict:
     merged = dict(existing)
     merged.update(incoming)
+    hidden_tickets, hidden_timestamps = merge_ticket_visibility(existing, incoming, "hiddenTickets", "hiddenTicketUpdatedAt")
+    archived_tickets, archived_timestamps = merge_ticket_visibility(existing, incoming, "archivedTickets", "archivedTicketUpdatedAt")
+    merged["hiddenTickets"] = hidden_tickets
+    merged["hiddenTicketUpdatedAt"] = hidden_timestamps
+    merged["archivedTickets"] = archived_tickets
+    merged["archivedTicketUpdatedAt"] = archived_timestamps
     merged_actions, merged_timestamps = merge_ticket_actions(existing, incoming)
     merged["ticketActions"] = merged_actions
     merged["ticketActionUpdatedAt"] = merged_timestamps
@@ -1531,6 +2051,7 @@ def set_locator_default_state(username: str, payload_update: dict) -> dict:
         state = payload_update.get("state", current.get("state", {}))
         if not isinstance(state, dict):
             state = {}
+        state = strip_vetro_view_filters(state)
         saved = {
             "enabled": enabled,
             "state": state,
@@ -1554,6 +2075,7 @@ def set_employee_dashboard_state(username: str, payload_update: dict) -> dict:
         state = payload_update.get("state", current.get("state", {}))
         if not isinstance(state, dict):
             state = {}
+        state = strip_vetro_view_filters(state)
         saved = {
             "enabled": enabled,
             "state": state,
@@ -1575,7 +2097,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
   <title>Fiber Locator Login</title>
   <link rel="icon" type="image/png" href="/favicon.ico?v=20260602201000">
   <link rel="shortcut icon" type="image/png" href="/favicon.ico?v=20260602201000">
-  <link rel="apple-touch-icon" href="/static/fiberlocatorfinal.png?v=20260602201000">
+  <link rel="apple-touch-icon" href="/static/finalapplocator.png?v=20260606120000">
   <style>
     body {{
       margin: 0;
@@ -1687,7 +2209,7 @@ def login_page_html(message: str = "", next_path: str = "/") -> str:
 </head>
 <body>
   <main class="login-shell">
-    <img class="login-wide-logo" src="/static/assets/eldorado.locator.wide.png?v=20260602201000" alt="Fiber Locator">
+    <img class="login-wide-logo" src="/static/assets/finallandscapelocator.png?v=20260606120000" alt="Fiber Locator">
     <form class="login" method="post" action="/login">
       <h1>Fiber Locator</h1>
       <p>Sign in to view tickets, Vetro layers, and refresh data.</p>
@@ -2636,6 +3158,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     layers_dir: Path
     auth_users: dict[str, dict[str, str]]
     state_file: Path | None
+    public_asset_paths = {
+        "/favicon.ico",
+        "/manifest.webmanifest",
+        "/static/service-worker.js",
+        "/static/fiberlocatorfinal.png",
+        "/static/fiberlocatorwhitebackgroud.png",
+        "/static/finalapplocator.png",
+        "/static/finallandscapelocator.png",
+        "/static/assets/eldorado.locator.wide.png",
+        "/static/assets/finallandscapelocator.png",
+        "/android-auto/app/build/outputs/apk/release/app-release.apk",
+        "/android-auto/app/build/outputs/bundle/release/app-release.aab",
+    }
 
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
@@ -2653,7 +3188,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path in {"/favicon.ico", "/manifest.webmanifest", "/static/service-worker.js", "/static/fiberlocatorfinal.png", "/static/fiberlocatorwhitebackgroud.png", "/static/assets/eldorado.locator.wide.png", "/android-auto/app/build/outputs/apk/release/app-release.apk"}:
+        if parsed.path in self.public_asset_paths:
             self.send_public_asset(parsed.path)
             return
         if parsed.path == "/privacy-policy":
@@ -2715,8 +3250,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             ticket_number = parse_qs(parsed.query).get("ticket", [""])[0]
             self.send_attachments(ticket_number)
             return
+        if parsed.path == "/api/restoration-jobs":
+            self.send_restoration_jobs()
+            return
+        if parsed.path == "/api/in-house-requests":
+            self.send_in_house_requests()
+            return
         if parsed.path == "/api/locator-notes":
             self.send_locator_notes()
+            return
+        if parsed.path == "/api/location-photos":
+            self.send_location_photos()
+            return
+        if parsed.path == "/api/location-photos/export.csv":
+            self.export_location_photos_csv()
+            return
+        if parsed.path == "/api/location-photos/export.zip":
+            self.export_location_photos_zip()
+            return
+        if parsed.path == "/api/location-photos/settings":
+            self.send_location_photo_settings()
             return
         if parsed.path == "/api/onedrive/status":
             self.send_onedrive_status()
@@ -2732,6 +3285,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             note_id = query.get("note", [""])[0]
             attachment_id = query.get("id", [""])[0]
             self.send_locator_note_file(note_id, attachment_id)
+            return
+        if parsed.path == "/api/location-photos/file":
+            photo_id = parse_qs(parsed.query).get("id", [""])[0]
+            self.send_location_photo_file(photo_id)
+            return
+        if parsed.path == "/api/restoration-jobs/file":
+            query = parse_qs(parsed.query)
+            self.send_restoration_attachment_file(query.get("job", [""])[0], query.get("id", [""])[0])
             return
         if parsed.path.startswith("/data/history/"):
             self.send_history_file(parsed.path)
@@ -2820,8 +3381,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/attachments":
             self.upload_attachment()
             return
+        if parsed.path == "/api/restoration-jobs":
+            self.save_restoration_job()
+            return
+        if parsed.path == "/api/in-house-requests":
+            self.save_in_house_request()
+            return
+        if parsed.path == "/api/restoration-jobs/upload":
+            self.upload_restoration_attachment()
+            return
         if parsed.path == "/api/locator-notes":
             self.create_locator_note()
+            return
+        if parsed.path == "/api/location-photos":
+            self.upload_location_photos()
+            return
+        if parsed.path == "/api/location-photos/manage":
+            self.update_location_photo_metadata()
+            return
+        if parsed.path == "/api/location-photos/settings":
+            self.update_location_photo_settings()
             return
         if parsed.path == "/api/onedrive/device-code":
             self.start_onedrive_device_code()
@@ -3001,6 +3580,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 missing_polygon_count += 1
                 item["polygon_status"] = "missing_geocall_cache"
             item["attachment_summary"] = summarize_ticket_attachments(attachment_index, ticket.ticket_number)
+            tickets.append(item)
+        with IN_HOUSE_REQUESTS_LOCK:
+            request_payload = load_in_house_requests(self.data_dir)
+            in_house_requests = [
+                normalize_in_house_request(item)
+                for item in request_payload.get("requests", [])
+                if isinstance(item, dict)
+            ]
+        for request in in_house_requests:
+            if request.get("status") in {"completed", "canceled"}:
+                continue
+            item = in_house_request_ticket(request)
+            item["polygon_status"] = "in_house_request"
+            item["attachment_summary"] = {"count": 0, "folder_url": "", "folder_name": item["ticket_number"]}
             tickets.append(item)
         self.send_json({
             "tickets": tickets,
@@ -3400,12 +3993,393 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 items = []
         self.send_json({"ok": True, "ticket": ticket_number, "attachments": items})
 
+    def read_json_body(self) -> dict:
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        payload = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(payload) if payload else {}
+        except json.JSONDecodeError:
+            raise ValueError("Invalid JSON")
+        return data if isinstance(data, dict) else {}
+
+    def can_manage_restoration_jobs(self) -> bool:
+        if not self.auth_users:
+            return True
+        return self.current_user_role() == "admin" or self.current_username() in SHARED_DASHBOARD_WRITE_USERS
+
+    def send_restoration_jobs(self) -> None:
+        with RESTORATION_JOBS_LOCK:
+            payload = load_restoration_jobs(self.data_dir)
+            jobs = [normalize_restoration_job(item) for item in payload.get("jobs", []) if isinstance(item, dict)]
+        jobs.sort(key=lambda item: (str(item.get("scheduled_for") or "9999"), str(item.get("created_at") or "")), reverse=True)
+        self.send_json({
+            "ok": True,
+            "jobs": jobs,
+            "canManage": self.can_manage_restoration_jobs(),
+            "username": self.current_username() or "default",
+            "role": self.current_user_role(),
+        })
+
+    def send_in_house_requests(self) -> None:
+        with IN_HOUSE_REQUESTS_LOCK:
+            payload = load_in_house_requests(self.data_dir)
+            requests = [normalize_in_house_request(item) for item in payload.get("requests", []) if isinstance(item, dict)]
+        priority_order = {"emergency": 0, "high": 1, "medium": 2, "low": 3}
+        requests.sort(key=lambda item: (
+            priority_order.get(str(item.get("priority") or "medium"), 4),
+            str(item.get("due_at") or "9999"),
+            str(item.get("created_at") or ""),
+        ))
+        self.send_json({
+            "ok": True,
+            "requests": requests,
+            "canManage": self.can_manage_restoration_jobs(),
+            "username": self.current_username() or "default",
+            "role": self.current_user_role(),
+        })
+
+    def save_in_house_request(self) -> None:
+        try:
+            data = self.read_json_body()
+        except ValueError as exc:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
+            return
+        username = self.current_username() or "default"
+        request_id = str(data.get("id") or "").strip()
+        now = dashboard_now_iso()
+        with IN_HOUSE_REQUESTS_LOCK:
+            payload = load_in_house_requests(self.data_dir)
+            requests = [normalize_in_house_request(item) for item in payload.get("requests", []) if isinstance(item, dict)]
+            existing_index = next((index for index, item in enumerate(requests) if item.get("id") == request_id), -1)
+            existing = requests[existing_index] if existing_index >= 0 else {}
+            request_item = normalize_in_house_request({**existing, **data})
+            if existing:
+                request_item["created_at"] = existing.get("created_at") or request_item["created_at"]
+                request_item["created_by"] = existing.get("created_by") or username
+            else:
+                request_item["id"] = request_id or in_house_request_id()
+                request_item["created_at"] = now
+                request_item["created_by"] = username
+            if request_item["status"] == "completed":
+                request_item["completed_at"] = request_item.get("completed_at") or now
+                request_item["completed_by"] = request_item.get("completed_by") or username
+            request_item["updated_at"] = now
+            request_item["updated_by"] = username
+            if existing_index >= 0:
+                requests[existing_index] = request_item
+            else:
+                requests.append(request_item)
+            payload["requests"] = requests
+            save_in_house_requests(self.data_dir, payload)
+        self.audit_event("in_house_request_saved", {"id": request_item["id"], "status": request_item["status"], "priority": request_item["priority"]})
+        self.send_json({"ok": True, "request": request_item, "ticket": in_house_request_ticket(request_item)})
+
+    def save_restoration_job(self) -> None:
+        try:
+            data = self.read_json_body()
+        except ValueError as exc:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
+            return
+        username = self.current_username() or "default"
+        can_manage = self.can_manage_restoration_jobs()
+        job_id = str(data.get("id") or "").strip()
+        now = dashboard_now_iso()
+        with RESTORATION_JOBS_LOCK:
+            payload = load_restoration_jobs(self.data_dir)
+            jobs = [normalize_restoration_job(item) for item in payload.get("jobs", []) if isinstance(item, dict)]
+            existing_index = next((index for index, item in enumerate(jobs) if item.get("id") == job_id), -1)
+            existing = jobs[existing_index] if existing_index >= 0 else {}
+            if existing and not can_manage and str(existing.get("created_by") or "") != username:
+                # Employees may add work notes/photos/status to shared jobs, but not rewrite assignment controls.
+                pass
+            job = normalize_restoration_job({**existing, **data})
+            if existing:
+                job["created_at"] = existing.get("created_at") or job["created_at"]
+                job["created_by"] = existing.get("created_by") or username
+                job["attachments"] = existing.get("attachments") if isinstance(existing.get("attachments"), list) else []
+                job["folder_url"] = existing.get("folder_url") or job.get("folder_url", "")
+                job["folder_name"] = existing.get("folder_name") or job.get("folder_name", job["id"])
+            else:
+                job["id"] = job_id or restoration_job_id()
+                job["created_at"] = now
+                job["created_by"] = username
+                job["folder_name"] = job["ticket"] or job["id"]
+            if not can_manage:
+                job["priority"] = existing.get("priority") or "medium"
+                job["scheduled_for"] = existing.get("scheduled_for") or ""
+                job["assigned_to"] = existing.get("assigned_to") or ""
+            if not job["ticket"] and TICKET_RE.search(job["title"] + " " + job["location"] + " " + job["notes"]):
+                job["ticket"] = TICKET_RE.search(job["title"] + " " + job["location"] + " " + job["notes"]).group(0)
+            if data.get("complete") is True or job["status"] == "completed":
+                job["status"] = "completed"
+                job["completed_at"] = job.get("completed_at") or now
+                job["completed_by"] = job.get("completed_by") or username
+            job["updated_at"] = now
+            job["updated_by"] = username
+            if existing_index >= 0:
+                jobs[existing_index] = job
+            else:
+                jobs.append(job)
+            payload["jobs"] = jobs
+            save_restoration_jobs(self.data_dir, payload)
+        self.audit_event("restoration_job_saved", {"id": job["id"], "status": job["status"], "priority": job["priority"]})
+        self.send_json({"ok": True, "job": job, "canManage": can_manage})
+
+    def upload_restoration_attachment(self) -> None:
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.lower().startswith("multipart/form-data"):
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "multipart/form-data required"}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(content_length)
+        message = BytesParser(policy=policy.default).parsebytes(
+            f"Content-Type: {content_type}\nMIME-Version: 1.0\n\n".encode("utf-8") + body
+        )
+        fields: dict[str, str] = {}
+        file_parts = []
+        for part in message.iter_parts():
+            if part.get_content_disposition() != "form-data":
+                continue
+            name = part.get_param("name", header="content-disposition")
+            filename = part.get_filename()
+            if filename:
+                file_parts.append(part)
+            elif name:
+                try:
+                    fields[str(name)] = str(part.get_content() or "")
+                except Exception:
+                    fields[str(name)] = part.get_payload(decode=True).decode("utf-8", errors="replace")
+        job_id = str(fields.get("job_id") or "").strip()
+        status = str(fields.get("status") or "submitted").strip().lower()
+        note = clean_restoration_text(fields.get("note"), 1000)
+        if len(file_parts) > ONEDRIVE_MAX_ATTACHMENTS:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": f"Select {ONEDRIVE_MAX_ATTACHMENTS} attachments or fewer."}).encode("utf-8"))
+            return
+        username = self.current_username() or "default"
+        with RESTORATION_JOBS_LOCK:
+            payload = load_restoration_jobs(self.data_dir)
+            jobs = [normalize_restoration_job(item) for item in payload.get("jobs", []) if isinstance(item, dict)]
+            job_index = next((index for index, item in enumerate(jobs) if item.get("id") == job_id), -1)
+            if job_index < 0:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "message": "Restoration job not found"}).encode("utf-8"))
+                return
+            job = jobs[job_index]
+        folder_label = job.get("ticket") or job.get("id") or "restoration"
+        folder_name = safe_file_component(str(folder_label), "restoration")
+        saved_items = []
+        for part in file_parts:
+            original_name = safe_file_component(part.get_filename() or "", "")
+            if not original_name:
+                continue
+            attachment_id = f"{dashboard_now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
+            file_body = part.get_payload(decode=True) or b""
+            content_type = str(part.get_content_type() or mimetypes.guess_type(original_name)[0] or "application/octet-stream")
+            stored_name = f"{attachment_id}_{original_name}"
+            folder = restoration_attachment_dir(self.data_dir, job_id)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / stored_name).write_bytes(file_body)
+            saved_items.append({
+                "id": attachment_id,
+                "provider": "local",
+                "original_name": original_name,
+                "stored_name": stored_name,
+                "content_type": content_type,
+                "size": len(file_body),
+                "note": note,
+                "status": status if status in RESTORATION_STATUSES else "submitted",
+                "uploaded_at": dashboard_now_iso(),
+                "uploaded_by": username,
+                "url": f"/api/restoration-jobs/file?job={quote(job_id)}&id={quote(attachment_id)}",
+                "folder_url": "",
+                "folder_name": folder_name,
+                "drive_item_id": "",
+            })
+        with RESTORATION_JOBS_LOCK:
+            payload = load_restoration_jobs(self.data_dir)
+            jobs = [normalize_restoration_job(item) for item in payload.get("jobs", []) if isinstance(item, dict)]
+            job_index = next((index for index, item in enumerate(jobs) if item.get("id") == job_id), -1)
+            if job_index >= 0:
+                job = jobs[job_index]
+                job["attachments"] = [*(job.get("attachments") if isinstance(job.get("attachments"), list) else []), *saved_items]
+                job["folder_url"] = ""
+                job["folder_name"] = folder_name
+                if status in RESTORATION_STATUSES:
+                    job["status"] = status
+                if job["status"] == "completed":
+                    job["completed_at"] = job.get("completed_at") or dashboard_now_iso()
+                    job["completed_by"] = job.get("completed_by") or username
+                job["updated_at"] = dashboard_now_iso()
+                job["updated_by"] = username
+                jobs[job_index] = job
+                payload["jobs"] = jobs
+                save_restoration_jobs(self.data_dir, payload)
+        self.audit_event("restoration_photos_uploaded", {"id": job_id, "count": len(saved_items), "status": status})
+        self.send_json({"ok": True, "job": job, "attachments": saved_items})
+
+    def send_restoration_attachment_file(self, job_id: str, attachment_id: str) -> None:
+        job_id = safe_file_component(job_id, "")
+        attachment_id = safe_file_component(attachment_id, "")
+        if not job_id or not attachment_id:
+            self.send_error(400, "Valid job and attachment id required")
+            return
+        with RESTORATION_JOBS_LOCK:
+            payload = load_restoration_jobs(self.data_dir)
+            job = next((item for item in payload.get("jobs", []) if isinstance(item, dict) and item.get("id") == job_id), None)
+            attachments = job.get("attachments", []) if isinstance(job, dict) else []
+            item = next((entry for entry in attachments if isinstance(entry, dict) and entry.get("id") == attachment_id), None)
+        if not item:
+            self.send_error(404, "Restoration attachment not found")
+            return
+        filename = safe_file_component(str(item.get("stored_name") or ""), "")
+        path = restoration_attachment_dir(self.data_dir, job_id) / filename
+        try:
+            resolved_root = restoration_attachment_dir(self.data_dir, job_id).resolve()
+            resolved_path = path.resolve()
+        except OSError:
+            self.send_error(404, "Restoration attachment not found")
+            return
+        if resolved_root not in resolved_path.parents or not resolved_path.exists():
+            self.send_error(404, "Restoration attachment not found")
+            return
+        content_type = str(item.get("content_type") or mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream")
+        body = resolved_path.read_bytes()
+        disposition = "inline" if content_type.startswith(("image/", "video/")) else "attachment"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'{disposition}; filename="{safe_file_component(str(item.get("original_name") or filename))}"')
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_locator_notes(self) -> None:
         with LOCATOR_NOTES_LOCK:
             payload = load_locator_notes(self.data_dir)
             notes = [public_locator_note(item) for item in payload.get("notes", []) if isinstance(item, dict)]
         notes.sort(key=lambda item: str(item.get("created_at") or ""))
         self.send_json({"ok": True, "notes": notes})
+
+    def send_location_photos(self) -> None:
+        with LOCATION_PHOTOS_LOCK:
+            payload = load_location_photos(self.data_dir)
+            photos = [public_location_photo(item) for item in payload.get("photos", []) if isinstance(item, dict)]
+        photos.sort(key=lambda item: str(item.get("uploaded_at") or ""), reverse=True)
+        self.send_json({"ok": True, "photos": photos, "summary": location_photo_summary(photos)})
+
+    def send_location_photo_settings(self) -> None:
+        username = self.current_username()
+        can_manage = self.can_write_shared_dashboard(username)
+        if not can_manage:
+            self.shared_dashboard_write_denied(username, "location_photo_settings")
+            return
+        with LOCATION_PHOTOS_LOCK:
+            payload = load_location_photos(self.data_dir)
+            photos = [public_location_photo(item) for item in payload.get("photos", []) if isinstance(item, dict)]
+            settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+        self.send_json({
+            "ok": True,
+            "canManage": True,
+            "settings": {
+                "sourceApp": str(settings.get("sourceApp") or "Timestamp Camera"),
+                "defaultReviewStatus": photo_review_status(settings.get("defaultReviewStatus") or "new"),
+                "googleDriveMode": str(settings.get("googleDriveMode") or "export"),
+                "googleDriveFolder": str(settings.get("googleDriveFolder") or "Fiber Locator Photos"),
+                "updatedAt": str(settings.get("updatedAt") or ""),
+                "updatedBy": str(settings.get("updatedBy") or ""),
+            },
+            "summary": location_photo_summary(photos),
+        })
+
+    def update_location_photo_settings(self) -> None:
+        username = self.current_username()
+        if not username or not self.can_write_shared_dashboard(username):
+            self.shared_dashboard_write_denied(username, "location_photo_settings")
+            return
+        try:
+            data = self.read_json_body()
+        except ValueError as exc:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
+            return
+        settings = {
+            "sourceApp": clean_profile_text(data.get("sourceApp") or "Timestamp Camera", 80),
+            "defaultReviewStatus": photo_review_status(data.get("defaultReviewStatus") or "new"),
+            "googleDriveMode": clean_profile_text(data.get("googleDriveMode") or "export", 40),
+            "googleDriveFolder": clean_profile_text(data.get("googleDriveFolder") or "Fiber Locator Photos", 120),
+            "updatedAt": dashboard_now_iso(),
+            "updatedBy": username,
+        }
+        if settings["googleDriveMode"] not in {"export", "manual", "off"}:
+            settings["googleDriveMode"] = "export"
+        with LOCATION_PHOTOS_LOCK:
+            payload = load_location_photos(self.data_dir)
+            payload["settings"] = settings
+            save_location_photos(self.data_dir, payload)
+        self.audit_event("location_photo_settings_saved", {"googleDriveMode": settings["googleDriveMode"]}, username=username)
+        self.send_json({"ok": True, "settings": settings})
+
+    def update_location_photo_metadata(self) -> None:
+        username = self.current_username()
+        if not username or not self.can_write_shared_dashboard(username):
+            self.shared_dashboard_write_denied(username, "location_photo_manage")
+            return
+        try:
+            data = self.read_json_body()
+        except ValueError as exc:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
+            return
+        photo_id = safe_file_component(str(data.get("id") or ""), "")
+        if not photo_id:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "Photo id required."}).encode("utf-8"))
+            return
+        with LOCATION_PHOTOS_LOCK:
+            payload = load_location_photos(self.data_dir)
+            photos = payload.get("photos", [])
+            item = next((entry for entry in photos if isinstance(entry, dict) and entry.get("id") == photo_id), None)
+            if not item:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "message": "Location photo not found."}).encode("utf-8"))
+                return
+            ticket = clean_profile_text(data.get("ticket"), 40)
+            if ticket and not TICKET_RE.fullmatch(ticket):
+                ticket = ""
+            item["ticket"] = ticket
+            item["location_label"] = clean_profile_text(data.get("locationLabel") or data.get("location_label"), 140)
+            item["address"] = clean_profile_text(data.get("address"), 220)
+            item["review_status"] = photo_review_status(data.get("reviewStatus") or data.get("review_status"))
+            item["note"] = clean_locator_note_text(data.get("note"), 1000)
+            item["updated_at"] = dashboard_now_iso()
+            item["updated_by"] = username
+            item["folder_name"] = photo_group_folder_name(ticket, item["location_label"], optional_float(item.get("lat")), optional_float(item.get("lng")))
+            save_location_photos(self.data_dir, payload)
+            public_item = public_location_photo(item)
+            public_photos = [public_location_photo(entry) for entry in photos if isinstance(entry, dict)]
+        self.audit_event("location_photo_metadata_saved", {"id": photo_id, "ticket": ticket, "review_status": item["review_status"]}, username=username)
+        self.send_json({"ok": True, "photo": public_item, "summary": location_photo_summary(public_photos)})
 
     def create_locator_note(self) -> None:
         content_type = self.headers.get("Content-Type", "")
@@ -3547,6 +4521,200 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Disposition", f'inline; filename="{safe_file_component(str(item.get("original_name") or filename))}"')
         self.end_headers()
         self.wfile.write(body)
+
+    def send_location_photo_file(self, photo_id: str) -> None:
+        photo_id = safe_file_component(photo_id, "")
+        if not photo_id:
+            self.send_error(400, "Valid photo id required")
+            return
+        with LOCATION_PHOTOS_LOCK:
+            payload = load_location_photos(self.data_dir)
+            item = next((entry for entry in payload.get("photos", []) if isinstance(entry, dict) and entry.get("id") == photo_id), None)
+        if not item:
+            self.send_error(404, "Location photo not found")
+            return
+        if item.get("provider") == "onedrive" and item.get("url"):
+            self.redirect(str(item.get("url")))
+            return
+        filename = safe_file_component(str(item.get("stored_name") or ""), "")
+        path = location_photo_dir(self.data_dir, photo_id) / filename
+        try:
+            resolved_root = location_photo_dir(self.data_dir, photo_id).resolve()
+            resolved_path = path.resolve()
+        except OSError:
+            self.send_error(404, "Location photo file not found")
+            return
+        if resolved_root not in resolved_path.parents or not resolved_path.exists():
+            self.send_error(404, "Location photo file not found")
+            return
+        content_type = str(item.get("content_type") or mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream")
+        body = resolved_path.read_bytes()
+        disposition = "inline" if content_type.startswith("image/") else "attachment"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'{disposition}; filename="{safe_file_component(str(item.get("original_name") or filename))}"')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def export_location_photos_csv(self) -> None:
+        username = self.current_username()
+        if not username or not self.can_write_shared_dashboard(username):
+            self.shared_dashboard_write_denied(username, "location_photo_export")
+            return
+        with LOCATION_PHOTOS_LOCK:
+            payload = load_location_photos(self.data_dir)
+            photos = [public_location_photo(item) for item in payload.get("photos", []) if isinstance(item, dict)]
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=[
+            "id", "ticket", "location_label", "address", "lat", "lng", "coordinate_source",
+            "review_status", "original_name", "size", "uploaded_at", "uploaded_by", "note", "url",
+        ])
+        writer.writeheader()
+        for item in photos:
+            writer.writerow({key: item.get(key, "") for key in writer.fieldnames})
+        body = output.getvalue().encode("utf-8")
+        self.audit_event("location_photo_csv_exported", {"count": len(photos)}, username=username)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", 'attachment; filename="fiber-location-photos.csv"')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def export_location_photos_zip(self) -> None:
+        username = self.current_username()
+        if not username or not self.can_write_shared_dashboard(username):
+            self.shared_dashboard_write_denied(username, "location_photo_export")
+            return
+        with LOCATION_PHOTOS_LOCK:
+            payload = load_location_photos(self.data_dir)
+            photos = [item for item in payload.get("photos", []) if isinstance(item, dict)]
+        archive = io.BytesIO()
+        manifest_rows = []
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            for item in photos:
+                public_item = public_location_photo(item)
+                folder = safe_file_component(public_item.get("folder_name") or public_item.get("ticket") or public_item.get("location_label") or "Unknown_Location", "Unknown_Location")
+                photo_id = safe_file_component(str(item.get("id") or ""), "")
+                stored_name = safe_file_component(str(item.get("stored_name") or ""), "")
+                source_path = location_photo_dir(self.data_dir, photo_id) / stored_name
+                original_name = safe_file_component(str(item.get("original_name") or stored_name or f"{photo_id}.jpg"), "photo")
+                if source_path.exists():
+                    zf.write(source_path, f"{folder}/{original_name}")
+                manifest_rows.append(public_item)
+            manifest = io.StringIO()
+            writer = csv.DictWriter(manifest, fieldnames=[
+                "id", "ticket", "location_label", "address", "lat", "lng", "coordinate_source",
+                "review_status", "original_name", "size", "uploaded_at", "uploaded_by", "note", "url",
+            ])
+            writer.writeheader()
+            for item in manifest_rows:
+                writer.writerow({key: item.get(key, "") for key in writer.fieldnames})
+            zf.writestr("manifest.csv", manifest.getvalue())
+        body = archive.getvalue()
+        self.audit_event("location_photo_zip_exported", {"count": len(photos)}, username=username)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", 'attachment; filename="fiber-location-photos.zip"')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def upload_location_photos(self) -> None:
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.lower().startswith("multipart/form-data"):
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "multipart/form-data required"}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(content_length)
+        message = BytesParser(policy=policy.default).parsebytes(
+            f"Content-Type: {content_type}\nMIME-Version: 1.0\n\n".encode("utf-8") + body
+        )
+        fields: dict[str, str] = {}
+        file_parts = []
+        for part in message.iter_parts():
+            if part.get_content_disposition() != "form-data":
+                continue
+            name = part.get_param("name", header="content-disposition")
+            filename = part.get_filename()
+            if filename:
+                file_parts.append(part)
+            elif name:
+                try:
+                    fields[str(name)] = str(part.get_content() or "")
+                except Exception:
+                    fields[str(name)] = part.get_payload(decode=True).decode("utf-8", errors="replace")
+        if len(file_parts) > LOCATION_PHOTO_MAX_ATTACHMENTS:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": f"Select {LOCATION_PHOTO_MAX_ATTACHMENTS} photos or fewer."}).encode("utf-8"))
+            return
+        manual_lat = optional_float(fields.get("lat"))
+        manual_lng = optional_float(fields.get("lng"))
+        ticket = clean_profile_text(fields.get("ticket"), 40)
+        if ticket and not TICKET_RE.fullmatch(ticket):
+            ticket = ""
+        location_label = clean_profile_text(fields.get("locationLabel") or fields.get("location_label"), 140)
+        address = clean_profile_text(fields.get("address"), 220)
+        review_status = photo_review_status(fields.get("reviewStatus") or fields.get("review_status") or "new")
+        note = clean_locator_note_text(fields.get("note"), 1000)
+        username = self.current_username() or "default"
+        saved_items = []
+        for part in file_parts:
+            original_name = safe_file_component(part.get_filename() or "", "")
+            if not original_name:
+                continue
+            file_body = part.get_payload(decode=True) or b""
+            exif_lat, exif_lng = extract_jpeg_gps(file_body)
+            lat = exif_lat if exif_lat is not None else manual_lat
+            lng = exif_lng if exif_lng is not None else manual_lng
+            source = "exif" if exif_lat is not None and exif_lng is not None else ("manual" if lat is not None and lng is not None else "unknown")
+            folder_name = photo_group_folder_name(ticket, location_label, lat, lng)
+            photo_id = f"{dashboard_now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
+            content_type = str(part.get_content_type() or mimetypes.guess_type(original_name)[0] or "application/octet-stream")
+            stored_name = f"{photo_id}_{original_name}"
+            photo_folder = location_photo_dir(self.data_dir, photo_id)
+            photo_folder.mkdir(parents=True, exist_ok=True)
+            (photo_folder / stored_name).write_bytes(file_body)
+            item = {
+                "id": photo_id,
+                "provider": "local",
+                "original_name": original_name,
+                "stored_name": stored_name,
+                "content_type": content_type,
+                "size": len(file_body),
+                "lat": lat,
+                "lng": lng,
+                "coordinate_source": source,
+                "ticket": ticket,
+                "location_label": location_label,
+                "address": address,
+                "review_status": review_status,
+                "evidence_source": "timestamp_camera",
+                "note": note,
+                "uploaded_at": dashboard_now_iso(),
+                "uploaded_by": username,
+                "url": f"/api/location-photos/file?id={quote(photo_id)}",
+                "folder_url": "",
+                "folder_name": folder_name,
+                "folder_id": "",
+            }
+            saved_items.append(item)
+        with LOCATION_PHOTOS_LOCK:
+            payload = load_location_photos(self.data_dir)
+            photos = payload.setdefault("photos", [])
+            if not isinstance(photos, list):
+                photos = []
+                payload["photos"] = photos
+            photos.extend(saved_items)
+            save_location_photos(self.data_dir, payload)
+        self.audit_event("location_photos_uploaded", {"count": len(saved_items), "with_coordinates": sum(1 for item in saved_items if item.get("lat") is not None and item.get("lng") is not None)})
+        self.send_json({"ok": True, "photos": [public_location_photo(item) for item in saved_items]})
 
     def send_onedrive_status(self) -> None:
         client_id = onedrive_client_id()
@@ -4066,11 +5234,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"ok": False, "message": "VETRO capture access denied"}).encode("utf-8"))
             return
         content_length = int(self.headers.get("Content-Length", "0") or "0")
-        if content_length <= 0 or content_length > 8_000_000:
+        max_capture_bytes = 50_000_000
+        if content_length <= 0 or content_length > max_capture_bytes:
             self.send_response(400)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
-            self.wfile.write(json.dumps({"ok": False, "message": "Capture must be between 1 byte and 8 MB"}).encode("utf-8"))
+            self.wfile.write(json.dumps({"ok": False, "message": "Capture must be between 1 byte and 50 MB"}).encode("utf-8"))
             return
         raw = self.rfile.read(content_length).decode("utf-8", errors="replace")
         try:
@@ -4187,16 +5356,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     }
                 )
             else:
+                auth_failed = refresh_mode == "capture" and "401" in stderr and "No features decoded" in stderr
                 VETRO_REFRESH_STATE.update(
                     {
                         "running": False,
                         "finished": dashboard_now_iso(),
                         "success": False,
-                        "message": "VETRO capture import failed" if refresh_mode == "capture" else "VETRO refresh failed",
+                        "message": (
+                            "VETRO login expired. Save a fresh VETRO tile capture with current cookies, then run Update VETRO again."
+                            if auth_failed else
+                            "VETRO capture import failed" if refresh_mode == "capture" else "VETRO refresh failed"
+                        ),
                         "exit_code": process.returncode,
                         "percent": 100,
-                        "auth_required": False,
-                        "vetro_login_url": "",
+                        "auth_required": auth_failed,
+                        "vetro_login_url": VETRO_LOGIN_URL if auth_failed else "",
                     }
                 )
         except Exception as exc:
@@ -4273,12 +5447,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_json(self, value: object) -> None:
-        body = json.dumps(value, indent=2).encode("utf-8")
+        body = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower()
+        response_body = gzip.compress(body, compresslevel=5) if accepts_gzip and len(body) > 1024 else body
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(response_body)))
+        if response_body is not body:
+            self.send_header("Content-Encoding", "gzip")
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(response_body)
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store, max-age=0")

@@ -1,0 +1,86 @@
+ONE DRIVE SETUP FOR FIBER LOCATOR
+=================================
+
+STEP 1 - CREATE MICROSOFT APP
+
+1. Open this website:
+   https://entra.microsoft.com
+
+2. Click Applications.
+
+3. Click App registrations.
+
+4. Click New registration.
+
+5. Name it:
+   Fiber Locator OneDrive
+
+6. Account type:
+   Personal Microsoft accounts only
+
+7. Redirect URI:
+   Leave blank.
+
+8. Click Register.
+
+9. Copy the Application client ID.
+
+
+STEP 2 - ADD PERMISSIONS
+
+1. In the app registration, click API permissions.
+
+2. Click Add a permission.
+
+3. Choose Microsoft Graph.
+
+4. Choose Delegated permissions.
+
+5. Add these permissions:
+   Files.ReadWrite
+   User.Read
+   offline_access
+
+6. Click Add permissions.
+
+
+STEP 3 - ADD CLIENT ID TO SERVER
+
+Run these commands:
+
+ssh root@5.78.214.184
+cd /opt/onecall-locator-dashboard
+nano .env
+
+Add these lines to the .env file:
+
+ONEDRIVE_GRAPH_CLIENT_ID=PASTE_CLIENT_ID_HERE
+ONEDRIVE_GRAPH_TENANT=consumers
+ONEDRIVE_ATTACHMENTS_ROOT=Fiber Locator Attachments
+ONEDRIVE_LINK_SCOPE=anonymous
+
+Save the file.
+
+Then restart the dashboard:
+
+systemctl restart onecall-dashboard
+systemctl is-active onecall-dashboard
+
+
+STEP 4 - CONNECT THE ONE DRIVE ACCOUNT
+
+After the client ID is added, the dashboard needs to start OneDrive device-code login.
+
+The backend already has the OneDrive device-code endpoints.
+If there is no visible Connect OneDrive button on the dashboard, ask Codex to add one to the admin page.
+
+The Microsoft device login page will be:
+https://microsoft.com/devicelogin
+
+You will enter the code shown by the dashboard, sign into the OneDrive account, and approve access.
+
+
+HOW TO CHANGE ONE DRIVE LATER
+
+To change the OneDrive account later, remove the saved OneDrive token cache on the server and run the device-code login again with the new account.
+Do not put the OneDrive password in files.

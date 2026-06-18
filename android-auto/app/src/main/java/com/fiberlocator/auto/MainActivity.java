@@ -3,17 +3,23 @@ package com.fiberlocator.auto;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PictureInPictureParams;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Base64;
+import android.util.Rational;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -29,6 +35,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.ValueCallback;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -38,8 +45,11 @@ import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
+import android.widget.ArrayAdapter;
+import android.widget.Spinner;
 import android.widget.TextView;
 
+import com.fiberlocator.auto.data.LocatorNote;
 import com.fiberlocator.auto.data.Ticket;
 import com.fiberlocator.auto.data.TicketRepository;
 import com.fiberlocator.auto.data.TicketRepository.DashboardSnapshot;
@@ -67,6 +77,7 @@ public class MainActivity extends Activity {
     private static final int PICK_ATTACHMENTS = 4107;
     private static final int LOCATION_PERMISSION_REQUEST = 4108;
     private static final int PICK_PROFILE_PHOTO = 4109;
+    private static final int PICK_WEB_FILE = 4110;
     private static final String SECURE_MAP_ORIGIN = "https://appassets.androidplatform.net/";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -76,6 +87,7 @@ public class MainActivity extends Activity {
     private LinearLayout root;
     private FrameLayout content;
     private LinearLayout chrome;
+    private LinearLayout nav;
     private ProgressBar progress;
     private TextView title;
     private TextView subtitle;
@@ -85,16 +97,36 @@ public class MainActivity extends Activity {
     private DashboardSnapshot snapshot;
     private Ticket activeTicket;
     private TextView attachmentStatus;
+    private TextView locatorNoteAttachmentStatus;
+    private ValueCallback<Uri[]> webFileCallback;
     private TextView profileStatus;
     private ImageView profilePhotoPreview;
     private String pendingProfileAvatarData = "";
     private String screen = "login";
     private String pendingScreen = "";
     private String activeTicketNumber = "";
+    private double pendingLocatorNoteLatitude = Double.NaN;
+    private double pendingLocatorNoteLongitude = Double.NaN;
+    private String pendingLocatorNoteTargetType = "map";
+    private String pendingLocatorNoteTargetLabel = "Map spot";
+    private String pendingLocatorNoteTargetId = "";
+    private String pendingLocatorNoteTicket = "";
+    private String pendingLocatorNoteLayerId = "";
+    private String pendingLocatorNoteFeatureId = "";
     private String pendingGeolocationOrigin = "";
     private GeolocationPermissions.Callback pendingGeolocationCallback;
+    private WebView activeMapWebView;
     private boolean refreshRunning = false;
     private boolean tcwDashboardMode = false;
+
+    private static final String[][] LOCATOR_NOTE_CATEGORIES = new String[][] {
+        {"instruction", "Instruction"},
+        {"layer_issue", "Layer issue"},
+        {"locate_issue", "Locate issue"},
+        {"needs_attention", "Needs attention"},
+        {"restoration", "Restoration"},
+        {"other", "Other note"}
+    };
 
     private final int bg = Color.rgb(15, 23, 42);
     private final int surface = Color.rgb(17, 24, 39);
@@ -104,6 +136,11 @@ public class MainActivity extends Activity {
     private final int accent = Color.rgb(56, 189, 248);
     private final int line = Color.rgb(51, 65, 85);
     private final int danger = Color.rgb(248, 113, 113);
+    private final int lightPanel = Color.rgb(248, 250, 252);
+    private final int lightControl = Color.WHITE;
+    private final int darkInk = Color.rgb(15, 23, 42);
+    private final int darkMuted = Color.rgb(71, 85, 105);
+    private final int lightLine = Color.rgb(203, 213, 225);
 
     private final Runnable periodicRefresh = new Runnable() {
         @Override
@@ -122,6 +159,9 @@ public class MainActivity extends Activity {
         if (bundle != null) {
             pendingScreen = bundle.getString("screen", "");
             activeTicketNumber = bundle.getString("ticket", "");
+        } else {
+            pendingScreen = AppSettings.lastScreen(this);
+            activeTicketNumber = AppSettings.lastTicket(this);
         }
         if (AppSettings.username(this).isEmpty() || AppSettings.password(this).isEmpty()) showLogin("");
         else showAppShell();
@@ -144,6 +184,18 @@ public class MainActivity extends Activity {
     protected void onPause() {
         handler.removeCallbacks(periodicRefresh);
         super.onPause();
+    }
+
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (shouldUseMapPictureInPicture()) enterMapPictureInPicture();
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        applyPictureInPictureChrome(isInPictureInPictureMode);
     }
 
     @Override
@@ -170,7 +222,9 @@ public class MainActivity extends Activity {
             showTickets();
         } else if ("complete".equals(screen)) {
             showTicketDetail(activeTicket);
-        } else if ("dig".equals(screen) || "profile".equals(screen)) {
+        } else if ("locator-note".equals(screen)) {
+            showMap(activeTicket);
+        } else if ("dig".equals(screen) || "restoration".equals(screen) || "in-house-requests".equals(screen) || "location-photos".equals(screen) || "profile".equals(screen)) {
             showTickets();
         } else if ("detail".equals(screen)) {
             showTickets();
@@ -200,6 +254,21 @@ public class MainActivity extends Activity {
             }
             return;
         }
+        if (requestCode == PICK_WEB_FILE) {
+            Uri[] results = null;
+            if (resultCode == RESULT_OK && data != null) {
+                if (data.getClipData() != null) {
+                    int count = data.getClipData().getItemCount();
+                    results = new Uri[count];
+                    for (int index = 0; index < count; index++) results[index] = data.getClipData().getItemAt(index).getUri();
+                } else if (data.getData() != null) {
+                    results = new Uri[] {data.getData()};
+                }
+            }
+            if (webFileCallback != null) webFileCallback.onReceiveValue(results);
+            webFileCallback = null;
+            return;
+        }
         if (requestCode != PICK_ATTACHMENTS || resultCode != RESULT_OK || data == null) return;
         if (data.getClipData() != null) {
             for (int index = 0; index < data.getClipData().getItemCount(); index++) {
@@ -209,6 +278,7 @@ public class MainActivity extends Activity {
             pendingAttachments.add(data.getData());
         }
         if (attachmentStatus != null) attachmentStatus.setText(pendingAttachments.size() + " photo/video attachment(s) selected");
+        if (locatorNoteAttachmentStatus != null) locatorNoteAttachmentStatus.setText(pendingAttachments.size() + " photo/video attachment(s) selected");
     }
 
     private void showLogin(String message) {
@@ -344,7 +414,9 @@ public class MainActivity extends Activity {
     }
 
     private void showAppShell() {
-        tcwDashboardMode = "tcw".equals(AppSettings.dashboardMode(this));
+        tcwDashboardMode = false;
+        AppSettings.saveDashboardMode(this, "main");
+        String startupScreen = pendingScreen;
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(bg);
@@ -367,7 +439,7 @@ public class MainActivity extends Activity {
         content = new FrameLayout(this);
         content.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        LinearLayout nav = new LinearLayout(this);
+        nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setPadding(dp(8), dp(6), dp(8), dp(8));
         nav.setBackgroundColor(surface);
@@ -389,12 +461,13 @@ public class MainActivity extends Activity {
         root.addView(content);
         setContentView(root);
         showTickets();
+        pendingScreen = startupScreen;
         refreshTickets(true);
     }
 
     private void setDashboardMode(boolean tcwMode) {
-        tcwDashboardMode = tcwMode;
-        AppSettings.saveDashboardMode(this, tcwMode ? "tcw" : "main");
+        tcwDashboardMode = false;
+        AppSettings.saveDashboardMode(this, "main");
         activeTicket = null;
         activeTicketNumber = "";
         if ("map".equals(screen)) showMap(null);
@@ -405,12 +478,8 @@ public class MainActivity extends Activity {
         if (snapshot == null) return new ArrayList<>();
         List<Ticket> out = new ArrayList<>();
         for (Ticket ticket : snapshot.tickets) {
-            boolean tcw = isTcwDmi(ticket);
-            if (tcwDashboardMode) {
-                if (tcw && !ticketDueDayIsPast(ticket)) out.add(ticket);
-            } else if (!tcw) {
-                out.add(ticket);
-            }
+            if (!ticketShouldShowOnDashboard(ticket)) continue;
+            out.add(ticket);
         }
         return out;
     }
@@ -439,15 +508,68 @@ public class MainActivity extends Activity {
         menuNav.setTypeface(null, selected == menuNav ? 1 : 0);
     }
 
+    private boolean canUsePictureInPicture() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            && getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+    }
+
+    private boolean shouldUseMapPictureInPicture() {
+        return canUsePictureInPicture()
+            && "map".equals(screen)
+            && activeMapWebView != null
+            && !isInPictureInPictureMode();
+    }
+
+    private PictureInPictureParams mapPictureInPictureParams() {
+        PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder()
+            .setAspectRatio(new Rational(16, 9));
+        if (activeMapWebView != null) {
+            Rect sourceRect = new Rect();
+            if (activeMapWebView.getGlobalVisibleRect(sourceRect)) {
+                builder.setSourceRectHint(sourceRect);
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled("map".equals(screen));
+            builder.setSeamlessResizeEnabled(true);
+        }
+        return builder.build();
+    }
+
+    private void updateMapPictureInPictureParams() {
+        if (!canUsePictureInPicture() || activeMapWebView == null) return;
+        setPictureInPictureParams(mapPictureInPictureParams());
+    }
+
+    private void enterMapPictureInPicture() {
+        if (!shouldUseMapPictureInPicture()) return;
+        enterPictureInPictureMode(mapPictureInPictureParams());
+    }
+
+    private void applyPictureInPictureChrome(boolean inPictureInPicture) {
+        if (chrome != null) chrome.setVisibility(inPictureInPicture || "map".equals(screen) ? View.GONE : View.VISIBLE);
+        if (nav != null) nav.setVisibility(inPictureInPicture ? View.GONE : View.VISIBLE);
+        if (progress != null && inPictureInPicture) progress.setVisibility(View.GONE);
+        if (activeMapWebView != null) {
+            activeMapWebView.evaluateJavascript(
+                "document.body&&document.body.classList.toggle('pip-mode'," + (inPictureInPicture ? "true" : "false") + ");",
+                null
+            );
+        }
+    }
+
     private void showTickets() {
         screen = "tickets";
         activeTicket = null;
         activeTicketNumber = "";
+        activeMapWebView = null;
         pendingScreen = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
         chrome.setVisibility(View.VISIBLE);
-        title.setText(tcwDashboardMode ? "One-Calls Done For TCW" : "Tickets");
+        if (nav != null) nav.setVisibility(View.VISIBLE);
+        title.setText("Tickets");
         List<Ticket> visible = visibleTickets();
-        subtitle.setText(snapshot == null ? "Loading live tickets" : visible.size() + (tcwDashboardMode ? " TCW ticket(s)" : " open tickets"));
+        subtitle.setText(snapshot == null ? "Loading live tickets" : visible.size() + " open tickets");
         selectNav(ticketsNav);
         renderTickets();
     }
@@ -461,7 +583,7 @@ public class MainActivity extends Activity {
         tools.setOrientation(LinearLayout.HORIZONTAL);
         tools.setGravity(Gravity.CENTER_VERTICAL);
         List<Ticket> visible = visibleTickets();
-        TextView count = text(snapshot == null ? "Loading app view" : visible.size() + (tcwDashboardMode ? " One-Calls Done For TCW" : " live tickets"), 15, ink, true);
+        TextView count = text(snapshot == null ? "Loading app view" : visible.size() + " live tickets", 15, ink, true);
         tools.addView(count, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         Button refresh = secondaryButton("Refresh");
         refresh.setOnClickListener(view -> {
@@ -476,7 +598,7 @@ public class MainActivity extends Activity {
         if (snapshot == null) {
             list.addView(emptyState("Loading from the cloud dashboard."));
         } else if (visible.isEmpty()) {
-            list.addView(emptyState(tcwDashboardMode ? "No One-Calls Done For TCW are due or pending review." : "No open tickets match the published mobile view."));
+            list.addView(emptyState("No open tickets match the published mobile view."));
         } else {
             for (Ticket ticket : visible) list.addView(ticketRow(ticket));
         }
@@ -512,8 +634,11 @@ public class MainActivity extends Activity {
         screen = "detail";
         activeTicket = ticket;
         activeTicketNumber = ticket.ticketNumber;
+        activeMapWebView = null;
         pendingScreen = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
         chrome.setVisibility(View.VISIBLE);
+        if (nav != null) nav.setVisibility(View.VISIBLE);
         title.setText(ticket.title());
         subtitle.setText(ticket.locationLine());
         selectNav(ticketsNav);
@@ -542,6 +667,10 @@ public class MainActivity extends Activity {
         field(page, "Driving directions", ticket.locationInformation);
         if (!ticket.utilitiesNotified.isEmpty()) field(page, "Utilities notified", join(ticket.utilitiesNotified.toArray(new String[0])));
         field(page, "Locator note", ticket.note);
+        List<LocatorNote> ticketNotes = locatorNotesForTicket(ticket);
+        if (!ticketNotes.isEmpty()) {
+            field(page, "Map locator notes", locatorNotesText(ticketNotes));
+        }
         field(page, "Raw ticket", ticket.rawText);
 
         Button navigate = primaryButton("Navigate with Google Maps");
@@ -550,13 +679,9 @@ public class MainActivity extends Activity {
         Button dashboard = secondaryButton("See on dashboard map");
         dashboard.setOnClickListener(view -> showMap(ticket));
         page.addView(dashboard, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        if (tcwDashboardMode && isTcwDmi(ticket)) {
-            page.addView(text("Read-only TCW ticket. It stays on this dashboard through the due date.", 14, muted, false));
-        } else {
-            Button complete = primaryButton("Complete ticket");
-            complete.setOnClickListener(view -> showCompletionForm(ticket));
-            page.addView(complete, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        }
+        Button complete = primaryButton("Complete ticket");
+        complete.setOnClickListener(view -> showCompletionForm(ticket));
+        page.addView(complete, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         content.addView(scroll);
     }
 
@@ -579,10 +704,12 @@ public class MainActivity extends Activity {
         activeTicket = focus;
         activeTicketNumber = focus == null ? "" : focus.ticketNumber;
         pendingScreen = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
         chrome.setVisibility(View.GONE);
         selectNav(mapNav);
         content.removeAllViews();
         WebView map = new WebView(this);
+        activeMapWebView = map;
         configureLocationWebView(map);
         map.setWebViewClient(new MapWebViewClient());
         String cookie = AppSettings.authCookie(this);
@@ -590,26 +717,37 @@ public class MainActivity extends Activity {
         map.addJavascriptInterface(new MapBridge(), "FiberLocator");
         map.loadDataWithBaseURL(webMapOrigin(), mapHtml(focus), "text/html", "UTF-8", null);
         content.addView(map, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        updateMapPictureInPictureParams();
     }
 
     private String mapHtml(Ticket focus) {
         String json = ticketsMapJson().toString();
+        String notesJson = locatorNotesMapJson().toString();
         String stateJson = snapshot == null ? "{}" : snapshot.state.toString();
         String focusNumber = focus == null ? "" : focus.ticketNumber;
+        String cameraJson = savedMapCameraJson();
         return "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             + "<link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\">"
-            + "<style>:root{--vetro-scale:1}html,body,#map{height:100%;margin:0;background:#eef2f5}.leaflet-container{font-family:sans-serif}.locate{position:fixed;z-index:1000;right:10px;top:10px;border:0;border-radius:8px;background:#0f172a;color:#f8fafc;padding:10px 12px;font:700 14px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)}.locate.active{background:#0369a1}.locate.error{background:#991b1b}.satellite-toggle{position:fixed;z-index:1000;left:10px;top:75%;transform:translateY(-50%);border:0;border-radius:9px;background:#0f172a;color:#f8fafc;padding:11px 12px;font:800 13px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.28)}.satellite-toggle.active{background:#166534}.measure{position:fixed;z-index:1000;left:10px;bottom:12px;display:flex;gap:8px;align-items:center;background:rgba(15,23,42,.84);color:#f8fafc;border-radius:10px;padding:8px;box-shadow:0 6px 18px rgba(15,23,42,.25)}.measure button{border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:9px 10px;font:700 13px sans-serif}.measure button.active{background:#15803d}.measure span{min-width:82px;font:700 13px sans-serif}.measure-dot{width:12px;height:12px;border-radius:50%;background:#facc15;border:2px solid #111827}.user-dot{width:18px;height:18px;border-radius:50%;background:#38bdf8;border:3px solid #fff;box-shadow:0 0 0 10px rgba(56,189,248,.22),0 2px 10px rgba(15,23,42,.35)}.mwrap{position:relative;width:var(--s);height:var(--s)}.m{position:absolute;left:0;top:0;width:100%;height:100%;background:var(--c);border:2px solid var(--b);opacity:calc(var(--vetro-scale) * var(--o))}.circle{border-radius:50%}.square{}.diamond{transform:rotate(45deg)}.pin{border-radius:50% 50% 50% 0;transform:rotate(-45deg)}.house{clip-path:polygon(50% 0,100% 42%,100% 100%,0 100%,0 42%)}</style></head>"
-            + "<body><div id=\"map\"></div><button id=\"locateMe\" class=\"locate\" type=\"button\">Location off</button><button id=\"satelliteToggle\" class=\"satellite-toggle\" type=\"button\">Satellite</button><div class=\"measure\"><button id=\"measureToggle\" type=\"button\">Measure</button><button id=\"measureClear\" type=\"button\">Clear</button><span id=\"measureStatus\">0 ft</span></div><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><script>"
-            + "const tickets=" + json + ";const state=" + stateJson + ";const focus=" + JSONObject.quote(focusNumber) + ";"
-            + "let vetroOpacityScale=1;let vetroLayers=[];let locationWatch=null;let userMarker=null;let accuracyCircle=null;let measuring=false;let measurePoints=[];let measureLayer=L.layerGroup();let baseLayer=null;let currentBaseKey='';"
+            + "<link rel=\"stylesheet\" href=\"https://api.mapbox.com/mapbox-gl-js/v3.24.0/mapbox-gl.css\">"
+            + "<style>:root{--vetro-scale:1}html,body,#map{height:100%;margin:0;background:#eef2f5}.leaflet-container{font-family:sans-serif}.pip-toggle{position:fixed;z-index:1002;left:10px;top:10px;width:44px;height:44px;border:0;border-radius:10px;background:#0f172a;color:#f8fafc;font:900 18px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)}.locate{position:fixed;z-index:1000;right:10px;top:10px;border:0;border-radius:8px;background:#0f172a;color:#f8fafc;padding:10px 12px;font:700 14px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)}.locate.active{background:#0369a1}.locate.error{background:#991b1b}.add-note{position:fixed;z-index:1000;right:10px;top:58px;border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:10px 12px;font:700 14px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)}.add-note.active{background:#15803d}.satellite-toggle{position:fixed;z-index:1000;left:10px;top:75%;transform:translateY(-50%);border:0;border-radius:9px;background:#0f172a;color:#f8fafc;padding:11px 12px;font:800 13px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.28)}.satellite-toggle.active{background:#166534}.measure{position:fixed;z-index:1000;left:10px;bottom:12px;display:flex;gap:8px;align-items:center;background:rgba(15,23,42,.84);color:#f8fafc;border-radius:10px;padding:8px;box-shadow:0 6px 18px rgba(15,23,42,.25)}body.pip-mode .measure{display:none}.measure button{border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:9px 10px;font:700 13px sans-serif}.measure button.active{background:#15803d}.measure span{min-width:82px;font:700 13px sans-serif}.measure-dot{width:12px;height:12px;border-radius:50%;background:#facc15;border:2px solid #111827}.note-flag{width:20px;height:20px;background:var(--c);opacity:var(--o,.42);border:2px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 2px 8px rgba(15,23,42,.42)}.note-popup strong{display:block;color:#0f172a}.note-popup small{display:block;color:#64748b;margin-top:2px}.note-popup p{white-space:pre-wrap;margin:.45rem 0 0;color:#0f172a}.user-dot{width:18px;height:18px;border-radius:50%;background:#38bdf8;border:3px solid #fff;box-shadow:0 0 0 10px rgba(56,189,248,.22),0 2px 10px rgba(15,23,42,.35)}.mwrap{position:relative;width:var(--s);height:var(--s)}.m{position:absolute;left:0;top:0;width:100%;height:100%;background:var(--c);border:2px solid var(--b);opacity:calc(var(--vetro-scale) * var(--o))}.circle{border-radius:50%}.square{}.diamond{transform:rotate(45deg)}.pin{border-radius:50% 50% 50% 0;transform:rotate(-45deg)}.house{clip-path:polygon(50% 0,100% 42%,100% 100%,0 100%,0 42%)}</style></head>"
+            + "<body><div id=\"map\"></div><div id=\"map3d\" style=\"position:fixed;inset:0;display:none;background:#111827;z-index:900\"></div><button id=\"pipToggle\" class=\"pip-toggle\" type=\"button\" title=\"Shrink map\">&#8600;&#8598;</button><button id=\"locateMe\" class=\"locate\" type=\"button\">Location off</button><button id=\"addNote\" class=\"add-note\" type=\"button\">Add note</button><button id=\"satelliteToggle\" class=\"satellite-toggle\" type=\"button\">Satellite</button><button id=\"toggle3d\" type=\"button\" style=\"position:fixed;z-index:1001;right:10px;top:106px;border:0;border-radius:8px;background:#0f172a;color:#f8fafc;padding:10px 12px;font:800 14px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)\">3D</button><button id=\"style3d\" type=\"button\" style=\"position:fixed;z-index:1001;right:10px;top:154px;display:none;border:0;border-radius:8px;background:#0f172a;color:#f8fafc;padding:10px 12px;font:800 13px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)\">Streets</button><div id=\"tiltTools\" style=\"position:fixed;z-index:1001;right:10px;top:202px;display:none;gap:7px;flex-direction:column\"><button id=\"tiltUp\" type=\"button\" style=\"border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:10px;font:800 13px sans-serif\">Tilt +</button><button id=\"tiltDown\" type=\"button\" style=\"border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:10px;font:800 13px sans-serif\">Tilt -</button><button id=\"rotate3d\" type=\"button\" style=\"border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:10px;font:800 13px sans-serif\">Rotate</button></div><div class=\"measure\"><button id=\"measureToggle\" type=\"button\">Measure</button><button id=\"measureClear\" type=\"button\">Clear</button><span id=\"measureStatus\">0 ft</span></div><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><script src=\"https://api.mapbox.com/mapbox-gl-js/v3.24.0/mapbox-gl.js\"></script><script>"
+            + "const tickets=" + json + ";const locatorNotes=" + notesJson + ";const state=" + stateJson + ";const focus=" + JSONObject.quote(focusNumber) + ";const savedCamera=" + cameraJson + ";"
+            + "let vetroOpacityScale=1;let vetroLayers=[];let locationWatch=null;let userMarker=null;let accuracyCircle=null;let measuring=false;let addingNote=false;let measurePoints=[];let measureLayer=L.layerGroup();let baseLayer=null;let currentBaseKey='';let map3d=null;let using3d=false;let saved3dLoaded=false;let map3dStyle=String(savedCamera.mode||'').includes('satellite')?'satellite':'standard';"
             + "const map=L.map('map',{zoomControl:false,preferCanvas:true}).setView([33.23,-92.67],12);"
+            + "function saveLeafletCamera(){try{const c=map.getCenter();FiberLocator.saveMapCamera(c.lat,c.lng,map.getZoom(),0,0,using3d?'3d':'leaflet');}catch(e){}}"
+            + "let cameraTimer=null;function scheduleCameraSave(){if(cameraTimer)clearTimeout(cameraTimer);cameraTimer=setTimeout(saveLeafletCamera,350);}"
+            + "map.on('moveend zoomend',scheduleCameraSave);"
             + "const TILE_STYLES={standard:{url:'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',subdomains:'abc',maxZoom:20},contrast:{url:'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',subdomains:'abcd',maxZoom:20},detailed:{url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',maxZoom:20},light:{url:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',subdomains:'abcd',maxZoom:20},dark:{url:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',subdomains:'abcd',maxZoom:20},terrain:{url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',subdomains:'abc',maxZoom:17},satellite:{url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',maxZoom:20},hybrid:{layers:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}','https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}','https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'],maxZoom:20},'mapbox-streets':{provider:'mapbox',styleId:'streets-v12'},'mapbox-outdoors':{provider:'mapbox',styleId:'outdoors-v12'},'mapbox-light':{provider:'mapbox',styleId:'light-v11'},'mapbox-dark':{provider:'mapbox',styleId:'dark-v11'},'mapbox-satellite':{provider:'mapbox',styleId:'satellite-v9'},'mapbox-satellite-streets':{provider:'mapbox',styleId:'satellite-streets-v12'},'mapbox-navigation-day':{provider:'mapbox',styleId:'navigation-day-v1'},'mapbox-navigation-night':{provider:'mapbox',styleId:'navigation-night-v1'}};"
             + "function savedBase(){const s=String(state.baseMapStyle||state.baseMap||state.mapStyle||'standard');return TILE_STYLES[s]?s:'standard';}"
             + "function back(l){try{if(l&&l.bringToBack)l.bringToBack();else if(l&&l.eachLayer)l.eachLayer(x=>x.bringToBack&&x.bringToBack());}catch(e){}}"
             + "async function setBase(key){const tile=TILE_STYLES[key]||TILE_STYLES.standard;try{let layer;if(tile.provider==='mapbox'){const r=await fetch('/api/map-config',{credentials:'include'});const c=r.ok?await r.json():{};const token=String(c.mapboxAccessToken||'');if(!token)throw new Error('missing mapbox token');layer=L.tileLayer(`https://api.mapbox.com/styles/v1/mapbox/${tile.styleId}/tiles/512/{z}/{x}/{y}?access_token=${encodeURIComponent(token)}`,{maxZoom:22,tileSize:512,zoomOffset:-1,attribution:''});}else if(Array.isArray(tile.layers)){layer=L.layerGroup(tile.layers.map(u=>L.tileLayer(u,{maxZoom:tile.maxZoom||20,attribution:''})));}else{layer=L.tileLayer(tile.url,{maxZoom:tile.maxZoom||20,subdomains:tile.subdomains||'abc',attribution:''});}if(baseLayer)map.removeLayer(baseLayer);layer.addTo(map);baseLayer=layer;currentBaseKey=key;document.getElementById('satelliteToggle').classList.toggle('active',key==='mapbox-satellite-streets');back(layer);}catch(e){if(key!=='standard')return setBase('standard');}}"
             + "setBase(savedBase());document.getElementById('satelliteToggle').addEventListener('click',()=>setBase(currentBaseKey==='mapbox-satellite-streets'?savedBase():'mapbox-satellite-streets'));"
+            + "document.getElementById('pipToggle').addEventListener('click',()=>{try{FiberLocator.enterPictureInPicture();}catch(e){}});"
             + "function prop(p,...n){p=p||{};for(const k of n){if(p[k]!=null&&p[k]!== '')return String(p[k]);}const l={};Object.keys(p).forEach(k=>l[k.toLowerCase()]=p[k]);for(const k of n){const v=l[k.toLowerCase()];if(v!=null&&v!=='')return String(v);}return '';}"
-            + "function vetroId(f){return prop(f.properties,'layer_id','Layer_ID');}"
+            + "function featureId(f){return prop(f.properties,'ID','feature_id','Name','name','vetro_id');}"
+            + "function isSlFeature(f){return prop(f.properties,'layer_id','Layer_ID')==='26'&&featureId(f).toUpperCase().startsWith('SL-');}"
+            + "function slLabel(f){return prop(f.properties,'ID','feature_id')||'SL';}"
+            + "function vetroId(f){return isSlFeature(f)?'prefix:SL':prop(f.properties,'layer_id','Layer_ID');}"
             + "function vitId(f){return prop(f.properties,'vitruvi_layer','vitruvi_layer_label','category_name','geojson_layer','Category','category')||'Vitruvi';}"
             + "function hex(v){return /^#[0-9a-f]{6}$/i.test(String(v||''));}"
             + "function color(kind,id,fallback){const o=(kind==='vetro'?state.vetroLayerColorOverrides:state.vitruviLayerColorOverrides)||{};return hex(o[String(id)])?o[String(id)]:fallback;}"
@@ -624,24 +762,77 @@ public class MainActivity extends Activity {
             + "function redrawMeasure(){measureLayer.clearLayers();let total=0;for(let i=0;i<measurePoints.length;i++){L.marker(measurePoints[i],{icon:L.divIcon({className:'',iconSize:[16,16],iconAnchor:[8,8],html:'<div class=\"measure-dot\"></div>'})}).addTo(measureLayer);if(i>0){total+=measurePoints[i-1].distanceTo(measurePoints[i]);}}if(measurePoints.length>1)L.polyline(measurePoints,{color:'#facc15',weight:4,opacity:.95}).addTo(measureLayer);document.getElementById('measureStatus').textContent=fmtMeasure(total);}"
             + "function addMeasurePoint(ll){measurePoints.push(ll);redrawMeasure();}"
             + "document.getElementById('measureToggle').addEventListener('click',()=>{measuring=!measuring;document.getElementById('measureToggle').classList.toggle('active',measuring);});"
-            + "document.getElementById('measureClear').addEventListener('click',()=>{measurePoints=[];redrawMeasure();});map.on('click',e=>{if(measuring)addMeasurePoint(e.latlng);});"
+            + "document.getElementById('measureClear').addEventListener('click',()=>{measurePoints=[];redrawMeasure();});"
+            + "function setAddingNote(v){addingNote=!!v;document.getElementById('addNote').classList.toggle('active',addingNote);document.getElementById('addNote').textContent=addingNote?'Tap map':'Add note';if(addingNote){measuring=false;document.getElementById('measureToggle').classList.remove('active');}}"
+            + "document.getElementById('addNote').addEventListener('click',()=>setAddingNote(!addingNote));"
+            + "function addMapNote(ll){setAddingNote(false);FiberLocator.addLocatorNoteForMap(ll.lat,ll.lng);}"
+            + "function addTicketNote(t,ll){setAddingNote(false);FiberLocator.addLocatorNoteForTicket(ll.lat,ll.lng,t.id);}"
+            + "function addFeatureNote(kind,f,ll){const p=f.properties||{};const lid=kind==='vetro'?vetroId(f):vitId(f);const fid=prop(p,'ID','feature_id','vetro_id','vitruvi_id','id','uid');const label=kind==='vetro'?(prop(p,'Street_Address','street_address','Name','name','feature_id','ID')||lid):(prop(p,'label','name','Name','full_address','Address','feature_id')||lid);setAddingNote(false);FiberLocator.addLocatorNoteForFeature(ll.lat,ll.lng,kind,label,fid,lid,fid);}"
+            + "map.on('click',e=>{if(addingNote){addMapNote(e.latlng);return;}if(measuring)addMeasurePoint(e.latlng);});"
             + "const bounds=[];tickets.forEach(t=>{const color=t.color||'#00695c';"
-            + "if(t.polygon){const p=L.geoJSON(t.polygon,{style:{color,weight:t.id===focus?5:3,fillColor:color,fillOpacity:.11}}).addTo(map);p.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});try{bounds.push(p.getBounds())}catch(e){}}"
-            + "if(t.lat&&t.lon){const m=L.circleMarker([t.lat,t.lon],{radius:6,color,fillColor:color,fillOpacity:.9}).addTo(map);m.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});bounds.push(L.latLng(t.lat,t.lon));}});"
+            + "if(t.polygon){const p=L.geoJSON(t.polygon,{style:{color,weight:t.id===focus?5:3,fillColor:color,fillOpacity:.11}}).addTo(map);p.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(addingNote){addTicketNote(t,e.latlng);return;}if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});try{bounds.push(p.getBounds())}catch(e){}}"
+            + "if(t.lat&&t.lon){const m=L.circleMarker([t.lat,t.lon],{radius:6,color,fillColor:color,fillOpacity:.9}).addTo(map);m.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(addingNote){addTicketNote(t,e.latlng);return;}if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});bounds.push(L.latLng(t.lat,t.lon));}});"
+            + "function esc(s){return String(s||'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}"
+            + "function noteColor(c){return {instruction:'#2563eb',layer_issue:'#9333ea',locate_issue:'#dc2626',needs_attention:'#f59e0b',restoration:'#16a34a',other:'#475569'}[String(c||'')]||'#2563eb';}"
+            + "function noteLabel(c){return {instruction:'Instruction',layer_issue:'Layer issue',locate_issue:'Locate issue',needs_attention:'Needs attention',restoration:'Restoration',other:'Other note'}[String(c||'')]||'Instruction';}"
+            + "function noteOpacity(n){const lid=String(n.layerId||'');if(n.targetType==='vetro'&&lid)return Math.max(.035,Math.min(.12,num(state.vetroLayerOpacityOverrides,lid,Number(state.vetroOpacity)||.72,0,1)*.18));if(n.targetType==='vitruvi'&&lid)return Math.max(.035,Math.min(.12,num(state.vitruviLayerOpacityOverrides,lid,.82,0,1)*.18));return .08;}"
+            + "locatorNotes.forEach(n=>{if(!n.lat||!n.lon)return;const color=noteColor(n.category);const marker=L.marker([n.lat,n.lon],{zIndexOffset:9000,icon:L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,22],popupAnchor:[0,-18],html:`<div class=\"note-flag\" style=\"--c:${color};--o:${noteOpacity(n)}\"></div>`})}).addTo(map);marker.bindPopup(`<div class=\"note-popup\"><strong>${esc(noteLabel(n.category))}</strong><small>${esc(n.target||'Map note')}</small>${n.text?`<p>${esc(n.text)}</p>`:''}<small>${esc([n.createdBy,n.createdAt].filter(Boolean).join(' - '))}</small></div>`);bounds.push(L.latLng(n.lat,n.lon));});"
             + "async function layer(url,kind){try{const r=await fetch(url,{credentials:'include'});if(!r.ok)return;const g=await r.json();let f=Array.isArray(g.features)?g.features:[];"
             + "if(kind==='vetro'){if(state.vetroVisible===false)return;f=f.filter(vetroPass);}if(kind==='vitruvi'){if(state.vitruviVisible!==true)return;f=f.filter(vitPass);}"
-            + "const group=L.geoJSON({type:'FeatureCollection',features:f},{style:x=>{const id=kind==='vetro'?vetroId(x):vitId(x);const geom=x.geometry&&String(x.geometry.type)||'';const c=color(kind,id,kind==='vetro'?(state.vetroColor||'#2563eb'):'#f97316');const raw=num(kind==='vetro'?state.vetroLayerOpacityOverrides:state.vitruviLayerOpacityOverrides,id,kind==='vetro'?(Number(state.vetroOpacity)||.72):.82,0,1);const op=kind==='vetro'?raw*vetroOpacityScale:raw;const sz=num(kind==='vetro'?state.vetroLayerSizeOverrides:state.vitruviLayerSizeOverrides,id,kind==='vetro'?3:3,1,18);const st={color:c,fillColor:c,weight:geom.startsWith('Line')?sz:1,opacity:op,fillOpacity:op*.32,radius:sz,baseOpacity:raw};const sn=styleName(kind,id,geom);if(geom.startsWith('Line')){st.fillOpacity=0;if(sn==='dashed')st.dashArray='8 6';if(sn==='dotted')st.dashArray='2 6';}return st;},pointToLayer:(x,ll)=>{const id=kind==='vetro'?vetroId(x):vitId(x);const c=color(kind,id,kind==='vetro'?(state.vetroColor||'#2563eb'):'#f97316');const raw=num(kind==='vetro'?state.vetroLayerOpacityOverrides:state.vitruviLayerOpacityOverrides,id,kind==='vetro'?(Number(state.vetroOpacity)||.72):.82,0,1);const op=kind==='vetro'?raw*vetroOpacityScale:raw;const sz=num(kind==='vetro'?state.vetroLayerSizeOverrides:state.vitruviLayerSizeOverrides,id,8,4,28);const marker=L.marker(ll,{icon:icon(styleName(kind,id,'Point'),c,sz*2,op)});marker.options.baseOpacity=raw;return marker;}}).addTo(map);if(kind==='vetro'){vetroLayers.push(group);applyVetroOpacity();}}catch(e){}}"
+            + "const group=L.geoJSON({type:'FeatureCollection',features:f},{style:x=>{const id=kind==='vetro'?vetroId(x):vitId(x);const geom=x.geometry&&String(x.geometry.type)||'';const c=color(kind,id,kind==='vetro'?(state.vetroColor||'#2563eb'):'#f97316');const raw=num(kind==='vetro'?state.vetroLayerOpacityOverrides:state.vitruviLayerOpacityOverrides,id,kind==='vetro'?(Number(state.vetroOpacity)||.72):.82,0,1);const op=kind==='vetro'?raw*vetroOpacityScale:raw;const sz=num(kind==='vetro'?state.vetroLayerSizeOverrides:state.vitruviLayerSizeOverrides,id,kind==='vetro'?3:3,1,18);const st={color:c,fillColor:c,weight:geom.startsWith('Line')?sz:1,opacity:op,fillOpacity:op*.32,radius:sz,baseOpacity:raw};const sn=styleName(kind,id,geom);if(geom.startsWith('Line')){st.fillOpacity=0;if(sn==='dashed')st.dashArray='8 6';if(sn==='dotted')st.dashArray='2 6';}return st;},pointToLayer:(x,ll)=>{const id=kind==='vetro'?vetroId(x):vitId(x);const c=color(kind,id,kind==='vetro'?(state.vetroColor||'#2563eb'):'#f97316');const raw=num(kind==='vetro'?state.vetroLayerOpacityOverrides:state.vitruviLayerOpacityOverrides,id,kind==='vetro'?(Number(state.vetroOpacity)||.72):.82,0,1);const op=kind==='vetro'?raw*vetroOpacityScale:raw;const sz=num(kind==='vetro'?state.vetroLayerSizeOverrides:state.vitruviLayerSizeOverrides,id,8,4,28);const marker=L.marker(ll,{icon:icon(styleName(kind,id,'Point'),c,sz*2,op)});marker.options.baseOpacity=raw;return marker;},onEachFeature:(x,l)=>{l.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(addingNote){addFeatureNote(kind,x,e.latlng);return;}if(measuring){addMeasurePoint(e.latlng);}});}}).addTo(map);if(kind==='vetro'){vetroLayers.push(group);applyVetroOpacity();}}catch(e){}}"
             + "layer('/api/vetro','vetro');layer('/api/vitruvi','vitruvi');"
+            + "function ticketFeatureCollection(kind){const features=[];tickets.forEach(t=>{if(kind==='polygon'&&t.polygon){const g=t.polygon.type==='Feature'?t.polygon.geometry:t.polygon;features.push({type:'Feature',properties:{id:t.id,color:t.color||'#00695c'},geometry:g});}if(kind==='point'&&t.lat&&t.lon){features.push({type:'Feature',properties:{id:t.id,color:t.color||'#00695c'},geometry:{type:'Point',coordinates:[t.lon,t.lat]}});}});return {type:'FeatureCollection',features};}"
+            + "function noteFeatureCollection(){return {type:'FeatureCollection',features:locatorNotes.filter(n=>n.lat&&n.lon).map(n=>({type:'Feature',properties:{id:n.id,color:noteColor(n.category),text:n.text||'',target:n.target||'Map note'},geometry:{type:'Point',coordinates:[n.lon,n.lat]}}))};}"
+            + "function normHex(v,f){v=String(v||'').trim();if(!v)return f;if(!v.startsWith('#'))v='#'+v;return /^#[0-9a-f]{6}$/i.test(v)?v.toLowerCase():f;}"
+            + "function shapeIconName(kind,shape,color,outline){shape=String(shape||'circle');shape=['square','diamond','pin','house'].includes(shape)?shape:'circle';color=normHex(color,'#2563eb').slice(1);outline=normHex(outline,'#ffffff').slice(1);return `${kind}-${shape}-${color}-${outline}`;}"
+            + "function makeShapeIcon(shape,color,outline){const c=document.createElement('canvas');c.width=64;c.height=64;const x=c.getContext('2d');x.translate(32,32);x.fillStyle=normHex(color,'#2563eb');x.strokeStyle=normHex(outline,'#ffffff');x.lineWidth=5;x.shadowColor='rgba(15,23,42,.35)';x.shadowBlur=5;if(shape==='square')x.rect(-18,-18,36,36);else if(shape==='diamond'){x.rotate(Math.PI/4);x.rect(-17,-17,34,34);}else if(shape==='pin'){x.rotate(-Math.PI/4);x.beginPath();x.arc(0,0,18,0,Math.PI*2);x.lineTo(18,18);x.closePath();}else if(shape==='house'){x.beginPath();x.moveTo(0,-22);x.lineTo(22,-3);x.lineTo(22,22);x.lineTo(-22,22);x.lineTo(-22,-3);x.closePath();}else{x.beginPath();x.arc(0,0,19,0,Math.PI*2);}x.fill();x.stroke();try{return x.getImageData(0,0,c.width,c.height);}catch(e){return c;}}"
+            + "function add3dShapeImages(data){(data&&data.features||[]).forEach(f=>{const p=f.properties||{};const icon=p._icon;if(!icon||map3d.hasImage(icon))return;try{map3d.addImage(icon,makeShapeIcon(p._style,p._color,p._outline),{pixelRatio:2});}catch(e){console.log('3d icon failed',icon,e&&e.message);}});}"
+            + "function styleFeature(kind,f){const id=kind==='vetro'?vetroId(f):vitId(f);const geom=f.geometry&&String(f.geometry.type)||'';const sl=kind==='vetro'&&isSlFeature(f);const fallback=kind==='vetro'?(state.vetroColor||'#2563eb'):'#f97316';const raw=sl?num(null,null,Number(state.vetroSlOpacity)||1,0,1):num(kind==='vetro'?state.vetroLayerOpacityOverrides:state.vitruviLayerOpacityOverrides,id,kind==='vetro'?(Number(state.vetroOpacity)||.72):.82,0,1);const size=sl?num(null,null,Number(state.vetroSlSize)||13,4,28):num(kind==='vetro'?state.vetroLayerSizeOverrides:state.vitruviLayerSizeOverrides,id,geom.startsWith('Line')?3:8,1,28);const style=sl?String(state.vetroSlShape||'diamond'):styleName(kind,id,geom);const c=sl?normHex(state.vetroSlColor,'#e7298a'):color(kind,id,fallback);const outline=sl?normHex(state.vetroSlOutlineColor,'#111827'):'#ffffff';const label=sl&&state.vetroSlLabels?slLabel(f):'';return {...f,properties:{...(f.properties||{}),_layerId:id,_color:c,_outline:outline,_opacity:kind==='vetro'?raw*vetroOpacityScale:raw,_size:size,_style:style,_icon:shapeIconName(kind,style,c,outline),_label:label}};}"
+            + "function styledCollection(kind,g){let f=Array.isArray(g&&g.features)?g.features:[];if(kind==='vetro'){if(state.vetroVisible===false)f=[];else f=f.filter(vetroPass);}if(kind==='vitruvi'){if(state.vitruviVisible!==true)f=[];else f=f.filter(vitPass);}return {type:'FeatureCollection',features:f.map(x=>styleFeature(kind,x))};}"
+            + "function addLayerSafe(spec){try{if(!map3d.getLayer(spec.id))map3d.addLayer(spec);}catch(e){console.log('3d layer failed',spec&&spec.id,e&&e.message);}}"
+            + "function addSourceSafe(id,spec){try{if(map3d.getSource(id))map3d.getSource(id).setData(spec.data);else map3d.addSource(id,spec);return true;}catch(e){console.log('3d source failed',id,e&&e.message);return false;}}"
+            + "function lineFilter(style){return ['all',['any',['==',['geometry-type'],'LineString'],['==',['geometry-type'],'MultiLineString']],style==='solid'?['all',['!=',['get','_style'],'dashed'],['!=',['get','_style'],'dotted']]:['==',['get','_style'],style]];}"
+            + "function addStyled3dSource(kind,g){const source=`${kind}-3d`;const data=styledCollection(kind,g);add3dShapeImages(data);if(!addSourceSafe(source,{type:'geojson',data}))return;addLayerSafe({id:`${kind}-3d-fill`,type:'fill',source,filter:['any',['==',['geometry-type'],'Polygon'],['==',['geometry-type'],'MultiPolygon']],paint:{'fill-color':['coalesce',['get','_color'],'#2563eb'],'fill-opacity':['*',['coalesce',['to-number',['get','_opacity']],0.72],0.32]}});addLayerSafe({id:`${kind}-3d-line-solid`,type:'line',source,filter:lineFilter('solid'),paint:{'line-color':['coalesce',['get','_color'],'#2563eb'],'line-width':['coalesce',['to-number',['get','_size']],3],'line-opacity':['coalesce',['to-number',['get','_opacity']],0.72]}});addLayerSafe({id:`${kind}-3d-line-dashed`,type:'line',source,filter:lineFilter('dashed'),paint:{'line-color':['coalesce',['get','_color'],'#2563eb'],'line-width':['coalesce',['to-number',['get','_size']],3],'line-opacity':['coalesce',['to-number',['get','_opacity']],0.72],'line-dasharray':[2,1.5]}});addLayerSafe({id:`${kind}-3d-line-dotted`,type:'line',source,filter:lineFilter('dotted'),paint:{'line-color':['coalesce',['get','_color'],'#2563eb'],'line-width':['coalesce',['to-number',['get','_size']],3],'line-opacity':['coalesce',['to-number',['get','_opacity']],0.72],'line-dasharray':[0.4,1.6]}});addLayerSafe({id:`${kind}-3d-point-symbol`,type:'symbol',source,filter:['any',['==',['geometry-type'],'Point'],['==',['geometry-type'],'MultiPoint']],layout:{'icon-image':['get','_icon'],'icon-size':['interpolate',['linear'],['coalesce',['to-number',['get','_size']],12],4,0.42,13,0.72,28,1.2],'icon-allow-overlap':true,'icon-ignore-placement':true},paint:{'icon-opacity':['coalesce',['to-number',['get','_opacity']],0.72]}});addLayerSafe({id:`${kind}-3d-point-label`,type:'symbol',source,filter:['all',['any',['==',['geometry-type'],'Point'],['==',['geometry-type'],'MultiPoint']],['!=',['get','_label'],'']],layout:{'text-field':['get','_label'],'text-size':12,'text-offset':[0,1.25],'text-anchor':'top','text-allow-overlap':true,'text-ignore-placement':true},paint:{'text-color':'#111827','text-halo-color':'#ffffff','text-halo-width':1.4,'text-opacity':['coalesce',['to-number',['get','_opacity']],0.85]}});}"
+            + "function add3dLocationLayers(){if(!map3d.getSource('user-3d'))map3d.addSource('user-3d',{type:'geojson',data:{type:'FeatureCollection',features:[]}});addLayerSafe({id:'user-3d-accuracy',type:'circle',source:'user-3d',paint:{'circle-color':'#38bdf8','circle-radius':['interpolate',['linear'],['zoom'],10,10,16,34,20,90],'circle-opacity':0.16,'circle-stroke-color':'#0284c7','circle-stroke-width':1,'circle-stroke-opacity':0.45}});addLayerSafe({id:'user-3d-dot',type:'circle',source:'user-3d',paint:{'circle-color':'#38bdf8','circle-radius':9,'circle-stroke-color':'#ffffff','circle-stroke-width':3}});}"
+            + "function set3dLocation(lat,lon,acc){if(!map3d||!map3d.getSource('user-3d'))return;map3d.getSource('user-3d').setData({type:'FeatureCollection',features:[{type:'Feature',properties:{accuracy:acc||0},geometry:{type:'Point',coordinates:[lon,lat]}}]});}"
+            + "function add3dGeoJsonLayers(){if(!map3d)return;try{add3dShapeImages();}catch(e){console.log('3d image setup failed',e&&e.message);}addSourceSafe('tickets-poly',{type:'geojson',data:ticketFeatureCollection('polygon')});addLayerSafe({id:'tickets-poly-fill',type:'fill',source:'tickets-poly',paint:{'fill-color':['coalesce',['get','color'],'#00695c'],'fill-opacity':0.18}});addLayerSafe({id:'tickets-poly-line',type:'line',source:'tickets-poly',paint:{'line-color':['coalesce',['get','color'],'#00695c'],'line-width':3}});addSourceSafe('tickets-point',{type:'geojson',data:ticketFeatureCollection('point')});addLayerSafe({id:'tickets-point-dot',type:'circle',source:'tickets-point',paint:{'circle-color':['coalesce',['get','color'],'#00695c'],'circle-radius':7,'circle-stroke-color':'#ffffff','circle-stroke-width':2}});addSourceSafe('notes',{type:'geojson',data:noteFeatureCollection()});addLayerSafe({id:'notes-dot',type:'circle',source:'notes',paint:{'circle-color':['coalesce',['get','color'],'#2563eb'],'circle-radius':6,'circle-opacity':0.55,'circle-stroke-color':'#ffffff','circle-stroke-width':1}});add3dLocationLayers();['tickets-poly-fill','tickets-point-dot'].forEach(id=>{if(map3d.getLayer(id))map3d.on('click',id,e=>{const f=e.features&&e.features[0];if(f&&f.properties&&f.properties.id)FiberLocator.openTicket(String(f.properties.id));});});if(!map3d.getSource('vetro-3d'))fetch('/api/vetro',{credentials:'include'}).then(r=>r.ok?r.json():null).then(g=>{if(g)try{addStyled3dSource('vetro',g);}catch(e){console.log('vetro 3d add failed',e&&e.message);}}).catch(e=>console.log('vetro 3d fetch failed',e&&e.message));if(!map3d.getSource('vitruvi-3d'))fetch('/api/vitruvi',{credentials:'include'}).then(r=>r.ok?r.json():null).then(g=>{if(g)try{addStyled3dSource('vitruvi',g);}catch(e){console.log('vitruvi 3d add failed',e&&e.message);}}).catch(e=>console.log('vitruvi 3d fetch failed',e&&e.message));saved3dLoaded=!!(map3d.getSource('tickets-poly')&&map3d.getSource('tickets-point')&&map3d.getSource('notes')&&map3d.getLayer('tickets-poly-line')&&map3d.getLayer('tickets-point-dot')&&map3d.getSource('vetro-3d')&&map3d.getSource('vitruvi-3d'));}"
+            + "function add3dBuildings(){if(!map3d||map3d.getLayer('map3d-buildings')||!map3d.getSource('composite'))return;const layers=map3d.getStyle().layers||[];const label=layers.find(l=>l.type==='symbol'&&l.layout&&l.layout['text-field']);try{map3d.addLayer({id:'map3d-buildings',source:'composite','source-layer':'building',filter:['==','extrude','true'],type:'fill-extrusion',minzoom:14,paint:{'fill-extrusion-color':'#c9d2dc','fill-extrusion-height':['interpolate',['linear'],['zoom'],14,0,16,['coalesce',['get','height'],12]],'fill-extrusion-base':['interpolate',['linear'],['zoom'],14,0,16,['coalesce',['get','min_height'],0]],'fill-extrusion-opacity':0.72}},label&&label.id);}catch(e){console.log('3d buildings failed',e&&e.message);}}"
+            + "function prepare3dLayers(){if(!map3d)return;try{if(!map3d.getSource('mapbox-dem'))map3d.addSource('mapbox-dem',{type:'raster-dem',url:'mapbox://mapbox.mapbox-terrain-dem-v1',tileSize:512,maxzoom:14});map3d.setTerrain({source:'mapbox-dem',exaggeration:1.4});}catch(e){console.log('3d terrain failed',e&&e.message);}add3dBuildings();try{add3dGeoJsonLayers();}catch(e){console.log('3d overlay setup failed',e&&e.message);saved3dLoaded=false;}}"
+            + "function schedule3dLayers(){if(!map3d)return;saved3dLoaded=false;let attempts=0;function tick(){prepare3dLayers();attempts++;if(!saved3dLoaded&&attempts<45)setTimeout(tick,1000);}tick();setTimeout(tick,250);setTimeout(tick,1200);setTimeout(tick,5000);}"
+            + "function style3dUrl(){return map3dStyle==='satellite'?'mapbox://styles/mapbox/satellite-streets-v12':'mapbox://styles/mapbox/streets-v12';}"
+            + "function update3dStyleButton(){const b=document.getElementById('style3d');b.textContent=map3dStyle==='satellite'?'Street 3D':'Satellite 3D';}"
+            + "function save3dCamera(){try{const c=map3d.getCenter();FiberLocator.saveMapCamera(c.lat,c.lng,map3d.getZoom(),map3d.getBearing(),map3d.getPitch(),`3d-${map3dStyle}`);}catch(e){}}"
+            + "function apply3dStyle(){if(!map3d)return;saved3dLoaded=false;map3d.setStyle(style3dUrl());update3dStyleButton();schedule3dLayers();}"
+            + "async function ensure3d(){if(map3d)return true;const status=document.getElementById('toggle3d');status.textContent='3D...';try{const r=await fetch('/api/map-config',{credentials:'include'});const c=r.ok?await r.json():{};const token=String(c.mapboxAccessToken||'');if(!token)throw new Error('Mapbox token missing');mapboxgl.accessToken=token;const center=map.getCenter();map3d=new mapboxgl.Map({container:'map3d',style:style3dUrl(),center:[center.lng,center.lat],zoom:Math.max(map.getZoom(),14),pitch:Math.max(Number(savedCamera.pitch)||0,68),bearing:Number(savedCamera.bearing)||0,antialias:true});map3d.on('load',schedule3dLayers);map3d.on('style.load',schedule3dLayers);map3d.on('styledata',schedule3dLayers);map3d.on('idle',schedule3dLayers);schedule3dLayers();map3d.on('moveend',save3dCamera);map3d.on('pitchend',save3dCamera);map3d.on('rotateend',save3dCamera);status.textContent='2D';update3dStyleButton();return true;}catch(e){status.textContent='No 3D';setTimeout(()=>status.textContent='3D',1800);return false;}}"
+            + "async function toggle3d(){if(using3d){using3d=false;document.getElementById('map').style.display='block';document.getElementById('map3d').style.display='none';document.getElementById('tiltTools').style.display='none';document.getElementById('style3d').style.display='none';document.getElementById('toggle3d').textContent='3D';saveLeafletCamera();return;}if(await ensure3d()){using3d=true;const c=map.getCenter();map3d.jumpTo({center:[c.lng,c.lat],zoom:Math.max(map.getZoom(),14),pitch:Math.max(map3d.getPitch(),60)});document.getElementById('map').style.display='none';document.getElementById('map3d').style.display='block';document.getElementById('tiltTools').style.display='flex';document.getElementById('style3d').style.display='block';document.getElementById('toggle3d').textContent='2D';map3d.resize();save3dCamera();}}"
+            + "document.getElementById('toggle3d').addEventListener('click',toggle3d);document.getElementById('style3d').addEventListener('click',()=>{map3dStyle=map3dStyle==='satellite'?'standard':'satellite';apply3dStyle();save3dCamera();});document.getElementById('tiltUp').addEventListener('click',()=>{if(map3d)map3d.easeTo({pitch:Math.min(80,map3d.getPitch()+10),duration:250});});document.getElementById('tiltDown').addEventListener('click',()=>{if(map3d)map3d.easeTo({pitch:Math.max(0,map3d.getPitch()-10),duration:250});});document.getElementById('rotate3d').addEventListener('click',()=>{if(map3d)map3d.easeTo({bearing:map3d.getBearing()+45,duration:350});});"
             + "function setLocate(text,cls){const b=document.getElementById('locateMe');b.textContent=text;b.className='locate '+(cls||'');}"
-            + "function updateLocation(pos){const lat=pos.coords.latitude,lon=pos.coords.longitude,acc=pos.coords.accuracy||0;const ll=[lat,lon];if(!userMarker){userMarker=L.marker(ll,{zIndexOffset:10000,icon:L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],html:'<div class=\"user-dot\"></div>'})}).addTo(map);accuracyCircle=L.circle(ll,{radius:acc,color:'#0284c7',weight:1,fillColor:'#38bdf8',fillOpacity:.14,opacity:.5}).addTo(map);map.setView(ll,17);}else{userMarker.setLatLng(ll);accuracyCircle.setLatLng(ll).setRadius(acc);map.panTo(ll,{animate:true,duration:.35});}setLocate(acc?('Live ±'+Math.round(acc)+'m'):'Live','active');}"
+            + "function updateLocation(pos){const lat=pos.coords.latitude,lon=pos.coords.longitude,acc=pos.coords.accuracy||0;const ll=[lat,lon];if(!userMarker){userMarker=L.marker(ll,{zIndexOffset:10000,icon:L.divIcon({className:'',iconSize:[24,24],iconAnchor:[12,12],html:'<div class=\"user-dot\"></div>'})}).addTo(map);accuracyCircle=L.circle(ll,{radius:acc,color:'#0284c7',weight:1,fillColor:'#38bdf8',fillOpacity:.14,opacity:.5}).addTo(map);map.setView(ll,17);}else{userMarker.setLatLng(ll);accuracyCircle.setLatLng(ll).setRadius(acc);if(!using3d)map.panTo(ll,{animate:true,duration:.35});}set3dLocation(lat,lon,acc);if(using3d&&map3d)map3d.easeTo({center:[lon,lat],zoom:Math.max(map3d.getZoom(),17),duration:350});setLocate(acc?('Live ±'+Math.round(acc)+'m'):'Live','active');}"
             + "function locationError(e){setLocate(e&&e.code===1?'Permission denied':'Location unavailable','error');}"
             + "function startLocation(){if(!navigator.geolocation){setLocate('No GPS','error');return;}if(locationWatch!=null)return;setLocate('Locating...','active');locationWatch=navigator.geolocation.watchPosition(updateLocation,locationError,{enableHighAccuracy:true,maximumAge:1500,timeout:15000});}"
             + "function stopLocation(){if(locationWatch!=null&&navigator.geolocation){navigator.geolocation.clearWatch(locationWatch);}locationWatch=null;setLocate('Location off','');}"
             + "function toggleLocation(){if(locationWatch==null)startLocation();else stopLocation();}"
             + "document.getElementById('locateMe').addEventListener('click',toggleLocation);window.addEventListener('pagehide',stopLocation);window.addEventListener('beforeunload',stopLocation);"
             + "if(focus){const item=tickets.find(t=>t.id===focus);if(item&&item.lat&&item.lon)map.setView([item.lat,item.lon],16);}"
+            + "else if(savedCamera.saved){map.setView([savedCamera.lat,savedCamera.lng],savedCamera.zoom||12);if(String(savedCamera.mode||'').startsWith('3d'))setTimeout(()=>toggle3d(),800);}"
             + "else if(bounds.length){let b=L.latLngBounds([]);bounds.forEach(x=>b.extend(x));map.fitBounds(b,{padding:[18,18],maxZoom:14});}"
             + "</script></body></html>";
+    }
+
+    private String savedMapCameraJson() {
+        if (!AppSettings.hasMapCamera(this)) return "{\"saved\":false}";
+        JSONObject camera = new JSONObject();
+        try {
+            camera.put("saved", true);
+            camera.put("lat", AppSettings.mapLatitude(this));
+            camera.put("lng", AppSettings.mapLongitude(this));
+            camera.put("zoom", AppSettings.mapZoom(this));
+            camera.put("bearing", AppSettings.mapBearing(this));
+            camera.put("pitch", AppSettings.mapPitch(this));
+            camera.put("mode", AppSettings.mapMode(this));
+        } catch (Exception ignored) {
+        }
+        return camera.toString();
     }
 
     private JSONArray ticketsMapJson() {
@@ -664,20 +855,163 @@ public class MainActivity extends Activity {
         return out;
     }
 
+    private JSONArray locatorNotesMapJson() {
+        JSONArray out = new JSONArray();
+        if (snapshot == null) return out;
+        for (LocatorNote note : snapshot.locatorNotes) {
+            if (!note.hasCoordinates) continue;
+            JSONObject item = new JSONObject();
+            try {
+                item.put("id", note.id);
+                item.put("lat", note.latitude);
+                item.put("lon", note.longitude);
+                item.put("category", note.category);
+                item.put("text", note.text);
+                item.put("target", first(note.targetLabel, note.ticket, note.targetType, "Map note"));
+                item.put("targetType", note.targetType);
+                item.put("layerId", note.layerId);
+                item.put("createdAt", note.createdAt);
+                item.put("createdBy", note.createdBy);
+                out.put(item);
+            } catch (Exception ignored) {
+            }
+        }
+        return out;
+    }
+
+    private void showLocatorNoteForm(
+        double latitude,
+        double longitude,
+        String targetType,
+        String targetLabel,
+        String targetId,
+        String ticketNumber,
+        String layerId,
+        String featureId
+    ) {
+        screen = "locator-note";
+        activeMapWebView = null;
+        pendingScreen = "";
+        AppSettings.saveLastView(this, "map", activeTicketNumber);
+        pendingLocatorNoteLatitude = latitude;
+        pendingLocatorNoteLongitude = longitude;
+        pendingLocatorNoteTargetType = first(targetType, "map");
+        pendingLocatorNoteTargetLabel = first(targetLabel, "Map spot");
+        pendingLocatorNoteTargetId = targetId == null ? "" : targetId.trim();
+        pendingLocatorNoteTicket = ticketNumber == null ? "" : ticketNumber.trim();
+        pendingLocatorNoteLayerId = layerId == null ? "" : layerId.trim();
+        pendingLocatorNoteFeatureId = featureId == null ? "" : featureId.trim();
+        pendingAttachments.clear();
+        attachmentStatus = null;
+        locatorNoteAttachmentStatus = null;
+        chrome.setVisibility(View.VISIBLE);
+        title.setText("Add locator note");
+        subtitle.setText(String.format(Locale.US, "%.6f, %.6f", latitude, longitude));
+        selectNav(mapNav);
+        content.removeAllViews();
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout form = column(dp(16), dp(12), dp(16), dp(2));
+        form.setBackgroundColor(lightPanel);
+        scroll.addView(form);
+        TextView location = text(String.format(Locale.US, "%.6f, %.6f", latitude, longitude), 13, darkMuted, false);
+        TextView target = text(pendingLocatorNoteTargetSummary(), 14, darkInk, true);
+        Spinner category = new Spinner(this);
+        List<String> labels = new ArrayList<>();
+        for (String[] option : LOCATOR_NOTE_CATEGORIES) labels.add(option[1]);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        category.setAdapter(adapter);
+        category.setBackgroundColor(lightControl);
+        category.setPadding(dp(8), 0, dp(8), 0);
+        EditText noteText = lightInput("Locator note", "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        noteText.setMinLines(4);
+        noteText.setSingleLine(false);
+        form.addView(text("Location", 12, darkMuted, true));
+        form.addView(location);
+        form.addView(spacer(8));
+        form.addView(text("Attached to", 12, darkMuted, true));
+        form.addView(target);
+        form.addView(spacer(8));
+        form.addView(text("Category", 12, darkMuted, true));
+        form.addView(category, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        form.addView(spacer(8));
+        form.addView(noteText);
+        locatorNoteAttachmentStatus = text("No photos selected", 13, darkMuted, false);
+        Button choose = secondaryButton("Upload photos/videos");
+        choose.setOnClickListener(view -> pickAttachments());
+        form.addView(choose, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        form.addView(locatorNoteAttachmentStatus);
+        form.addView(spacer(10));
+        Button save = primaryButton("Save locator note");
+        save.setOnClickListener(view -> saveLocatorNote(latitude, longitude, category.getSelectedItemPosition(), noteText.getText().toString()));
+        form.addView(save, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
+        Button cancel = secondaryButton("Cancel");
+        cancel.setOnClickListener(view -> showMap(activeTicket));
+        form.addView(cancel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        form.addView(spacer(42));
+        content.addView(scroll);
+    }
+
+    private void saveLocatorNote(double latitude, double longitude, int categoryIndex, String text) {
+        progress.setVisibility(View.VISIBLE);
+        String category = LOCATOR_NOTE_CATEGORIES[Math.max(0, Math.min(LOCATOR_NOTE_CATEGORIES.length - 1, categoryIndex))][0];
+        executor.execute(() -> {
+            try {
+                repository.createLocatorNote(
+                    latitude,
+                    longitude,
+                    category,
+                    text,
+                    pendingLocatorNoteTargetType,
+                    pendingLocatorNoteTargetLabel,
+                    pendingLocatorNoteTargetId,
+                    pendingLocatorNoteTicket,
+                    pendingLocatorNoteLayerId,
+                    pendingLocatorNoteFeatureId,
+                    new ArrayList<>(pendingAttachments)
+                );
+                DashboardSnapshot next = repository.loadSnapshot();
+                Ticket nextActive = pendingLocatorNoteTicket.isEmpty() ? null : findTicketIn(next.tickets, pendingLocatorNoteTicket);
+                runOnUiThread(() -> {
+                    snapshot = next;
+                    activeTicket = nextActive;
+                    progress.setVisibility(View.GONE);
+                    showMap(nextActive);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    progress.setVisibility(View.GONE);
+                    new AlertDialog.Builder(this)
+                        .setTitle("Locator note not saved")
+                        .setMessage(error.getMessage())
+                        .setPositiveButton("OK", null)
+                        .show();
+                });
+            }
+        });
+    }
+
+    private String pendingLocatorNoteTargetSummary() {
+        if ("ticket".equals(pendingLocatorNoteTargetType)) return "Ticket " + pendingLocatorNoteTargetLabel;
+        if ("vetro".equals(pendingLocatorNoteTargetType)) return "VETRO feature" + (pendingLocatorNoteTargetLabel.isEmpty() ? "" : ": " + pendingLocatorNoteTargetLabel);
+        if ("vitruvi".equals(pendingLocatorNoteTargetType)) return "Vitruvi feature" + (pendingLocatorNoteTargetLabel.isEmpty() ? "" : ": " + pendingLocatorNoteTargetLabel);
+        return "Map spot";
+    }
+
     private String colorHex(int color) {
         return String.format(Locale.US, "#%06X", 0xFFFFFF & color);
     }
 
     private void showCompletionForm(Ticket ticket) {
-        if (tcwDashboardMode && isTcwDmi(ticket)) {
-            showTicketDetail(ticket);
-            return;
-        }
         screen = "complete";
         activeTicket = ticket;
         activeTicketNumber = ticket.ticketNumber;
+        activeMapWebView = null;
         pendingScreen = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
         pendingAttachments.clear();
+        locatorNoteAttachmentStatus = null;
         chrome.setVisibility(View.VISIBLE);
         title.setText("Complete ticket");
         subtitle.setText(ticket.title());
@@ -685,30 +1019,28 @@ public class MainActivity extends Activity {
 
         ScrollView scroll = new ScrollView(this);
         LinearLayout form = column(dp(14), dp(12), dp(14), dp(150));
+        form.setBackgroundColor(lightPanel);
         scroll.setClipToPadding(false);
         scroll.addView(form);
-        form.addView(text(ticket.title(), 21, ink, true));
-        form.addView(text(ticket.locationLine(), 14, muted, false));
+        form.addView(text(ticket.title(), 21, darkInk, true));
+        form.addView(text(ticket.locationLine(), 14, darkMuted, false));
         form.addView(spacer(10));
 
         List<CheckBox> boxes = new ArrayList<>();
         for (TicketAction action : TicketRepository.ACTIONS) {
-            CheckBox box = new CheckBox(this);
-            box.setText(action.label);
-            box.setTextSize(16);
-            box.setTextColor(ink);
+            CheckBox box = actionCheckBox(action.label);
             box.setChecked(ticket.hasAction(action.key));
             box.setTag(action.key);
             boxes.add(box);
             form.addView(box);
         }
 
-        EditText note = input("Description / locator note", ticket.note, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        EditText note = lightInput("Description / locator note", ticket.note, InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         note.setMinLines(4);
         note.setSingleLine(false);
         form.addView(note);
 
-        attachmentStatus = text("No photos selected", 13, muted, false);
+        attachmentStatus = text("No photos selected", 13, darkMuted, false);
         Button choose = secondaryButton("Upload photos");
         choose.setOnClickListener(view -> pickAttachments());
         form.addView(choose, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
@@ -769,7 +1101,7 @@ public class MainActivity extends Activity {
                     refreshRunning = false;
                     snapshot = loaded;
                     progress.setVisibility(View.GONE);
-                    if (subtitle != null) subtitle.setText(visibleTickets().size() + (tcwDashboardMode ? " TCW ticket(s)" : " open tickets") + " | synced " + DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
+                    if (subtitle != null) subtitle.setText(visibleTickets().size() + " open tickets | synced " + DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
                     if ("tickets".equals(screen)) renderTickets();
                     else restoreRequestedScreen();
                 });
@@ -814,27 +1146,108 @@ public class MainActivity extends Activity {
             showMap(findTicket(activeTicketNumber));
         } else if ("profile".equals(target)) {
             showProfile();
+        } else if ("dig".equals(target)) {
+            showDigTickets();
+        } else if ("restoration".equals(target)) {
+            showRestorationJobs();
+        } else if ("in-house-requests".equals(target)) {
+            showInHouseRequests();
+        } else if ("location-photos".equals(target)) {
+            showLocationPhotos();
         }
     }
 
     private Ticket findTicket(String ticketNumber) {
         if (snapshot == null || ticketNumber == null || ticketNumber.isEmpty()) return null;
-        for (Ticket ticket : visibleTickets()) {
+        return findTicketIn(visibleTickets(), ticketNumber);
+    }
+
+    private Ticket findTicketIn(List<Ticket> tickets, String ticketNumber) {
+        if (tickets == null || ticketNumber == null || ticketNumber.isEmpty()) return null;
+        for (Ticket ticket : tickets) {
             if (ticket.ticketNumber.equals(ticketNumber)) return ticket;
         }
         return null;
     }
 
+    private List<LocatorNote> locatorNotesForTicket(Ticket ticket) {
+        List<LocatorNote> out = new ArrayList<>();
+        if (snapshot == null || ticket == null) return out;
+        for (LocatorNote note : snapshot.locatorNotes) {
+            if (ticket.ticketNumber.equals(note.ticket) || ticket.ticketNumber.equals(note.targetId) || locatorNoteFallsInsideTicket(note, ticket)) out.add(note);
+        }
+        return out;
+    }
+
+    private boolean locatorNoteFallsInsideTicket(LocatorNote note, Ticket ticket) {
+        if (note == null || ticket == null || !note.hasCoordinates || ticket.polygon == null) return false;
+        JSONObject geometry = ticket.polygon.optJSONObject("geometry");
+        if (geometry == null) geometry = ticket.polygon;
+        String type = geometry.optString("type", "");
+        JSONArray coordinates = geometry.optJSONArray("coordinates");
+        if (coordinates == null) return false;
+        if ("Polygon".equals(type)) return pointInPolygon(note.longitude, note.latitude, coordinates);
+        if ("MultiPolygon".equals(type)) {
+            for (int i = 0; i < coordinates.length(); i++) {
+                JSONArray polygon = coordinates.optJSONArray(i);
+                if (polygon != null && pointInPolygon(note.longitude, note.latitude, polygon)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean pointInPolygon(double x, double y, JSONArray polygon) {
+        JSONArray outer = polygon.optJSONArray(0);
+        if (outer == null || !pointInRing(x, y, outer)) return false;
+        for (int i = 1; i < polygon.length(); i++) {
+            JSONArray hole = polygon.optJSONArray(i);
+            if (hole != null && pointInRing(x, y, hole)) return false;
+        }
+        return true;
+    }
+
+    private boolean pointInRing(double x, double y, JSONArray ring) {
+        boolean inside = false;
+        for (int i = 0, j = ring.length() - 1; i < ring.length(); j = i++) {
+            JSONArray pi = ring.optJSONArray(i);
+            JSONArray pj = ring.optJSONArray(j);
+            if (pi == null || pj == null || pi.length() < 2 || pj.length() < 2) continue;
+            double xi = pi.optDouble(0);
+            double yi = pi.optDouble(1);
+            double xj = pj.optDouble(0);
+            double yj = pj.optDouble(1);
+            boolean intersects = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / ((yj - yi) == 0 ? 1e-12 : (yj - yi)) + xi);
+            if (intersects) inside = !inside;
+        }
+        return inside;
+    }
+
+    private String locatorNotesText(List<LocatorNote> notes) {
+        StringBuilder out = new StringBuilder();
+        for (LocatorNote note : notes) {
+            if (out.length() > 0) out.append("\n\n");
+            out.append(note.categoryLabel());
+            if (!note.createdBy.isEmpty() || !note.createdAt.isEmpty()) out.append("\nAdded by ").append(join(note.createdBy, note.createdAt));
+            if (!note.summary().isEmpty()) out.append("\n").append(note.summary());
+        }
+        return out.toString();
+    }
+
     private void showOverflowMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add(tcwDashboardMode ? "Main Dashboard" : "One-Calls Done For TCW");
+        menu.getMenu().add("Dig Tickets");
+        menu.getMenu().add("Restoration Jobs");
+        menu.getMenu().add("In-house Locate Requests");
+        menu.getMenu().add("Location Photos");
         menu.getMenu().add("Profile");
         menu.getMenu().add("Refresh");
         menu.getMenu().add("Log out");
         menu.setOnMenuItemClickListener(item -> {
             String label = String.valueOf(item.getTitle());
-            if ("One-Calls Done For TCW".equals(label)) setDashboardMode(true);
-            else if ("Main Dashboard".equals(label)) setDashboardMode(false);
+            if ("Dig Tickets".equals(label)) showDigTickets();
+            else if ("Restoration Jobs".equals(label)) showRestorationJobs();
+            else if ("In-house Locate Requests".equals(label)) showInHouseRequests();
+            else if ("Location Photos".equals(label)) showLocationPhotos();
             else if ("Profile".equals(label)) showProfile();
             else if ("Refresh".equals(label)) refreshTickets(true);
             else if ("Log out".equals(label)) {
@@ -851,6 +1264,7 @@ public class MainActivity extends Activity {
         pendingScreen = "";
         activeTicket = null;
         activeTicketNumber = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
         chrome.setVisibility(View.VISIBLE);
         title.setText("Dig Tickets");
         subtitle.setText("Dashboard dig ticket list");
@@ -858,11 +1272,51 @@ public class MainActivity extends Activity {
         openDashboardWebView("/#sheet");
     }
 
+    private void showRestorationJobs() {
+        screen = "restoration";
+        pendingScreen = "";
+        activeTicket = null;
+        activeTicketNumber = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
+        chrome.setVisibility(View.VISIBLE);
+        title.setText("Restoration Jobs");
+        subtitle.setText("Restoration job sheet and map");
+        selectNav(menuNav);
+        openDashboardWebView("/#restoration");
+    }
+
+    private void showInHouseRequests() {
+        screen = "in-house-requests";
+        pendingScreen = "";
+        activeTicket = null;
+        activeTicketNumber = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
+        chrome.setVisibility(View.VISIBLE);
+        title.setText("In-house Locate Requests");
+        subtitle.setText("Internal locate request dashboard");
+        selectNav(menuNav);
+        openDashboardWebView("/#in-house-requests");
+    }
+
+    private void showLocationPhotos() {
+        screen = "location-photos";
+        pendingScreen = "";
+        activeTicket = null;
+        activeTicketNumber = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
+        chrome.setVisibility(View.VISIBLE);
+        title.setText("Location Photos");
+        subtitle.setText("Upload GPS-tagged field photos");
+        selectNav(menuNav);
+        openDashboardWebView("/#location-photos");
+    }
+
     private void showProfile() {
         screen = "profile";
         pendingScreen = "";
         activeTicket = null;
         activeTicketNumber = "";
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
         chrome.setVisibility(View.VISIBLE);
         title.setText("Profile");
         subtitle.setText("Account details");
@@ -959,6 +1413,10 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 if (path.contains("#sheet")) {
                     view.evaluateJavascript("document.querySelector('#showSheetView')?.click()", null);
+                } else if (path.contains("#restoration")) {
+                    view.evaluateJavascript("document.querySelector('#showRestorationView')?.click()", null);
+                } else if (path.contains("#location-photos")) {
+                    view.evaluateJavascript("document.querySelector('#showLocationPhotosView')?.click()", null);
                 } else if (path.contains("#profile")) {
                     view.evaluateJavascript("document.querySelector('#openProfileEditor')?.click()", null);
                 }
@@ -1036,6 +1494,24 @@ public class MainActivity extends Activity {
                     requestLocationPermission();
                 }
             }
+
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                if (webFileCallback != null) webFileCallback.onReceiveValue(null);
+                webFileCallback = filePathCallback;
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"image/*", "video/*", "application/pdf", "text/plain"});
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                try {
+                    startActivityForResult(intent, PICK_WEB_FILE);
+                } catch (Exception error) {
+                    webFileCallback = null;
+                    return false;
+                }
+                return true;
+            }
         });
     }
 
@@ -1065,7 +1541,7 @@ public class MainActivity extends Activity {
     }
 
     private int logoResource(String username) {
-        return isJamesLogin(username) ? R.drawable.james_fiber_locator_logo : R.drawable.fiber_locator_logo;
+        return R.drawable.fiber_locator_logo;
     }
 
     private boolean isJamesLogin(String username) {
@@ -1202,6 +1678,10 @@ public class MainActivity extends Activity {
         return dueDay.before(startOfToday());
     }
 
+    private boolean ticketShouldShowOnDashboard(Ticket ticket) {
+        return !(isTcwDmi(ticket) && ticketDueDayIsPast(ticket));
+    }
+
     private boolean isEmergency(Ticket ticket) {
         return priorityText(ticket).contains("EMERGENCY");
     }
@@ -1263,6 +1743,42 @@ public class MainActivity extends Activity {
         view.setBackgroundColor(panel);
         view.setPadding(dp(12), 0, dp(12), 0);
         return view;
+    }
+
+    private EditText lightInput(String hint, String value, int type) {
+        EditText view = input(hint, value, type);
+        view.setTextColor(darkInk);
+        view.setHintTextColor(darkMuted);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(lightControl);
+        bg.setCornerRadius(dp(7));
+        bg.setStroke(dp(1), lightLine);
+        view.setBackground(bg);
+        view.setPadding(dp(12), 0, dp(12), 0);
+        return view;
+    }
+
+    private CheckBox actionCheckBox(String label) {
+        CheckBox box = new CheckBox(this);
+        box.setText(label);
+        box.setTextSize(17);
+        box.setTextColor(darkInk);
+        box.setTypeface(null, 1);
+        box.setMinHeight(dp(46));
+        box.setPadding(dp(8), 0, dp(8), 0);
+        box.setButtonTintList(new ColorStateList(
+            new int[][] {new int[] {android.R.attr.state_checked}, new int[] {}},
+            new int[] {Color.rgb(21, 128, 61), Color.rgb(15, 23, 42)}
+        ));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(lightControl);
+        bg.setCornerRadius(dp(7));
+        bg.setStroke(dp(1), lightLine);
+        box.setBackground(bg);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        params.setMargins(0, 0, 0, dp(7));
+        box.setLayoutParams(params);
+        return box;
     }
 
     private Button primaryButton(String label) {
@@ -1335,6 +1851,36 @@ public class MainActivity extends Activity {
                         return;
                     }
                 }
+            });
+        }
+
+        @JavascriptInterface
+        public void addLocatorNoteForMap(double latitude, double longitude) {
+            runOnUiThread(() -> showLocatorNoteForm(latitude, longitude, "map", "Map spot", "", "", "", ""));
+        }
+
+        @JavascriptInterface
+        public void addLocatorNoteForTicket(double latitude, double longitude, String ticketNumber) {
+            String cleanTicket = ticketNumber == null ? "" : ticketNumber.trim();
+            runOnUiThread(() -> showLocatorNoteForm(latitude, longitude, "ticket", cleanTicket, cleanTicket, cleanTicket, "", ""));
+        }
+
+        @JavascriptInterface
+        public void addLocatorNoteForFeature(double latitude, double longitude, String targetType, String targetLabel, String targetId, String layerId, String featureId) {
+            runOnUiThread(() -> showLocatorNoteForm(latitude, longitude, targetType, targetLabel, targetId, "", layerId, featureId));
+        }
+
+        @JavascriptInterface
+        public void saveMapCamera(double latitude, double longitude, double zoom, double bearing, double pitch, String mode) {
+            AppSettings.saveMapCamera(MainActivity.this, latitude, longitude, zoom, bearing, pitch, mode);
+            AppSettings.saveLastView(MainActivity.this, "map", activeTicketNumber);
+        }
+
+        @JavascriptInterface
+        public void enterPictureInPicture() {
+            runOnUiThread(() -> {
+                updateMapPictureInPictureParams();
+                enterMapPictureInPicture();
             });
         }
     }

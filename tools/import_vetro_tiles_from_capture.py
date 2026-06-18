@@ -121,7 +121,7 @@ def extract_curl_entries(text: str) -> list[dict]:
                 url = token
             index += 1
         parsed_host = urlparse(url).netloc if url else ""
-        if parsed_host == "app.vetro.io":
+        if parsed_host == "app.vetro.io" or parsed_host.endswith(".vetro.io"):
             for key, value in headers.items():
                 lowered = key.lower()
                 if lowered in {"cookie", "authorization"} and value and key not in fallback_headers:
@@ -231,10 +231,31 @@ def feature_key(feature: dict) -> str:
     return f"{props.get('layer_id')}|{stable_id}|{geometry}"
 
 
-def stable_feature_key(feature: dict) -> str | None:
+def stable_feature_id(feature: dict) -> str:
     props = feature.get("properties") or {}
     stable_id = props.get("vetro_id") or props.get("ID") or props.get("feature_id") or props.get("id")
-    if stable_id in (None, ""):
+    return str(stable_id or "")
+
+
+def feature_geometry_type(feature: dict) -> str:
+    return str((feature.get("geometry") or {}).get("type") or "")
+
+
+def is_fragmented_geometry(feature: dict) -> bool:
+    return feature_geometry_type(feature) in {"LineString", "MultiLineString", "Polygon", "MultiPolygon"}
+
+
+def feature_has_display_id(feature: dict) -> bool:
+    props = feature.get("properties") or {}
+    return bool(props.get("ID") or props.get("feature_id"))
+
+
+def stable_feature_key(feature: dict) -> str | None:
+    if is_fragmented_geometry(feature):
+        return None
+    props = feature.get("properties") or {}
+    stable_id = stable_feature_id(feature)
+    if not stable_id:
         return None
     return f"{props.get('layer_id')}|{stable_id}"
 
@@ -261,10 +282,20 @@ def feature_detail_score(feature: dict) -> tuple[int, int, int]:
     return (source_zoom(feature), coordinate_score(geometry.get("coordinates")), geometry_bytes)
 
 
+def geometry_signature(feature: dict) -> str:
+    return json.dumps(feature.get("geometry") or {}, sort_keys=True, separators=(",", ":"))
+
+
 def dedupe_features(features: list[dict]) -> list[dict]:
     keyed: dict[str, dict] = {}
     unkeyed: dict[str, dict] = {}
+    fragmented: dict[str, list[dict]] = {}
     for feature in features:
+        props = feature.get("properties") or {}
+        stable_id = stable_feature_id(feature)
+        if is_fragmented_geometry(feature) and stable_id:
+            fragmented.setdefault(f"{props.get('layer_id')}|{stable_id}", []).append(feature)
+            continue
         stable_key = stable_feature_key(feature)
         if stable_key:
             current = keyed.get(stable_key)
@@ -273,7 +304,19 @@ def dedupe_features(features: list[dict]) -> list[dict]:
             continue
         fallback_key = feature_key(feature)
         unkeyed.setdefault(fallback_key, feature)
-    return list(keyed.values()) + list(unkeyed.values())
+    cleaned_fragments: list[dict] = []
+    for items in fragmented.values():
+        if len(items) == 1:
+            cleaned_fragments.extend(items)
+            continue
+        exact_by_geometry: dict[str, dict] = {}
+        for feature in items:
+            geometry_key = geometry_signature(feature)
+            current = exact_by_geometry.get(geometry_key)
+            if current is None or feature_detail_score(feature) > feature_detail_score(current):
+                exact_by_geometry[geometry_key] = feature
+        cleaned_fragments.extend(exact_by_geometry.values())
+    return list(keyed.values()) + cleaned_fragments + list(unkeyed.values())
 
 
 def read_existing_features(output_dir: Path) -> list[dict]:
@@ -289,6 +332,14 @@ def read_existing_features(output_dir: Path) -> list[dict]:
             continue
         features.extend(feature for feature in data["features"] if isinstance(feature, dict))
     return features
+
+
+def group_features_by_layer(features: list[dict]) -> dict[str, list[dict]]:
+    layer_features: dict[str, list[dict]] = {}
+    for feature in features:
+        layer_id = str((feature.get("properties") or {}).get("layer_id") or "Unknown")
+        layer_features.setdefault(layer_id, []).append(feature)
+    return layer_features
 
 
 def decode_tile(tile_bytes: bytes, tile: dict) -> list[dict]:
@@ -319,16 +370,44 @@ def decode_tile(tile_bytes: bytes, tile: dict) -> list[dict]:
 
 def write_outputs(features: list[dict], output_dir: Path, backup_dir: Path | None, source: Path, failures: list[str], replace: bool = False) -> dict:
     existing_count = 0
+    existing_by_layer: dict[str, list[dict]] = {}
     if not replace:
         existing = read_existing_features(output_dir)
         existing_count = len(existing)
+        existing_by_layer = group_features_by_layer(existing)
+        existing_stable_ids = {
+            f"{(feature.get('properties') or {}).get('layer_id')}|{stable_feature_id(feature)}"
+            for feature in existing
+            if stable_feature_id(feature)
+        }
+        existing_feature_keys = {feature_key(feature) for feature in existing}
+        filtered_features = []
+        for feature in features:
+            props = feature.get("properties") or {}
+            stable_id = stable_feature_id(feature)
+            if stable_id and f"{props.get('layer_id')}|{stable_id}" in existing_stable_ids:
+                continue
+            if not stable_id and feature_key(feature) in existing_feature_keys:
+                continue
+            filtered_features.append(feature)
+        features = filtered_features
         features = existing + features
-    layer_features: dict[str, list[dict]] = {}
-    for feature in dedupe_features(features):
-        layer_id = str((feature.get("properties") or {}).get("layer_id") or "Unknown")
-        layer_features.setdefault(layer_id, []).append(feature)
+    layer_features = group_features_by_layer(dedupe_features(features))
     if not layer_features:
         raise RuntimeError("No VETRO features were decoded from the capture")
+
+    coverage_guardrails: dict[str, dict[str, int | str]] = {}
+    if not replace:
+        for layer_id, existing_items in sorted(existing_by_layer.items()):
+            merged_count = len(layer_features.get(layer_id, []))
+            existing_layer_count = len(existing_items)
+            if merged_count < existing_layer_count:
+                layer_features[layer_id] = existing_items
+                coverage_guardrails[f"Layer_{layer_id}"] = {
+                    "kept": "existing_layer",
+                    "existing_count": existing_layer_count,
+                    "merged_count": merged_count,
+                }
 
     tmp_dir = output_dir.with_name(f"{output_dir.name}.tmp-{int(time.time())}")
     if tmp_dir.exists():
@@ -341,6 +420,7 @@ def write_outputs(features: list[dict], output_dir: Path, backup_dir: Path | Non
         "failures": failures,
         "mode": "replace" if replace else "append_only_merge",
         "existing_feature_count": existing_count,
+        "coverage_guardrails": coverage_guardrails,
         "layers": {},
     }
     combined = []
@@ -406,11 +486,31 @@ def main() -> int:
         )
         return 1
 
+    preflight_tile: tuple[dict, bytes] | None = None
+    if not stats["embedded_body_count"] and captures:
+        try:
+            preflight_tile = (captures[0], download_tile(captures[0]))
+        except HTTPError as error:
+            if getattr(error, "code", None) == 401:
+                print(
+                    "No features decoded because the first VETRO tile replay returned 401 Unauthorized. "
+                    "Capture fresh VETRO tile traffic while logged in, using HAR with content/sensitive data or Copy as cURL with current cookies.",
+                    file=sys.stderr,
+                )
+                return 1
+            preflight_tile = None
+        except (URLError, TimeoutError, OSError, ValueError):
+            preflight_tile = None
+
     features = []
     failures = []
     for index, capture in enumerate(captures, start=1):
         try:
-            tile_bytes = download_tile(capture)
+            if preflight_tile and capture["url"] == preflight_tile[0]["url"]:
+                tile_bytes = preflight_tile[1]
+                preflight_tile = None
+            else:
+                tile_bytes = download_tile(capture)
             tile_features = decode_tile(tile_bytes, capture)
             features.extend(tile_features)
             print(f"[{index}/{len(captures)}] layer {capture['layer_id']} {capture['z']}/{capture['x']}/{capture['y']}: {len(tile_features)} feature(s)")
@@ -419,7 +519,14 @@ def main() -> int:
             print(f"[{index}/{len(captures)}] failed: {error}", file=sys.stderr)
 
     if not features:
-        print(f"No features decoded. Failures: {len(failures)}", file=sys.stderr)
+        if failures and all("401" in failure or "Unauthorized" in failure for failure in failures):
+            print(
+                "No features decoded because every VETRO tile replay returned 401 Unauthorized. "
+                "Capture fresh VETRO tile traffic while logged in, using HAR with content/sensitive data or Copy as cURL with current cookies.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"No features decoded. Failures: {len(failures)}", file=sys.stderr)
         return 1
     manifest = write_outputs(features, Path(args.output_dir), Path(args.backup_dir) if args.backup_dir else None, capture_path, failures, replace=args.replace)
     total = sum(item["feature_count"] for item in manifest["layers"].values())

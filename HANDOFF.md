@@ -1,8 +1,307 @@
 # Fiber Locator Dashboard Handoff
 
-Updated: 2026-06-01
+Updated: 2026-06-18
 
-## Current Stop Point - 2026-06-01 19:20 CDT
+## Photo Library API And Admin Upload/Export - 2026-06-18
+
+- Added a server-backed photo library for Timestamp Camera evidence photos on the live cloud dashboard. Admin/site-owner users can open Settings -> Photo Library or More -> Location Photos to bulk upload existing photos without needing OneDrive connected.
+- Location photo uploads now store files locally under `data/location_photos/files/<photo_id>/`, preserve original watermarked images, extract EXIF GPS when present, accept fallback latitude/longitude, ticket number, location label, address/site, review status, and note metadata, and sort/group exports by ticket/location.
+- Added admin/site-owner photo management endpoints: `GET/POST /api/location-photos/settings`, `GET /api/location-photos/export.csv`, `GET /api/location-photos/export.zip`, `POST /api/location-photos/manage`, plus local file serving through `/api/location-photos/file?id=...`.
+- Ticket detail and mobile ticket detail now show prior photo history for photos tied to the ticket number or located inside the ticket polygon. When prior photos exist, a bottom `Photo History` button opens the Location Photos page filtered to that ticket/area.
+- Existing photo upload paths were preserved: regular ticket attachments still use `/api/attachments`, locator note map-spot attachments still use `/api/locator-notes`, and restoration/in-house related restoration photos still use `/api/restoration-jobs/upload`. Restoration photos were fixed to store locally under `data/restoration_jobs/files/<job_id>/` with `/api/restoration-jobs/file?job=...&id=...`, avoiding the previous OneDrive dependency and undefined upload filename bug.
+- Web upload pickers no longer force `capture="environment"`; they allow selecting existing Timestamp Camera photos/videos from gallery/files. Native Android already uses `ACTION_OPEN_DOCUMENT` for existing image/video selection.
+- Google Drive research result: current implementation keeps the dashboard server as source of truth and uses ZIP/CSV export for Google Drive. Direct Google Drive sync should use the narrower `drive.file` OAuth scope later if Reed still wants automatic Drive sync, because broad Drive scopes add avoidable verification/policy friction.
+- Cache bust bumped to `20260618015500` in `index.html` and `static/service-worker.js`.
+- Local verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py tools/export_vetro_google_earth_layers.py`, `node --check static/app.js`, Android `:app:assembleDebug`, local `/api/location-photos` upload, file retrieval, CSV export, ZIP export with `manifest.csv`, and Playwright/Chrome desktop `1366x900` + mobile `390x844` checks showing Location Photos and Settings panel visible with no overflowing controls.
+- Deployed to the cloud server `/opt/onecall-locator-dashboard` after backing up previous live files to `data/deploy_backups/20260618015512/`. Live `onecall-dashboard` restarted and is `active`; live hashes match local for `server.py`, `index.html`, `static/app.js`, `static/styles.css`, and `static/service-worker.js`. Public unauthenticated checks correctly redirect `/` to login and return `401 Login required` for `/api/location-photos/settings`.
+
+## Native Dig Tickets Scroll And Android Auto Smooth Map/Tickets Update - 2026-06-18
+
+- Reed asked that previously requested Android/Android Auto changes not be lost: preserve layer `28` and `42` size boosts, near-transparent Android Auto ticket polygons, high-accuracy location filtering, Dashboard Map, and the same Google Play package.
+- Native Android/WebView Dig Tickets layout now keeps the sheet constrained to the phone viewport and gives the ticket table the remaining space as the scroll surface. The table wrapper uses vertical and horizontal scrolling with touch momentum, while the top horizontal scroller stays usable. A Playwright/Chrome CSS fixture verified portrait `390x844` and landscape `844x390` both keep the sheet viewport-sized and allow vertical table scroll plus horizontal table/top-scroll movement.
+- Android Auto Tickets now uses one regular `Tickets` tab. The separate TCW tab was removed, TCW/DMI tickets are included in the regular ticket list, and ticket/map colors use dashboard-style status colors with TCW/DMI kept orange.
+- Android Auto `Dashboard Map` now disables follow mode and fits the selected ticket polygon/rings when available; if no polygon is present it centers the ticket coordinate. Opening the normal Map tab still starts in live-follow behavior.
+- Android Auto map drawing was tuned for smoother pan/zoom: redraws are throttled, offscreen points/paths are skipped, long paths are sampled by zoom level, and VETRO drawing is capped per frame instead of attempting to draw every loaded feature during interaction.
+- Bumped native Android to `versionCode 48`, `versionName 0.1.47`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `24c691d0cbcae814f42d712e1b9ec9dd484fc65c83269d680aa3a0254ace4c26`. Release APK SHA256 `0785029d7bfc630b9903d9286af8c5ac557d9436fc1051d68af35f07b27e80b0`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py tools/export_vetro_google_earth_layers.py`, `node --check static/app.js`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease`, `aapt dump badging` showing `versionCode 48` / `versionName 0.1.47`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `MAP_TEMPLATES`, and `ACCESS_SURFACE`, plus `apksigner verify --verbose`.
+- Device validation note: `adb devices -l` showed no attached devices, and `adb connect 192.168.50.173:42023` failed with `No route to host`, so no live phone/Android Auto runtime smoke test could be completed from this shell for this build.
+
+## Android Auto Polygon Transparency Follow-Up - 2026-06-18
+
+- Reed reported Android Auto polygons were still too dark/thick to see the streets/map beneath them.
+- Android Auto ticket polygon rendering now uses a near-invisible fill alpha `2` plus a thin outline alpha `90` / `1.5px`, instead of relying on the previous filled alpha `7`. This keeps polygon boundaries visible while preventing the filled area from washing out the base map.
+- Bumped native Android to `versionCode 47`, `versionName 0.1.46`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `a09a05bb55c309b3ac38cd358d87b9bd21a82e025225f205c1c7cca0b455742a`. Release APK SHA256 `d44b39be53a5c15fdf798860aafb23465f888c83cee1d3ef7206388aacf67146`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleRelease :app:bundleRelease`, `aapt dump badging` showing `versionCode 47` / `versionName 0.1.46`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `MAP_TEMPLATES`, and `ACCESS_SURFACE`, plus `apksigner verify --verbose`.
+
+## Android Auto Layer 28/42 Size, Polygon Transparency, And Location Accuracy - 2026-06-18
+
+- Reed asked for Android Auto VETRO layer `28` hand holes and layer `42` network points/flower pots to be a little bigger while keeping other layer styling/colors unchanged; layer `28` remains forced square and layer `42` remains forced circle on the car map.
+- Android Auto car rendering now gives layers `28` and `42` a car-map-only `+4.0` size boost. Existing car-map size handling for layers `17` and `654` remains unchanged at `+2.5`; all saved dashboard/app colors and style filters still come from the published app/mobile state.
+- Ticket polygon fill on the Android Auto map was reduced again from alpha `14` to alpha `7` so the base map remains easier to see through.
+- Researched Android location guidance and switched the Android Auto map from raw `LocationManager` GPS/network listeners to Google Play Services Fused Location Provider high-accuracy updates with `waitForAccurateLocation`, 1-second target updates, 500ms minimum updates, 1m minimum distance, and filtering for stale, mock, low-accuracy, or physically implausible jump fixes. This should reduce the temporary off-road/out-of-area jumps Reed saw while keeping the map in live follow mode.
+- Added `com.google.android.gms:play-services-location:21.3.0` and bumped native Android to `versionCode 46`, `versionName 0.1.45`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `964c2c8d27b9e836cbb359a35544e6138f5196bebf6c389f3d898a8882db1947`. Release APK SHA256 `dc9ad520b4c1e8d7d699e7f27fc293b3ba2306d33838ffd999f790b9ebb19289`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleRelease :app:bundleRelease`, `aapt dump badging` showing `versionCode 46` / `versionName 0.1.45`, `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `MAP_TEMPLATES`, and `ACCESS_SURFACE`, plus `apksigner verify --verbose`. No ADB device was connected, so no live phone/DHU visual pass was run from this shell.
+
+## Android Auto Ticket Dashboard Map Action - 2026-06-17
+
+- Reed asked for an Android Auto ticket-detail option to go to the ticket on the Fiber Locator dashboard map, not only `Navigate with Google Maps`.
+- `TicketDetailScreen` now shows two actions: `Dashboard Map` and `Google Maps`. `Dashboard Map` pushes `CarLiveMapScreen` with the selected ticket as focus; the map centers on that ticket at close zoom and disables live-follow until the user taps `Follow` again. If the ticket has no coordinates, Android Auto shows a toast instead of opening the map.
+- Bumped native Android to `versionCode 45`, `versionName 0.1.44`. Current release AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `0d50dc4a139aa99238904add4662406307a75800e3d31955c4825b14bfe46fe5`. Release APK SHA256 `3bd2839606ade4d2d7c4ca213fd609f8aa5a1d976ec2a3d5d411c0af09e13c71`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `:app:assembleDebug`, `:app:assembleRelease`, `:app:bundleRelease`, `aapt dump badging` showing `versionCode 45` / `versionName 0.1.44`, `MAP_TEMPLATES`, and `ACCESS_SURFACE`, plus `apksigner verify --verbose`. Reed said the phone was no longer connected over ADB at request time, so no device/DHU visual check was run for this build.
+
+## Android Auto VETRO Layer Size And Layer 17 Follow-Up - 2026-06-17
+
+- Reed reported Android Auto was still missing VETRO layer 17 and asked for layers 28, 42, and 654 to be a couple points larger; if possible, layer 28 should be square and layer 42 circle.
+- Android Auto VETRO loading now canonicalizes layer IDs before filtering, so values like `17`, `Layer_17`, and `layer_17` match the same selected layer. This is intended to fix layer 17 still not appearing when the API/property name includes a `Layer_` prefix.
+- Android Auto car rendering now applies a car-map-only `+2.5` size boost to layers `17`, `28`, `42`, and `654`. For point features, layer `28` is forced to square and layer `42` is forced to circle. Other saved dashboard/app colors, line styles, filters, and service-location styling remain intact.
+- Bumped native Android to `versionCode 44`, `versionName 0.1.43`. Current release AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `9f89ec134235725516af084ecb67d74f1d1b20704ed74da1a347d3a791b9da4b`. Release APK SHA256 `936a13719fddd117f310d9f4175a1958475b5f4cc3b098cad7d26d780e2d784f`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `:app:assembleDebug`, `:app:assembleRelease`, `:app:bundleRelease`, `aapt dump badging` showing `versionCode 44` / `versionName 0.1.43`, `MAP_TEMPLATES`, and `ACCESS_SURFACE`, plus `apksigner verify --verbose`. Reed said the phone is no longer connected over ADB, so no device/DHU visual check was run for this build.
+
+## Android Auto Layer 17 And Screenshot Pass - 2026-06-17
+
+- Reed confirmed the Google Play-installed `versionCode 42` / `versionName 0.1.41` build was working but reported Android Auto was missing VETRO layer 17 and wanted VETRO layers darker/opaque while ticket polygons remain easy to see through.
+- Captured current Play-installed phone screenshots before code changes under `/home/linux/fiber.locator.dashboard/screenshots/android-current-20260617-142257/`: `01-phone-tickets.png`, `02-phone-ticket-detail-retake.png`, `03-phone-map.png`, and `04-phone-menu-retake.png` are the best current phone-app screenshots for Google Play/GitHub. Older duplicate/missed-tap captures remain in the folder.
+- Android Auto screenshot attempts: the phone is connected at `192.168.50.173:35959`, Android Auto virtual displays are visible in `dumpsys display`, and DHU can connect headlessly. Android blocks direct `screencap -d` / `screenrecord --display-id` capture of those protected virtual displays from ADB, so no usable Android Auto PNG was captured from this shell.
+- Android Auto VETRO fix: removed the `loadVetroMapFeatures` 30k feature stop and removed the draw loop's old 18k feature cutoff, so layer 17 should not disappear just because earlier layers filled the feature cap. Car rendering now still uses the same published app/mobile filters, colors, sizes, line styles, point shapes, and service-location styling from the dashboard/app view, but it clamps VETRO opacity to near-opaque/darker for car readability. Ticket polygon fill remains very light.
+- Bumped native Android to `versionCode 43`, `versionName 0.1.42`. Current release AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `7c8a8c55d17ac7943247d7477f3351405ecee6074b93e1831a5d8de0d505aa10`. Release APK SHA256 `da26a43d1acdf8cfcb594897f9b891a9c24a128f4566a00cf49e511df9c7a52c`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `:app:assembleDebug`, `:app:assembleRelease`, `:app:bundleRelease`, `aapt dump badging` showing `versionCode 43` / `versionName 0.1.42`, `MAP_TEMPLATES`, and `ACCESS_SURFACE`, plus `apksigner verify --verbose`.
+
+## Android Auto Map Tune And PiP Measure Fix - 2026-06-17
+
+- Reed reported the Android Auto ticket polygons were too dark to see the base map, follow mode was not zooming close enough, the base map should load faster if possible, `Fit` was unnecessary, +/- zoom would be useful, and the native phone app's map measure toolbar covered too much of Picture-in-Picture.
+- Android Auto map changes: ticket polygon fill alpha reduced to a very light shade, follow mode now targets zoom `18`, manual zoom range now reaches `20`, startup keeps follow mode active even if it temporarily centers on work before a location fix arrives, `Fit`/`Refresh` actions were replaced with `+`/`-`, Mapbox raster tiles request 256px tiles, tile loading uses a 4-thread tile executor, cache size increased to 192 tiles, and tile timeouts were shortened.
+- Native phone map PiP change: `applyPictureInPictureChrome(...)` now toggles a WebView `body.pip-mode` class, and the embedded map CSS hides `.measure` while PiP is active so the measure toolbar does not cover the floating map.
+- Bumped native Android to `versionCode 42`, `versionName 0.1.41`. Current release AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `e2978fbc6411b22ef20d84348af9f2627702045d60f859dd9cf36c184c2f0d72`. Release APK SHA256 `e6d0f23f2f42d7c49340af473ede9d8df32e2be444b94e0a1f314ee4eda88d97`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `:app:assembleDebug`, `:app:assembleRelease`, `:app:bundleRelease`, `aapt dump badging` showing `versionCode 42` / `versionName 0.1.41`, `MAP_TEMPLATES`, and `ACCESS_SURFACE`, plus `apksigner verify --verbose`.
+- Live device pairing succeeded after Reed provided pairing port `35289` and code `271138`; the usable ADB connection is `192.168.50.173:36291` on Samsung `SM_S906U`. `adb install -r android-auto/app/build/outputs/apk/release/app-release.apk` is blocked because the phone has the Google Play-installed `versionCode 41` / `versionName 0.1.40` package signed by Play (`installerPackageName=com.android.vending`, package signature token `c22a40ae`), while the local release APK is signed with the Fiber Locator upload/local key (`c468ca81732c166865fccdb8979f5ea73c7e4e4b49db96279fa7ce5e51ea8396`). Do not uninstall the Play build unless Reed approves the possible app-data/login impact, or upload `0.1.41` through Play Internal testing and update from Play.
+- Current-device evidence: launching the installed Play build works and loads the ticket list; reference screenshots captured at `/tmp/fiber-locator-current-phone.png` and `/tmp/fiber-locator-current-phone-after-wait.png`. Desktop Head Unit exists at `/home/linux/Android/Sdk/extras/google/auto/desktop-head-unit`; normal UI mode fails in this headless shell with `SDL_CreateWindowRenderer failed`, while `SDL_VIDEODRIVER=dummy ... -h -a 192.168.50.173:36291` connects headlessly but does not produce a usable visual screenshot.
+
+## Android Auto Map Parity Fix - 2026-06-17
+
+- Reed tested the first Android Auto map build and reported it loaded layers but had no base map, too many/non-matching layers, no phone-map styling parity, no same live-follow behavior, and no obvious return to tickets.
+- `CarLiveMapScreen` now draws raster base-map tiles behind overlays instead of the previous schematic grid. It maps the saved dashboard/app base-map style to Mapbox raster style tiles when a Mapbox token is available from `/api/map-config`, and falls back to matching public OSM/Esri/Carto tile families where needed.
+- Android Auto VETRO rendering now uses the same published app/mobile state for layer filters and styling: `vetroVisible`, layer/plan/build/placement/status/geometry/fiber/route/point filters, `vetroSearch`, per-layer colors, styles, sizes, opacities, and service-location shape/color/outline/size/opacity. This replaces the earlier hardcoded VETRO colors and broad layer rendering.
+- Live location now follows by default on the Android Auto map. `Follow`/`Following` recenters on the phone location; panning disables follow; `Fit` zooms to work tickets. The map screen action strip now includes `Tickets` to return directly to the ticket tabs.
+- Bumped native Android to `versionCode 41`, `versionName 0.1.40`. Current release AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `bc9af2fb2c6f166cba543f957adcd7b5c871f4f3863387b273da9deaa8cfb601`. Release APK SHA256 `8b18016b24fa45f685e6f5c85e9191a63f86ec7ebd58cf28dc6a3eb59939b7ef`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `:app:assembleDebug`, `:app:assembleRelease`, `:app:bundleRelease`, `aapt dump badging` showing `versionCode 41` / `versionName 0.1.40`, packaged manifest showing `MAP_TEMPLATES`, `ACCESS_SURFACE`, and Android Auto `CarAppService`, plus `apksigner verify --verbose`. No attached Android Auto/DHU device was visible to `adb devices` in this shell for interactive car-screen validation.
+
+## Android Auto Live Map Tab - 2026-06-17
+
+- Researched the current Android for Cars map path and implemented the supported approach: Android Auto cannot reuse the phone WebView map for a driving template, so the app now uses Car App Library map templates plus `ACCESS_SURFACE` and a `SurfaceCallback` to draw operational map content directly on the car display.
+- Added a `Map` tab to `TicketListScreen`. Selecting it pushes `CarLiveMapScreen`, which uses `MapWithContentTemplate` on Car API 7+ and falls back to a clear message on older hosts.
+- `CarLiveMapScreen` loads the same dashboard-filtered ticket snapshot as the phone app, locator notes, and VETRO features from `/api/vetro`, then draws ticket polygons, ticket markers, locator notes, VETRO point/line/polygon features, and live phone location onto the Android Auto map surface. Controls include `Refresh`, `Fit`, `+`, `-`, host pan mode, pinch/scroll callbacks where supported, and tapping near a ticket opens ticket detail.
+- Added `MapFeature` and `TicketRepository.loadVetroMapFeatures(...)` for lightweight Android Auto VETRO rendering. The loader respects `vetroVisible` and selected VETRO layer filters from the published app/mobile state, and samples long paths to keep car rendering responsive.
+- Bumped native Android to `versionCode 40`, `versionName 0.1.39`. Current release AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `029f2608f6c2c44cbde66f5694c44955d562fbe0a6356cbd26ed5483bbbe521d`. Release APK SHA256 `0b480960ac27fab5b1965be08925fd5506b27c7805c9c34fb6897ec3f6209a91`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `:app:assembleDebug`, `:app:assembleRelease`, `:app:bundleRelease`, `aapt dump badging` showing `versionCode 40` / `versionName 0.1.39`, packaged manifest showing `MAP_TEMPLATES`, `ACCESS_SURFACE`, and the Android Auto `CarAppService`, plus `apksigner verify --verbose`. No physical Android Auto/DHU device was attached in this shell for interactive map validation.
+
+## Native Android Map Picture-in-Picture - 2026-06-17
+
+- Added Android Picture-in-Picture support to the native phone app map screen instead of a `SYSTEM_ALERT_WINDOW` overlay. Android docs describe PiP as the supported system floating-window mode for navigation and caution against using system alert windows for PiP-like behavior.
+- `MainActivity` now declares PiP support and resizeability in the manifest, sets 16:9 PiP params with source-rect hints, enables Android 12+ auto-enter from the map, enters PiP on Home/user-leave for older supported devices, and hides app chrome/nav while in PiP.
+- The native map WebView now shows a small inward-arrow shrink button in the upper-left corner. Tapping it calls `FiberLocator.enterPictureInPicture()` and keeps the current map view floating above other apps. Android's standard PiP controls handle tap-to-expand/full-screen.
+- Bumped native Android to `versionCode 39`, `versionName 0.1.38`. Current release AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `887ea6809852f5009cfd3853613ffa022b89600f1888c926dd93bedd7280d3a2`. Release APK SHA256 `6d04be1e0c53f1d99a7bf24cfebb137015226ea756426de64a8521afad20f34a`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py`, `:app:assembleDebug`, `:app:assembleRelease`, `:app:bundleRelease`, `aapt dump badging` showing `versionCode 39` / `versionName 0.1.38`, `aapt dump xmltree` showing `supportsPictureInPicture=true` and `resizeableActivity=true`, and `apksigner verify --verbose`.
+
+## Live VETRO Duplicate Cleanup - 2026-06-16
+
+- Reed reported that a DevTools VETRO capture doubled dashboard layers. Live cloud counts confirmed duplication after `vetro_capture_20260616T151206Z.txt`: `Layer_17` had jumped to `25851`, `Layer_654` to `21595`, and `Layer_659` to `4`.
+- Repaired live `/opt/onecall-locator-dashboard/data/layers/vetro_geojson_layers` from the latest good baseline `data/layers/backups/vetro_geojson_layers.backup-1781622774`, preserving only genuinely new stable IDs from today's doubled folder. Current counts after repair: `Layer_17 14083`, `Layer_26 1167`, `Layer_28 6210`, `Layer_42 6863`, `Layer_43 12`, `Layer_654 13970`, `Layer_659 2`.
+- Safety backups of the doubled state are on the live host at `data/layers/backups/vetro_geojson_layers.doubled-before-repair-20260616T162019Z` and `data/layers/backups/vetro_geojson_layers.swapped-doubled-20260616T162019Z`.
+- Patched and deployed `tools/import_vetro_tiles_from_capture.py` so append-only capture merges skip incoming features whose stable VETRO ID already exists in the current layer set. This keeps older full-coverage baseline fragments and appends only new stable features, preventing the same duplicate-layer failure on future captures.
+- Verification: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py` passed locally and on the live host; `onecall-dashboard` restarted and is `active`; public `https://fiber-locator.5-78-214-184.sslip.io/` returns `200`; unauthenticated `/api/vetro` returns expected `401 Login required`.
+
+## Native Android Map Persistence And 3D Tilt - 2026-06-15
+
+- Follow-up 9: Reed reported the Android app showed too many/duplicated-looking VETRO layers while the admin dashboard styling looked correct. Root cause was server-side app/employee/view-preset normalization dropping VETRO filter keys, so the app could receive style settings without the selected layer/plan filters and fall back to showing all VETRO features. Server now preserves VETRO filter keys in app/default/employee/view preset state. Live state was backed up at `/opt/onecall-locator-dashboard/data/dashboard_state.before-vetro-filter-preserve-20260615162544.json`, then the current `locator_default` VETRO filter keys were copied into `employee_dashboard` and the `app view` preset. Verified style keys were unchanged for `locator_default`, `employee_dashboard`, and `app view`; only filter keys changed.
+- Follow-up 8: Reed reported that ticket polygons showed in 3D but VETRO/Vitruvi layers disappeared on both web and Android. Live browser diagnostics showed `mismatched image size` errors during generated Mapbox icon registration, before VETRO/Vitruvi GeoJSON sources were created. Web and Android now add 3D sources even while Mapbox style tiles/icons are still settling, catch source/icon failures independently, and pass generated point icons as `ImageData` so saved point shapes and service-location labels can render in 3D.
+- Bumped web cache bust to `20260615213000` in `index.html` and `static/service-worker.js`.
+- Bumped native Android version to `versionCode 38`, `versionName 0.1.37`. Current Play upload artifact: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `75e617461ebfd6dc02433af0f06ab4d20f3eb2f1f02489566779efab6de868ae`.
+- Follow-up 7: Reed reported Android 3D basemap looked good but all layers disappeared again. Patched the Android WebView 3D retry loop so it no longer stops after ticket layers only; it now keeps retrying until ticket, note, VETRO, and Vitruvi 3D sources exist, with up to 45 seconds of attempts after style load. VETRO/Vitruvi add failures are caught independently so one failed overlay attempt does not kill later retries.
+- Bumped native Android version to `versionCode 36`, `versionName 0.1.35`. Current Play upload artifact: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `122ce923b3185072209e2e50aca5030b09663232d61cbddbc7f256d184675d10`.
+- Follow-up 6: Reed confirmed 3D maps work but VETRO point shapes and service-location labels were lost in 3D. Patched web and Android 3D VETRO/Vitruvi point rendering to use generated Mapbox symbol icons for saved shapes (`circle`, `square`, `diamond`, `pin`, `house`) instead of generic circle layers. Service-location points now use the dedicated service-location shape/color/outline/size/opacity settings and carry `ID`/`feature_id` labels when `vetroSlLabels` is enabled.
+- Bumped web cache bust to `20260615193000` in `index.html` and `static/service-worker.js`.
+- Bumped native Android version to `versionCode 35`, `versionName 0.1.34`. Current Play upload artifact: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `807d57e1f0aad809d548e1eeda310007a8b5ab6ccf5f60eb4251043189334bde`.
+- Follow-up 5: researched Mapbox Standard, Google Photorealistic 3D Tiles, and MapTiler 3D buildings. Mapbox Standard was tried first but did not complete style loading reliably in live headless verification, so the final implementation uses the reliable Mapbox `streets-v12` regular base map and `satellite-streets-v12` alternate map, with an explicit `fill-extrusion` `map3d-buildings` layer from the Mapbox `composite/building` vector source. This gives the regular-map 3D building/house-shape view Reed asked for while preserving ticket, locator note, VETRO, and Vitruvi overlays.
+- Bumped web cache bust to `20260615191000` in `index.html` and `static/service-worker.js`.
+- Bumped native Android version to `versionCode 34`, `versionName 0.1.33`. Current Play upload artifact: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `bb1cfa33fd55aa61288ae4931d67f4b9bb140eca5fcf0032cd4266b6f9bdd0bb`.
+- Follow-up 2: fixed the Android 3D blank-overlay regression by making the Mapbox overlay setup defensive, replacing the risky solid-line filter expression, and adding a dedicated 3D user-location GeoJSON source/layer. The 3D view now keeps ticket overlays, VETRO/Vitruvi overlays, and live location when switching from 2D to 3D.
+- Added the same 3D controls to the web dashboard: `3D` toggle, Mapbox satellite-streets/streets switch, tilt up/down, and rotate. The web 3D overlay reuses `visibleTickets()`, `filteredVetroGeojson()`, `filteredVitruviGeojson()`, ticket colors, VETRO layer filters/styles/colors/sizes/opacities, Vitruvi layer filters/styles/colors/sizes/opacities, locator notes, and live location.
+- Follow-up 3: fixed the web and Android 3D layer-loss bug by scheduling overlay/terrain refreshes from Mapbox `load`, `style.load`, `styledata`, and `idle` events, plus guarded retries through 5 seconds after style rebuilds. Live Playwright proved the web 3D basemap loads, ticket/note/VETRO/Vitruvi 3D sources/layers are added, tilt changes pitch from `60` to `70`, and style switching to streets reattaches overlays.
+- Follow-up 4: Reed reported web 3D still looked flat and Android 3D still had no overlays. Web now hides the Leaflet 2D map while 3D is enabled and raises the Mapbox 3D canvas/control z-index so the tilt view is visually on top; follow-up browser testing caught and fixed the missing `#map` element registry entry, made the hidden Mapbox container explicitly full-size with a forced resize, made the dynamic Mapbox GL loader remove failed scripts and retry instead of hanging after a failed request, and pinned `#map3d.mapboxgl-map` to absolute positioning so Mapbox GL CSS cannot push the canvas below the visible map. Android now keeps retrying 3D overlay setup for up to 30 seconds and only marks overlays loaded after ticket/note sources and core ticket layers exist.
+- Bumped web cache bust to `20260615181500` in `index.html` and `static/service-worker.js`.
+- Bumped native Android version to `versionCode 32`, `versionName 0.1.31`. Current Play upload artifact: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `f45eded795a5c16ab28abb9173a8605dfacdc55f0fd211123d67cc412ad5a560`.
+- Deployed `index.html`, `static/app.js`, `static/styles.css`, `static/service-worker.js`, and the rebuilt Android APK/AAB to `/opt/onecall-locator-dashboard`, restarted `onecall-dashboard`, and verified service `active`. Live SSH hashes match local for the web files and Android artifacts; public HTTPS hashes match local for `app-release.aab` and `app-release.apk`. Unauthenticated `/` and `/static/app.js` correctly redirect to `/login`.
+- Verification passed for follow-up 3: `node --check static/app.js`, `python3 -m py_compile server.py tools/*.py`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease`, `/home/linux/Android/Sdk/build-tools/36.0.0/aapt dump badging`, `/home/linux/Android/Sdk/build-tools/36.0.0/apksigner verify --verbose`, live SSH SHA256 checks, public APK/AAB SHA256 checks, and HTTPS Playwright 3D verification against `https://fiber-locator.5-78-214-184.sslip.io`.
+- Follow-up: patched the 3D Mapbox view so VETRO/Vitruvi use the same saved dashboard/mobile state as the 2D map: layer visibility filters, VETRO attribute filters, Vitruvi selected layers, per-layer colors, line styles, point shapes, sizes, and opacities. Added a 3D style button to switch between Mapbox satellite-streets and Mapbox streets so Reed can choose either satellite context or a base-map view with street names/addresses.
+- Bumped native Android version to `versionCode 27`, `versionName 0.1.26`. Current Play upload artifact: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `cee4a24d7b1b3d4afb25a0da81fd20158606e9c86d08005d131af7cc80e08a52`.
+- Copied the rebuilt `0.1.26` release APK/AAB to the live host. Live SSH and public HTTPS SHA256 checks match local for both `app-release.aab` and `app-release.apk`; `onecall-dashboard` is active.
+- Verification passed for the follow-up: `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleRelease :app:bundleRelease`, `/home/linux/Android/Sdk/build-tools/36.0.0/aapt dump badging`, `/home/linux/Android/Sdk/build-tools/36.0.0/apksigner verify --verbose`, live SSH SHA256 checks, and public HTTPS SHA256 checks.
+- Patched the native Android phone app so the last screen is stored in `SharedPreferences`; if the user leaves the app on the map, locks the phone, pockets it, or reopens after process recreation, startup restores the map instead of defaulting to the ticket list.
+- Added map-camera persistence from the embedded map WebView through `FiberLocator.saveMapCamera(...)`: center latitude/longitude, zoom, bearing, pitch, and 2D/3D mode are saved after map movement and restored before the app falls back to fitting all tickets.
+- Added a `3D` map control backed by Mapbox GL JS inside the existing Android WebView. It uses `/api/map-config` for the live `MAPBOX_ACCESS_TOKEN`, loads `mapbox://styles/mapbox/satellite-streets-v12`, enables Mapbox terrain, and adds ticket polygons/points, locator notes, VETRO, and Vitruvi overlays. If the token is missing, the existing Leaflet map remains available and the 3D button reports `No 3D`.
+- Bumped native Android version to `versionCode 26`, `versionName 0.1.25`. Current Play upload artifact: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `743a327cb44a0d1408db0c9d7e9923fef61af20924c7ebb7f9b8a0f898126043`.
+- Copied the rebuilt release APK/AAB to `/opt/onecall-locator-dashboard/android-auto/app/build/outputs/...` on the live host. Live `MAPBOX_ACCESS_TOKEN` is set and `onecall-dashboard` is active. Public HTTPS checksums match local for `https://fiber-locator.5-78-214-184.sslip.io/android-auto/app/build/outputs/bundle/release/app-release.aab` and `https://fiber-locator.5-78-214-184.sslip.io/android-auto/app/build/outputs/apk/release/app-release.apk`.
+- Verification passed: `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleRelease :app:bundleRelease`, `/home/linux/Android/Sdk/build-tools/36.0.0/aapt dump badging`, `/home/linux/Android/Sdk/build-tools/36.0.0/apksigner verify --verbose`, live SSH SHA256 checks, and public HTTPS SHA256 checks.
+
+## VETRO Capture Import Guardrails - 2026-06-12
+
+- Investigated Reed's report that `Update VETRO` capture import keeps failing. Latest live capture `data/private/vetro_captures/vetro_capture_20260612T122308Z.txt` had 273 VETRO tile requests across layers 17, 26, 28, 42, 43, 654, and 659, but replaying the first tile returned `401 Unauthorized`; the capture has cookies but no embedded tile bodies, so the VETRO login/cookies are stale for server-side replay.
+- Current live layer counts remained intact after the failed import: `Layer_17 13402`, `Layer_26 1155`, `Layer_28 6210`, `Layer_42 6863`, `Layer_43 12`, `Layer_654 13550`, `Layer_659 2`.
+- Patched `tools/import_vetro_tiles_from_capture.py` so stale-cookie captures fail fast on the first 401 with a clear fresh-login/fresh-capture message instead of spending minutes replaying every tile.
+- Added append-only coverage guardrails: existing VETRO layer files are read before merge, duplicate non-line features keep the higher-detail/source-zoom geometry, exact duplicate geometries are deduped, one `Layer_*.geojson` file is written per layer, and append-only imports cannot reduce an existing layer's feature count. Whole replacement still requires explicit `--replace`.
+- Patched `server.py` so a capture replay 401 reports `VETRO login expired...` and exposes the VETRO login link instead of a generic import failure.
+- Deployed `server.py` and `tools/import_vetro_tiles_from_capture.py` to `/opt/onecall-locator-dashboard`, compiled them on the live host, restarted `onecall-dashboard`, and verified service `active`.
+- Verification: `python3 -m py_compile server.py tools/*.py`, synthetic importer guardrail test, live dry-run of the latest capture, live fast-fail replay of the stale capture, and post-replay layer counts unchanged.
+- Added `tools/export_vetro_google_earth_layers.py` to export current VETRO GeoJSON layers as separate Google Earth KML/KMZ files. Generated live exports at `/opt/onecall-locator-dashboard/data/exports/google_earth/vetro_layers_20260612/`, copied them back to the Dell workspace at `Google Earth/VETRO Layers 20260612/`, and created bundle `Google Earth/VETRO Layers 20260612 KMZ Bundle.zip`.
+
+## TCW/DMI Ticket Unification - 2026-06-11
+
+- Removed the separate `One-Calls Done For TCW` dashboard/app mode. TCW/DMI/Computer Works/Dirt Moves tickets now stay in the normal ticket list on the web dashboard and in the native Android app.
+- Kept the existing TCW/DMI orange priority/color rules intact, including the rule that completed/actioned TCW tickets stay orange instead of switching to the normal actioned red map styling.
+- Follow-up cleanup on 2026-06-12: web dashboard, map, metrics, field-open list, and native Android now exclude TCW/DMI tickets whose due/work-begin date is before the current day; Dig Tickets still reads from the full scoped ticket set, so those older TCW records remain available there.
+- Live cleanup archived 175 old TCW/DMI tickets due before 2026-06-12 in `data/dashboard_state.json` across shared workflow, user states, employee dashboard state, and locator default state. Backup: `/opt/onecall-locator-dashboard/data/dashboard_state.before-old-tcw-archive-20260612T064211Z.json`.
+- The same live audit left 30 current/future TCW/DMI tickets eligible to show from 2026-06-12 forward.
+- Web ticket detail now always renders the same action/description/upload controls for TCW tickets as regular tickets; removed the old read-only/review-cleared TCW hook.
+- Native Android now forces the saved dashboard mode back to `main`, removes the TCW menu options, includes TCW tickets in the regular list, and shows `Complete ticket` for TCW tickets.
+- Web cache-bust bumped to `20260612014500`; deployed `index.html`, `static/app.js`, native Android source/version files, and the version 25 APK/AAB to `/opt/onecall-locator-dashboard`, restarted `onecall-dashboard`, verified service `active`, live `/` and `/static/app.js?v=20260612014500` return `200`, and remote artifact hashes match local.
+- Verification: `node --check static/app.js`, `python3 -m py_compile server.py tools/*.py`, local Playwright/system Chrome mocked TCW+regular ticket flow, and `gradle :app:assembleDebug :app:bundleRelease`.
+- Current Android release: `versionCode 25` / `versionName 0.1.24`.
+- Current debug APK: `android-auto/app/build/outputs/apk/debug/app-debug.apk`, SHA256 `aa560f5e4bfad60db77888246e6192ccb4afb94b1da513fdbc7e65d7701961cc`.
+- Current release AAB: `android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `55211609081bd16bf6f0308346162c2ed196a83fe891d5e0c0af7370646dfef0`.
+- Copied the current APK/AAB to the matching `/opt/onecall-locator-dashboard/android-auto/...` paths on the live host and verified the remote hashes match local.
+
+## In-House Request Map And Edit Flow - 2026-06-10
+
+- In-house Locate Requests now has a request-location map beside the form on desktop and first in the flow on mobile.
+- Latitude/longitude fields update the marker immediately; address/place/county typing debounces through the existing `/api/map-search`; map clicks and `Use center` write exact coordinates back into the form.
+- Existing in-house requests load into a list below the form with `Edit` buttons. Editing reuses the existing `/api/in-house-requests` POST path and preserves the request ID, so saved edits continue to show as `IHR-...` dashboard tickets.
+- Updated `index.html`, `static/app.js`, and `static/styles.css`; bumped app/styles asset versions to `20260610220000`.
+- Verification: `python3 -m py_compile server.py tools/*.py`, `node --check static/app.js`, local Playwright/system Chrome desktop submit-edit-save flow, and mobile viewport map-order/coordinate update check.
+- Deployed targeted assets to `root@5.78.214.184:/opt/onecall-locator-dashboard/`, corrected the static paths, removed accidental root-level `app.js`/`styles.css` from the first upload, restarted `onecall-dashboard`, verified service `active`, and checked live `200` responses for `/`, `/static/app.js?v=20260610220000`, and `/static/styles.css?v=20260610220000`.
+- Follow-up fix: address/place/county typing now forces a fresh `/api/map-search` even when lat/lng are already filled, and in-house request searches default to `Arkansas, USA`; deployed `static/app.js` plus `index.html` cache-bust `20260610221500`, restarted cloud service, and verified active.
+- Follow-up fix: the in-house request map now renders the same filtered/styled VETRO overlay as the dashboard when the dashboard VETRO toggle is on; deployed `static/app.js` plus `index.html` cache-bust `20260610223000`, restarted cloud service, and verified active.
+- Follow-up fix: the in-house request map now uses the same selected dashboard base map style, including satellite/hybrid/Mapbox/MapLibre layer handling; this also applies in the Android app because `In-house Locate Requests` opens the same `/#in-house-requests` WebView route. Deployed `static/app.js` plus `index.html` cache-bust `20260610224500`, restarted cloud service, and verified active.
+- Performance cleanup pass: removed eager MapLibre CSS/JS script tags from `index.html` and lazy-load MapLibre only when a MapLibre/vector base map is selected; deferred VETRO layer/control loading when VETRO is off until the VETRO drawer/toggle or VETRO-backed view needs it; added `content-visibility` containment for heavier secondary views. Deployed `index.html`, `static/app.js`, and `static/styles.css` with cache-bust `20260610230000`, restarted cloud service, and verified active plus live `200` responses for `/`, app JS, and CSS.
+
+## Restoration Dashboard And In-House Request Flow - 2026-06-10
+
+- Restoration Jobs is now a dashboard-style web page: priority/due-date grouped list, filters, map, selected job detail panel, and a separate `Add restoration ticket` modal form instead of the form occupying the main page.
+- Added a separate `In-house Locate Requests` page whose only purpose is submitting an internal locate request form. Submitted requests persist under ignored runtime data at `data/in_house_requests/requests.json`.
+- Open in-house requests are emitted from `/api/tickets` as synthetic dashboard tickets with `IHR-...` ticket numbers, `IN-HOUSE LOCATE` message type, due date/time, county/address/scope/utilities, and show on the normal locator dashboard and native Android ticket list.
+- Android native menu now includes `In-house Locate Requests` and opens the web-backed `/#in-house-requests` page. Restoration remains a separate web-backed `/#restoration` page.
+- Installed local Gradle 8.10.2 under `/home/linux/.local/gradle/gradle-8.10.2` because the repo has no wrapper and Ubuntu apt only offered obsolete Gradle 4.4.1.
+- Verification: `python3 -m py_compile server.py`, `node --check static/app.js`, Playwright form-only in-house request submit -> normal dashboard ticket visibility, `gradle :app:assembleDebug`, and `gradle :app:bundleRelease`.
+- Deployed `server.py`, `index.html`, `static/app.js`, `static/styles.css`, `static/service-worker.js`, Android `MainActivity.java`, and rebuilt APK/AAB to `/opt/onecall-locator-dashboard`; restarted `onecall-dashboard` and verified active.
+- Current Android release: `versionCode 23` / `versionName 0.1.22`.
+- Current Google Play AAB: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+- AAB SHA256: `b6f7cb0885fa67981ec2d30ee24a05b60e45262f18c810fbd2143315a04f7a19`.
+- Debug APK SHA256: `8bec9504a37e7b4e8bf95a537e0495aed925b270980c7c228545a9ae48abc160`.
+
+## Ticket Clear/Hide Persistence Fix - 2026-06-10
+
+- Fixed a stale-save race that could make cleared, hidden, or archived tickets appear again after refresh or after another dashboard/mobile session saved older state.
+- `hiddenTickets` and `archivedTickets` now have per-ticket timestamp maps (`hiddenTicketUpdatedAt`, `archivedTicketUpdatedAt`) and are merged through the shared ticket workflow, matching the existing timestamp protection for ticket action checkboxes.
+- Follow-up fix: removed an old hardcoded `CURRENT_DASHBOARD_TICKET_RELEASE` / `releaseTicketsFromSuppression` path in `static/app.js` that was stripping `located`, `clear`, hidden, and archived state from a specific ticket list every time tickets reloaded. This was the direct cause of cleared tickets returning when the admin console fetched/updated tickets.
+- Admin GeoCall fetch and the main ticket refresh now force-save current ticket workflow state before requesting ticket updates, so newly cleared/located tickets are persisted before the ticket list reloads.
+- Deployed targeted production updates for `server.py` and `static/app.js` to `/opt/onecall-locator-dashboard`, restarted `onecall-dashboard`, and verified the service is active.
+- Verification run locally: `python3 -m py_compile server.py`, `node --check static/app.js`, and a focused Python merge check for stale/newer visibility saves. Production host compiled `server.py`; production lacks `node`, so JS syntax was checked locally before deploy.
+
+## Restoration Jobs And Priority Sheet - 2026-06-08
+
+- Added a server-backed Restoration Jobs page at `/#restoration` with its own map, job form, searchable job sheet, status tracking, and restoration photo upload controls.
+- Restoration jobs persist in ignored runtime data under `data/restoration_jobs/jobs.json`. Employees can create/update jobs and upload submitted/completed photos; admin/site-owner users can also set priority, schedule, and assigned employee.
+- Restoration photos use the existing Microsoft Graph OneDrive connection and store folders under `Fiber Locator Attachments/Restoration Jobs/<ticket-number-or-job-id>/`, keeping storage replaceable through the server-side OneDrive configuration.
+- Dig Tickets sheet now has an admin-controlled Priority column (`low`, `medium`, `high`, `emergency`) persisted in dashboard state, with row/map color treatment and marked-by behavior still preserved for completed dig-ticket actions.
+- Native Android menu now opens the web-backed Restoration Jobs page through `/#restoration`, matching the existing Dig Tickets web sheet route.
+- Rebuilt native Android release as `versionCode 21` / `versionName 0.1.20`.
+- Current AAB for Google Play upload: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+- AAB SHA256: `aa5368e2b17c65f726e8f0c0364995a4ef18472e2b884833f305f216a75917b8`.
+
+## Logo Refresh, Native Contrast, And App Release - 2026-06-06
+
+- Used Reed's uploaded PNGs from `/home/linux/linux/Downloads`: `Finalapplocator.png` is now the launcher/adaptive foreground image for the phone app and Android Auto service, and `Finallandscapelocator.png` is now the in-app native logo plus the web/login/header Fiber Locator logo beside the existing TCW logo.
+- Kept the TCW logo in the web header/mobile header; only the Fiber Locator secondary logo changed.
+- Native Android completion and locator-note forms now use light panels, dark text, visible light inputs, and larger/tinted action checkboxes so the completion boxes, category selector, and description field are readable.
+- Web/mobile locator-note modal was also lightened, web action checkboxes were enlarged, and locator-note map flags were reduced to near-transparent opacity (`0.08` for ordinary notes, capped around `0.12` for layer-linked notes). Popup details still show on click.
+- Server public static allowlist now includes the new app/landscape logo PNGs and the Play-upload AAB. This fixed the live login page initially rendering a broken image because unauthenticated static PNG requests were redirecting to `/login`.
+- Deployed `server.py`, `index.html`, `manifest.webmanifest`, `static/app.js`, `static/styles.css`, `static/service-worker.js`, the new logo PNGs, native Android source/resource files, and the release APK/AAB to `/opt/onecall-locator-dashboard`; restarted `onecall-dashboard` and verified active.
+- Release bumped to `versionCode 20` / `versionName 0.1.19`.
+- Current AAB for Google Play upload: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+- APK SHA256: `850cf08c06faff7911752276376c32f84f590dad32f50bbd1e3f85068ceadd0a`
+- AAB SHA256: `fb05f94dcd8e1fa3f21d6b9d085b553123cb6986d30c1e6d40e6c19703fa4209`
+- Live AAB URL verified with the same SHA256: `https://fiber-locator.5-78-214-184.sslip.io/android-auto/app/build/outputs/bundle/release/app-release.aab`
+- Verification passed: `python3 -m py_compile server.py tools/*.py`, `node --check static/app.js`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:compileReleaseJavaWithJavac`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleRelease :app:bundleRelease`, `/home/linux/Android/Sdk/build-tools/36.0.0/aapt dump badging`, `/home/linux/Android/Sdk/build-tools/36.0.0/apksigner verify --verbose`, live HTTPS `/login` rendered desktop/mobile screenshots with the landscape logo decoded at `1672x941`, live logo PNG returned full body, live `/api/state` returned expected unauthenticated `401`, and live `onecall-dashboard` is active.
+
+## Cloud Loading Fix - 2026-06-06
+
+- Investigated Reed's report that the cloud dashboard/app was not loading or was loading very slowly.
+- Cloud host health was good: `onecall-dashboard` active, load near `0.00`, memory about `7.0 GiB` available, root disk about `3%` used.
+- Found the new landscape logo PNG was too heavy for initial page load: live transfer was `2.3 MB` and took up to about `16s` from the Dell check.
+- Rebuilt optimized PNG copies from the uploaded originals, leaving `/home/linux/linux/Downloads/Finalapplocator.png` and `/home/linux/linux/Downloads/Finallandscapelocator.png` untouched:
+  - web/native landscape logo: `720x405`, about `650 KB`
+  - square app/launcher foreground: `384x384`, about `338 KB`
+- Rebuilt and redeployed Android release artifacts after image optimization. Final release remains `versionCode 20` / `versionName 0.1.19`.
+- Final APK SHA256: `850cf08c06faff7911752276376c32f84f590dad32f50bbd1e3f85068ceadd0a`
+- Final AAB SHA256: `fb05f94dcd8e1fa3f21d6b9d085b553123cb6986d30c1e6d40e6c19703fa4209`
+- Final AAB size is about `3.0 MB` and is still at `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+- Bumped web app shell cache from `20260603104500` to `20260606230200` in `index.html` and `static/service-worker.js` so clients pull the current JS/CSS instead of stale cached files.
+- Changed `send_json()` to emit compact JSON and gzip responses when the browser advertises gzip, reducing authenticated API payload cost for endpoints such as `/api/tickets` and `/api/state`.
+- Deployed `server.py`, `index.html`, `manifest.webmanifest`, `static/service-worker.js`, optimized logo PNGs, Android drawables, and final APK/AAB to `/opt/onecall-locator-dashboard`; restarted `onecall-dashboard` and verified active.
+- Live checks after fix: `/login` returned `200` in about `0.44s`; optimized landscape logo returned `200` with `665355` bytes and later about `0.74s`; unauthenticated `/api/state` returned expected `401`; authenticated live logs showed `GET /static/styles.css?v=20260606230200 200`, `GET /static/app.js?v=20260606230200 200`, `GET /api/tickets 200`, `GET /api/vetro 200`, and `POST /api/state 200`.
+
+## VETRO Line Fragment Investigation - 2026-06-05
+
+- Investigated Reed's report that VETRO line layers sometimes stop and pick back up on the map.
+- Root cause found in `tools/import_vetro_tiles_from_capture.py`: `dedupe_features()` collapsed same-ID line features down to one "best" vector-tile fragment. VETRO line features are clipped into multiple tile fragments with the same ID, so this can create visible gaps.
+- Patched the importer so `LineString`, `MultiLineString`, `Polygon`, and `MultiPolygon` features dedupe by exact geometry instead of stable ID. Point layers still dedupe by stable ID.
+- Deployed the patched importer to `/opt/onecall-locator-dashboard/tools/import_vetro_tiles_from_capture.py` on the cloud host and verified it compiles.
+- Live evidence before rebuild: current line layers had no multi-fragment stable IDs (`Layer_17`: 13,393 features / 0 IDs with multiple fragments; `Layer_654`: 13,541 / 0; `Layer_659`: 2 / 0), confirming the importer had flattened tile fragments.
+- Tried rebuilding from latest saved capture `vetro_capture_20260603T193457Z.txt`, but replay returned repeated `401 Unauthorized` responses because the saved VETRO auth was expired. The import was stopped before the write step; live manifest stayed at `2026-06-03T19:37:49Z`, and `onecall-dashboard` remained active.
+- Next step to repair the visible gaps: capture fresh logged-in VETRO tile traffic with embedded response bodies or current Cookie/Authorization headers, then run the VETRO refresh/import again. The fixed importer should preserve same-ID line fragments on that next import.
+- Follow-up after Reed's browser froze while uploading a large copied-cURL capture:
+  - `server.py` and `tools/import_vetro_tiles_from_capture.py` now accept VETRO Cookie/Authorization fallback headers from any `*.vetro.io` copied-cURL request, so captures where API calls have the cookie and later `.pbf` tile calls omit it can still import.
+  - The DevTools capture file picker in `static/app.js` no longer dumps the selected file into the textarea; it keeps the file selected and posts raw text directly to `/api/vetro-capture`.
+  - Capture upload limit raised from 8 MB to 50 MB for site_owner uploads.
+  - Deployed `server.py`, `static/app.js`, and `tools/import_vetro_tiles_from_capture.py` to the cloud host, restarted `onecall-dashboard`, and verified active. Live synthetic parser check confirmed a `fibermap.vetro.io` cookie can authorize a later tile request with no tile-local cookie.
+- Reed reported the VETRO layers looked doubled after the fresh import. Root cause: the corrected line-fragment import ran in append-only merge mode, so old high-zoom single retained features and fresh lower-zoom tile fragments were both displayed.
+  - Cleaned the live VETRO layer directory by keeping one coherent tile zoom bucket per line/polygon VETRO ID, preferring the fresh fragment bucket where both old named records and fresh anonymous tile fragments existed. Point layers were left one-feature-per-ID.
+  - Live cleaned layer counts: `Layer_17` 13,604, `Layer_26` 1,142, `Layer_28` 6,210, `Layer_42` 6,863, `Layer_43` 12, `Layer_654` 13,689, `Layer_659` 2; total 41,522.
+  - Duplicate audit after cleanup: exact duplicate extras are `0` in every layer; intentional multi-fragment line IDs remain (`Layer_17` 207 IDs, max 3 fragments; `Layer_654` 148 IDs, max 2 fragments).
+  - Backed up the doubled live layer directory to `data/layers/backups/vetro_geojson_layers.doubled-before-clean-20260605T192419Z` on the cloud host.
+  - Updated and redeployed `tools/import_vetro_tiles_from_capture.py` so future imports use the same single-zoom-bucket cleanup policy and should not reintroduce cross-zoom doubled line overlays.
+  - Restarted `onecall-dashboard`; service verified active and public dashboard returned `200`.
+- Reed then reported many previously visible layers/features were missing. Root cause: the cleanup preferred fresh anonymous tile fragments over older named/full-coverage line records for existing VETRO IDs, restoring duplication but losing older coverage.
+  - Rebuilt live VETRO as a safer hybrid: restored June 3 full-coverage baseline `data/layers/backups/vetro_geojson_layers.backup-1780684904`, then added only genuinely new feature IDs from the cleaned June 5 live set.
+  - New live counts: `Layer_17` 13,395, `Layer_26` 1,142, `Layer_28` 6,210, `Layer_42` 6,863, `Layer_43` 12, `Layer_654` 13,541, `Layer_659` 2; total 41,165.
+  - Live audit after restore: every layer has one feature per stable ID and exact duplicate extras are `0`.
+  - Backed up the too-aggressive cleaned set to `data/layers/backups/vetro_geojson_layers.cleaned-too-aggressive-20260605T194132Z`.
+  - Updated and redeployed `tools/import_vetro_tiles_from_capture.py` again: for fragmented line/polygon IDs that already have named/display-ID records, keep the best named record; only use single-zoom fragment buckets when no named baseline exists. This favors preserving full older coverage over replacing existing IDs with partial fresh tile fragments.
+
+## Current Stop Point - 2026-06-03
+
+- Android Auto TCW tab and app icon fix - 2026-06-05:
+  - Android Auto now defaults to a `Locates` tab and keeps TCW/DMI tickets under a separate `TCW` tab so TCW rows do not appear before locate tickets.
+  - Android Auto min car API is now `6` for `TabTemplate` support.
+  - Restored the manifest application/service icons to the original launcher resources (`@mipmap/ic_launcher` / `@mipmap/ic_launcher_round`) without changing the in-app login/header logo drawables.
+  - Release bumped to `versionCode 19` / `versionName 0.1.18`.
+  - Current AAB for Google Play upload: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+  - APK SHA256: `d64037ab0aa0dd032cd889230c1b4598403f231f1fac58e8e14658c3f6ac74a1`
+  - AAB SHA256: `5c3520b4fe1d9f7ada503f6c897de0dd4c91e8aeeb5aa002c39655fd37418371`
+  - Verification passed: `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:compileReleaseJavaWithJavac`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleRelease :app:bundleRelease`, `aapt dump badging`, `aapt dump xmltree`, `aapt dump resources`, and `apksigner verify --verbose`.
+
+- Follow-up native app locator notes - 2026-06-03:
+  - Native Android now loads `/api/locator-notes` during the normal dashboard refresh.
+  - Native and web maps show locator notes as dim colored flags only; no always-visible label/title text appears while panning. Category, target, text, attachments, creator, and timestamp show only after clicking or in ticket detail.
+  - Native map has an `Add note` control; tap it, then tap a map spot, ticket, VETRO feature, or Vitruvi feature to save the same target fields as the web modal. Category, text, and optional photo/video attachments are supported.
+  - Opening the map from a ticket associates the new locator note with that ticket. Notes that fall inside a ticket polygon are also shown as attached locator notes on the ticket.
+  - Web dashboard assets were deployed to the cloud host and `onecall-dashboard` restarted active.
+  - Release bumped to `versionCode 18` / `versionName 0.1.17`.
+  - APK SHA256: `0367726bedf990a4fbd0292f070cf75467f0f4756237bb95623d79a75e819315`
+  - AAB SHA256: `d02a85f9921d7a2e85eba3b5f9a638ca62334f355340edd22b13f1d82e24aa97`
+  - Current AAB for Google Play upload: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+  - Verification passed: `python3 -m py_compile server.py tools/*.py`, `node --check static/app.js`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:compileReleaseJavaWithJavac`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleRelease :app:bundleRelease`, `/home/linux/Android/Sdk/build-tools/36.0.0/aapt dump badging`, and `/home/linux/Android/Sdk/build-tools/36.0.0/apksigner verify --verbose`.
+
+## Prior Stop Point - 2026-06-01 19:20 CDT
 
 - Follow-up native app TCW dashboard mode - 2026-06-02:
   - Added a persistent native Android dashboard mode under the `...` menu: `One-Calls Done For TCW` / `Main Dashboard`.
@@ -513,6 +812,34 @@ The dashboard is reachable through:
 ## Known Current State
 
 The project is in a working state on the live cloud server. The GitHub repository is `reedisthebomb/fiber.locator.dashboard`.
+
+## 2026-06-15 3D VETRO/Vitruvi Source Fix
+
+- Root cause: generated Mapbox shape image registration could throw `mismatched image size` in 3D mode; that happened before VETRO/Vitruvi GeoJSON sources were added, so ticket polygons showed but VETRO/Vitruvi layers did not.
+- Web and native Android now add 3D sources while Mapbox style assets are still settling, catch source/icon failures independently, and pass generated point icons as `ImageData` so VETRO point shapes and service-location labels can render in 3D.
+- Web cache bumped to `20260615213000`.
+- Native Android rebuilt as `versionCode 38` / `versionName 0.1.37`.
+- Release AAB: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+- AAB SHA256: `75e617461ebfd6dc02433af0f06ab4d20f3eb2f1f02489566779efab6de868ae`.
+- Release APK SHA256: `bb95b238607664a2224d4fc4bda1293f152a662335c1ada4578f628d7b476d54`.
+
+## 2026-06-10 Android Play Version Bump
+
+- Google Play rejected the previous upload because `versionCode 23` had already been used.
+- Bumped the native Android package to `versionCode 24` / `versionName 0.1.23`.
+- Rebuilt release AAB: `android-auto/app/build/outputs/bundle/release/app-release.aab`.
+- AAB SHA256: `31fc3901d6867c37538eacf9ffae8c5377ea5293064512e1c333b11495a93beb`.
+- Rebuilt debug APK: `android-auto/app/build/outputs/apk/debug/app-debug.apk`.
+- Debug APK SHA256: `e96967b42dbaff9206276f7e90a24e57a843765c8af455bb53287d0cd8a6e6c8`.
+- Updated `PLAY_UPLOAD_COMMAND.txt` with the new SCP command and filename `fiber-locator-0.1.23.aab`.
+- This local shell did not have `/opt/onecall-locator-dashboard` mounted/present and `onecall-dashboard` was inactive, so only the repo-local Android artifacts were refreshed in this turn.
+
+## 2026-06-10 VETRO View Consistency
+
+- Saved views, locator default state, and employee/mobile shared state now strip VETRO feature-selection filters (`vetroLayerFilterSelected`, plan/build/status/etc., and `vetroSearch`) while preserving VETRO styling overrides such as color, shape/style, size, opacity, names, and notes.
+- Native Android app view merging now takes VETRO feature filters from the effective dashboard state instead of stale App View state, so the mobile app should show the same VETRO feature set as the active dashboard view while still using app-published styling.
+- Live cloud deploy completed to `/opt/onecall-locator-dashboard`; `onecall-dashboard` restarted active behind Caddy at `https://fiber-locator.5-78-214-184.sslip.io`.
+- Android release rebuilt as `versionCode 23` / `versionName 0.1.22`; current AAB path remains `android-auto/app/build/outputs/bundle/release/app-release.aab`.
 
 ## 2026-06-02 VETRO App Style Editor
 

@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -65,6 +66,7 @@ public final class TicketRepository {
         }
         JSONObject ticketsPayload = requestJson("/api/tickets", "GET", null);
         JSONArray tickets = ticketsPayload.optJSONArray("tickets");
+        List<LocatorNote> locatorNotes = loadLocatorNotes();
         List<Ticket> out = new ArrayList<>();
         Map<String, List<String>> actions = parseActions(mobileState.optJSONObject("ticketActions"));
         Map<String, String> descriptions = parseDescriptions(mobileState.optJSONObject("ticketDescriptions"));
@@ -94,6 +96,7 @@ public final class TicketRepository {
         Collections.sort(out, (left, right) -> left.dueLine().compareToIgnoreCase(right.dueLine()));
         return new DashboardSnapshot(
             out,
+            locatorNotes,
             actions,
             parseTimestamps(mobileState.optJSONObject("ticketActionUpdatedAt")),
             mobileState,
@@ -104,6 +107,43 @@ public final class TicketRepository {
             search,
             mapStyle
         );
+    }
+
+    public List<MapFeature> loadVetroMapFeatures(JSONObject state) throws Exception {
+        if (state != null && state.optBoolean("vetroVisible", true) == false) return Collections.emptyList();
+        JSONObject payload = requestJson("/api/vetro", "GET", null);
+        JSONArray features = payload.optJSONArray("features");
+        if (features == null && "FeatureCollection".equals(payload.optString("type"))) {
+            features = payload.optJSONArray("features");
+        }
+        if (features == null) return Collections.emptyList();
+        List<MapFeature> out = new ArrayList<>();
+        for (int index = 0; index < features.length(); index++) {
+            JSONObject feature = features.optJSONObject(index);
+            if (feature == null) continue;
+            JSONObject props = feature.optJSONObject("properties");
+            if (props == null) props = new JSONObject();
+            String layerId = canonicalLayerId(first(
+                text(props, "layer_id"),
+                text(props, "Layer_ID"),
+                text(props, "layerId"),
+                text(props, "layer"),
+                text(props, "Layer"),
+                text(props, "geojson_layer"),
+                "Unknown"
+            ));
+            String featureId = first(text(props, "ID"), text(props, "feature_id"), text(props, "Name"), layerId);
+            if ("26".equals(layerId) && featureId.toUpperCase().startsWith("SL-") && state != null && state.optBoolean("vetroSlVisible", true) == false) continue;
+            JSONObject geometry = feature.optJSONObject("geometry");
+            if (!vetroFeaturePassesFilters(state, props, geometry, layerId)) continue;
+            MapFeature parsed = parseMapFeature("vetro", layerId, featureId, geometry, props);
+            if (parsed != null) out.add(parsed);
+        }
+        return out;
+    }
+
+    public JSONObject loadMapConfig() throws Exception {
+        return requestJson("/api/map-config", "GET", null);
     }
 
     public void saveTicketActions(DashboardSnapshot snapshot, String ticketNumber, List<String> actionKeys) throws Exception {
@@ -147,6 +187,48 @@ public final class TicketRepository {
         state.put("ticketDescriptions", nextDescriptions);
         requestJson("/api/state", "POST", state.toString());
         if (attachments != null && !attachments.isEmpty()) uploadAttachments(ticketNumber, cleanDescription, attachments);
+    }
+
+    public LocatorNote createLocatorNote(
+        double latitude,
+        double longitude,
+        String category,
+        String text,
+        String targetType,
+        String targetLabel,
+        String targetId,
+        String ticketNumber,
+        String layerId,
+        String featureId,
+        List<Uri> attachments
+    ) throws Exception {
+        String boundary = "FiberLocatorNote" + System.currentTimeMillis();
+        HttpURLConnection connection = open("/api/locator-notes", "POST");
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        try (OutputStream out = connection.getOutputStream()) {
+            writeField(out, boundary, "lat", String.valueOf(latitude));
+            writeField(out, boundary, "lng", String.valueOf(longitude));
+            writeField(out, boundary, "category", category == null || category.trim().isEmpty() ? "instruction" : category.trim());
+            writeField(out, boundary, "text", text == null ? "" : text.trim());
+            writeField(out, boundary, "target_type", targetType == null || targetType.trim().isEmpty() ? "map" : targetType.trim());
+            writeField(out, boundary, "target_label", targetLabel == null ? "" : targetLabel.trim());
+            writeField(out, boundary, "target_id", targetId == null ? "" : targetId.trim());
+            writeField(out, boundary, "ticket", ticketNumber == null ? "" : ticketNumber.trim());
+            writeField(out, boundary, "layer_id", layerId == null ? "" : layerId.trim());
+            writeField(out, boundary, "feature_id", featureId == null ? "" : featureId.trim());
+            if (attachments != null) {
+                for (Uri uri : attachments) writeFile(out, boundary, uri);
+            }
+            out.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        }
+        int status = connection.getResponseCode();
+        if (status == 401 && login()) return createLocatorNote(latitude, longitude, category, text, targetType, targetLabel, targetId, ticketNumber, layerId, featureId, attachments);
+        if (status < 200 || status >= 300) throw new IllegalStateException("Locator note save returned HTTP " + status);
+        JSONObject payload = new JSONObject(read(connection));
+        LocatorNote note = LocatorNote.fromJson(payload.optJSONObject("note"));
+        if (note == null) throw new IllegalStateException("Locator note save did not return a note.");
+        return note;
     }
 
     public boolean ensureLogin() throws Exception {
@@ -278,6 +360,18 @@ public final class TicketRepository {
         read(connection);
     }
 
+    private List<LocatorNote> loadLocatorNotes() throws Exception {
+        JSONObject payload = requestJson("/api/locator-notes", "GET", null);
+        JSONArray notes = payload.optJSONArray("notes");
+        List<LocatorNote> out = new ArrayList<>();
+        if (notes == null) return out;
+        for (int index = 0; index < notes.length(); index++) {
+            LocatorNote note = LocatorNote.fromJson(notes.optJSONObject(index));
+            if (note != null && note.hasCoordinates) out.add(note);
+        }
+        return out;
+    }
+
     private void writeField(OutputStream out, String boundary, String name, String value) throws Exception {
         out.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
         out.write(("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n").getBytes(StandardCharsets.UTF_8));
@@ -342,6 +436,102 @@ public final class TicketRepository {
         return value == null ? "" : value.trim();
     }
 
+    private static boolean vetroFeaturePassesFilters(JSONObject state, JSONObject props, JSONObject geometry, String layerId) {
+        if (state == null) return true;
+        if (!passesLayerFilter(state.optJSONArray("vetroLayerFilterSelected"), layerId)) return false;
+        if (!passesFilter(state.optJSONArray("vetroPlanFilterSelected"), text(props, "plan"))) return false;
+        if (!passesFilter(state.optJSONArray("vetroBuildFilterSelected"), first(text(props, "build"), text(props, "Build")))) return false;
+        if (!passesFilter(state.optJSONArray("vetroPlacementFilterSelected"), first(text(props, "placement"), text(props, "Placement")))) return false;
+        if (!passesFilter(state.optJSONArray("vetroStatusFilterSelected"), text(props, "status_id"))) return false;
+        if (!passesFilter(state.optJSONArray("vetroGeometryFilterSelected"), geometry == null ? "" : geometry.optString("type", ""))) return false;
+        if (!passesFilter(state.optJSONArray("vetroFiberFilterSelected"), first(text(props, "Fiber_Capacity"), text(props, "Fiber Capacity")))) return false;
+        if (!passesFilter(state.optJSONArray("vetroRouteFilterSelected"), first(text(props, "Bore_Plow"), text(props, "Bore Plow")))) return false;
+        if (!passesFilter(state.optJSONArray("vetroPointFilterSelected"), first(text(props, "HH_Size"), text(props, "Size")))) return false;
+        String search = state.optString("vetroSearch", "").trim().toLowerCase();
+        if (search.isEmpty()) return true;
+        return props.toString().toLowerCase().contains(search);
+    }
+
+    private static boolean passesFilter(JSONArray selected, String value) {
+        Set<String> values = parseStringSet(selected);
+        return values.isEmpty() || values.contains(value == null ? "" : value);
+    }
+
+    private static boolean passesLayerFilter(JSONArray selected, String layerId) {
+        Set<String> values = parseStringSet(selected);
+        if (values.isEmpty()) return true;
+        String canonical = canonicalLayerId(layerId);
+        return values.contains(layerId == null ? "" : layerId)
+            || values.contains(canonical)
+            || values.contains("Layer_" + canonical)
+            || values.contains("layer_" + canonical);
+    }
+
+    private static String canonicalLayerId(String layerId) {
+        String clean = layerId == null ? "" : layerId.trim();
+        if (clean.toLowerCase(Locale.US).startsWith("layer_")) clean = clean.substring(6);
+        return clean.isEmpty() ? "Unknown" : clean;
+    }
+
+    private static MapFeature parseMapFeature(String kind, String layerId, String label, JSONObject geometry, JSONObject props) {
+        if (geometry == null) return null;
+        String type = geometry.optString("type", "");
+        JSONArray coordinates = geometry.optJSONArray("coordinates");
+        if (coordinates == null) return null;
+        List<List<double[]>> paths = new ArrayList<>();
+        if ("Point".equals(type)) {
+            double[] point = coordinate(coordinates);
+            if (point != null) {
+                List<double[]> path = new ArrayList<>();
+                path.add(point);
+                paths.add(path);
+            }
+        } else if ("MultiPoint".equals(type) || "LineString".equals(type)) {
+            addPath(paths, coordinates);
+        } else if ("MultiLineString".equals(type) || "Polygon".equals(type)) {
+            for (int index = 0; index < coordinates.length(); index++) addPath(paths, coordinates.optJSONArray(index));
+        } else if ("MultiPolygon".equals(type)) {
+            for (int polygonIndex = 0; polygonIndex < coordinates.length(); polygonIndex++) {
+                JSONArray polygon = coordinates.optJSONArray(polygonIndex);
+                if (polygon == null) continue;
+                for (int ringIndex = 0; ringIndex < polygon.length(); ringIndex++) addPath(paths, polygon.optJSONArray(ringIndex));
+            }
+        }
+        if (paths.isEmpty()) return null;
+        return new MapFeature(kind, layerId, label, type, paths, stringProperties(props));
+    }
+
+    private static Map<String, String> stringProperties(JSONObject props) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (props == null) return out;
+        JSONArray names = props.names();
+        if (names == null) return out;
+        for (int index = 0; index < names.length(); index++) {
+            String key = names.optString(index, "");
+            if (!key.isEmpty()) out.put(key, props.optString(key, ""));
+        }
+        return out;
+    }
+
+    private static void addPath(List<List<double[]>> paths, JSONArray coordinates) {
+        if (coordinates == null) return;
+        List<double[]> path = new ArrayList<>();
+        int stride = Math.max(1, coordinates.length() / 220);
+        for (int index = 0; index < coordinates.length(); index += stride) {
+            double[] point = coordinate(coordinates.optJSONArray(index));
+            if (point != null) path.add(point);
+        }
+        if (path.size() >= 1) paths.add(path);
+    }
+
+    private static double[] coordinate(JSONArray coordinate) {
+        if (coordinate == null || coordinate.length() < 2) return null;
+        double lon = coordinate.optDouble(0, Double.NaN);
+        double lat = coordinate.optDouble(1, Double.NaN);
+        if (Double.isNaN(lat) || Double.isNaN(lon)) return null;
+        return new double[] { lat, lon };
+    }
+
     private static String encode(String value) throws Exception {
         return URLEncoder.encode(value, "UTF-8");
     }
@@ -360,11 +550,25 @@ public final class TicketRepository {
                     || "archivedTickets".equals(key)
                     || "ticketListCheckpoint".equals(key)
                     || "showHiddenTickets".equals(key)
+                    || isVetroFeatureFilterKey(key)
             ) {
                 merged.put(key, overlay.opt(key));
             }
         }
         return merged;
+    }
+
+    private static boolean isVetroFeatureFilterKey(String key) {
+        return "vetroLayerFilterSelected".equals(key)
+            || "vetroPlanFilterSelected".equals(key)
+            || "vetroBuildFilterSelected".equals(key)
+            || "vetroPlacementFilterSelected".equals(key)
+            || "vetroStatusFilterSelected".equals(key)
+            || "vetroGeometryFilterSelected".equals(key)
+            || "vetroFiberFilterSelected".equals(key)
+            || "vetroRouteFilterSelected".equals(key)
+            || "vetroPointFilterSelected".equals(key)
+            || "vetroSearch".equals(key);
     }
 
     private static Map<String, List<String>> parseActions(JSONObject object) {
@@ -546,6 +750,7 @@ public final class TicketRepository {
 
     public static final class DashboardSnapshot {
         public final List<Ticket> tickets;
+        public final List<LocatorNote> locatorNotes;
         public final Map<String, List<String>> actionsByTicket;
         public final Map<String, Double> actionUpdatedAt;
         public final JSONObject state;
@@ -558,6 +763,7 @@ public final class TicketRepository {
 
         DashboardSnapshot(
             List<Ticket> tickets,
+            List<LocatorNote> locatorNotes,
             Map<String, List<String>> actionsByTicket,
             Map<String, Double> actionUpdatedAt,
             JSONObject state,
@@ -569,6 +775,7 @@ public final class TicketRepository {
             String mapStyle
         ) {
             this.tickets = Collections.unmodifiableList(new ArrayList<>(tickets));
+            this.locatorNotes = Collections.unmodifiableList(new ArrayList<>(locatorNotes));
             this.actionsByTicket = Collections.unmodifiableMap(new LinkedHashMap<>(actionsByTicket));
             this.actionUpdatedAt = Collections.unmodifiableMap(new LinkedHashMap<>(actionUpdatedAt));
             this.state = state;

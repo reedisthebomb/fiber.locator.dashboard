@@ -47,6 +47,67 @@ public final class AppSettings {
         prefs(context).edit().putString("dashboard_mode", "tcw".equals(mode) ? "tcw" : "main").apply();
     }
 
+    public static String lastScreen(Context context) {
+        String screen = value(context, "last_screen");
+        if ("map".equals(screen) || "detail".equals(screen) || "complete".equals(screen) || "tickets".equals(screen)
+            || "dig".equals(screen) || "restoration".equals(screen) || "in-house-requests".equals(screen)
+            || "location-photos".equals(screen) || "profile".equals(screen)) {
+            return screen;
+        }
+        return "tickets";
+    }
+
+    public static String lastTicket(Context context) {
+        return value(context, "last_ticket");
+    }
+
+    public static void saveLastView(Context context, String screen, String ticketNumber) {
+        prefs(context).edit()
+            .putString("last_screen", screen == null ? "tickets" : screen)
+            .putString("last_ticket", ticketNumber == null ? "" : ticketNumber.trim())
+            .apply();
+    }
+
+    public static void saveMapCamera(Context context, double latitude, double longitude, double zoom, double bearing, double pitch, String mode) {
+        prefs(context).edit()
+            .putFloat("map_lat", (float) latitude)
+            .putFloat("map_lng", (float) longitude)
+            .putFloat("map_zoom", (float) zoom)
+            .putFloat("map_bearing", (float) bearing)
+            .putFloat("map_pitch", (float) pitch)
+            .putString("map_mode", mode == null ? "" : mode.trim())
+            .putBoolean("map_camera_saved", true)
+            .apply();
+    }
+
+    public static boolean hasMapCamera(Context context) {
+        return prefs(context).getBoolean("map_camera_saved", false);
+    }
+
+    public static double mapLatitude(Context context) {
+        return prefs(context).getFloat("map_lat", 33.23f);
+    }
+
+    public static double mapLongitude(Context context) {
+        return prefs(context).getFloat("map_lng", -92.67f);
+    }
+
+    public static double mapZoom(Context context) {
+        return prefs(context).getFloat("map_zoom", 12f);
+    }
+
+    public static double mapBearing(Context context) {
+        return prefs(context).getFloat("map_bearing", 0f);
+    }
+
+    public static double mapPitch(Context context) {
+        return prefs(context).getFloat("map_pitch", 0f);
+    }
+
+    public static String mapMode(Context context) {
+        return value(context, "map_mode");
+    }
+
     public static void save(Context context, String dashboardUrl, String username, String password, String authCookie) {
         save(context, dashboardUrl, username, password, authCookie, true);
     }
