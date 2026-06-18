@@ -72,6 +72,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final int PICK_ATTACHMENTS = 4107;
@@ -79,6 +81,7 @@ public class MainActivity extends Activity {
     private static final int PICK_PROFILE_PHOTO = 4109;
     private static final int PICK_WEB_FILE = 4110;
     private static final String SECURE_MAP_ORIGIN = "https://appassets.androidplatform.net/";
+    private static final Pattern PHONE_PATTERN = Pattern.compile("(?<![A-Za-z0-9@])(\\+?1?[\\s.-]?\\(?\\d{3}\\)?[\\s.-]?\\d{3}[\\s.-]?\\d{4})(?![A-Za-z0-9])");
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -680,8 +683,9 @@ public class MainActivity extends Activity {
         field(page, "Nearest intersection", ticket.nearestIntersection);
         field(page, "Contractor", ticket.contractor);
         field(page, "Caller", ticket.caller);
-        field(page, "Contact", join(ticket.contact, ticket.contactPhone, ticket.contactEmail));
-        field(page, "Company phone", ticket.companyPhone);
+        field(page, "Contact", join(ticket.contact, ticket.contactEmail));
+        phoneField(page, "Contact phone", ticket.contactPhone);
+        phoneField(page, "Company phone", ticket.companyPhone);
         field(page, "Work type", ticket.workType);
         field(page, "Done for", ticket.doneFor);
         field(page, "Extent", ticket.extent);
@@ -700,6 +704,11 @@ public class MainActivity extends Activity {
         Button navigate = primaryButton("Navigate with Google Maps");
         navigate.setOnClickListener(view -> openNavigation(ticket));
         page.addView(navigate, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        Button geocall = secondaryButton("Open Live GeoCall");
+        String geoCallUrl = liveGeoCallUrl(ticket);
+        geocall.setEnabled(!geoCallUrl.isEmpty());
+        geocall.setOnClickListener(view -> openLiveGeoCall(ticket));
+        page.addView(geocall, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         Button dashboard = secondaryButton("See on dashboard map");
         dashboard.setOnClickListener(view -> showMap(ticket));
         page.addView(dashboard, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
@@ -721,6 +730,46 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    private void openLiveGeoCall(Ticket ticket) {
+        String url = liveGeoCallUrl(ticket);
+        if (url.isEmpty()) return;
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String liveGeoCallUrl(Ticket ticket) {
+        if (ticket == null) return "";
+        if (!ticket.portalUrl.isEmpty()) return ticket.portalUrl;
+        if (ticket.portalHtmlAvailable && !ticket.ticketNumber.isEmpty()) {
+            return AppSettings.dashboardUrl(this) + "/api/portal-html?ticket=" + Uri.encode(ticket.ticketNumber);
+        }
+        return "";
+    }
+
+    private void openDialer(String phoneNumber) {
+        String dial = dialablePhoneNumber(phoneNumber);
+        if (dial.isEmpty()) return;
+        try {
+            startActivity(new Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", dial, null)));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String dialablePhoneNumber(String phoneNumber) {
+        String value = phoneNumber == null ? "" : phoneNumber.trim();
+        if (value.isEmpty()) return "";
+        Matcher matcher = PHONE_PATTERN.matcher(value);
+        if (matcher.find()) value = matcher.group(1);
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isDigit(ch) || (ch == '+' && out.length() == 0)) out.append(ch);
+        }
+        return out.toString();
     }
 
     private void showMap(Ticket focus) {
@@ -1826,6 +1875,24 @@ public class MainActivity extends Activity {
         TextView body = text(value, 15, ink, false);
         body.setPadding(0, 0, 0, dp(12));
         page.addView(body);
+    }
+
+    private void phoneField(LinearLayout page, String label, String value) {
+        if (value == null || value.trim().isEmpty()) return;
+        Matcher matcher = PHONE_PATTERN.matcher(value);
+        List<String> phones = new ArrayList<>();
+        while (matcher.find()) phones.add(matcher.group(1));
+        if (phones.isEmpty()) {
+            field(page, label, value);
+            return;
+        }
+        page.addView(text(label, 12, muted, true));
+        for (String phone : phones) {
+            TextView body = text(phone, 16, Color.rgb(37, 99, 235), true);
+            body.setPadding(0, 0, 0, dp(12));
+            body.setOnClickListener(view -> openDialer(phone));
+            page.addView(body);
+        }
     }
 
     private TextView emptyState(String message) {

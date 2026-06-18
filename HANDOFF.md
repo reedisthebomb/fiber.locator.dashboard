@@ -2,6 +2,16 @@
 
 Updated: 2026-06-18
 
+## Native Android Live GeoCall And Tap-To-Call Ticket Detail - 2026-06-18
+
+- Reed asked for every native Android ticket detail to include an `Open Live GeoCall` button like the web dashboard, so employees can see the up-to-the-minute Arkansas One Call/GeoCall page and positive response status. Reed also asked for ticket phone numbers to be blue tap-to-call links.
+- Native Android ticket detail now adds `Open Live GeoCall` between `Navigate with Google Maps` and `See on dashboard map`. It opens `ticket.portalUrl` when available, and falls back to the cached dashboard `/api/portal-html?ticket=...` page when only cached portal HTML exists. The button is present on every ticket detail and disabled only when no portal source is available.
+- Native Android contact/company phone fields now render as blue clickable phone rows. Tapping uses Android `ACTION_DIAL` with a `tel:` URI so it opens the dialer without requiring phone-call permission.
+- Bumped native Android to `versionCode 54`, `versionName 0.1.53`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `153ac9c1bcc08c38f39a5cea5dc70a586e002eb1c36d8644a9290c32df892d6b`. Release APK SHA256 `f502143a7015f0da7360de1d1b4b0099580e0103835cc00f385c06cf665d8237`.
+- Deployed changed Android source and rebuilt APK/AAB to `/opt/onecall-locator-dashboard`; backup path is `data/deploy_backups/20260618T153300Z`. Live AAB/APK hashes match local and public AAB returns `200`.
+- Verification passed: `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease`, `aapt dump badging` showing `versionCode 54` / `versionName 0.1.53`, and `apksigner verify --verbose`.
+- Device validation note: `adb devices -l` showed no attached devices, and `adb connect 192.168.50.173:42023` failed with `No route to host`, so no live phone runtime test could be completed from this shell.
+
 ## Ticket Completion Photo Upload Local Storage Fix - 2026-06-18
 
 - Reed reported native Android completion submits fail whenever pictures are attached, showing `HTTP failed` or prior timeout behavior, while separately uploading photos with a ticket number works.
