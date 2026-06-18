@@ -355,9 +355,21 @@ public final class TicketRepository {
             return;
         }
         if (status < 200 || status >= 300) {
-            throw new IllegalStateException("Attachment upload returned HTTP " + status);
+            throw new IllegalStateException(serverErrorMessage(connection, "Attachment upload returned HTTP " + status));
         }
         read(connection);
+    }
+
+    private String serverErrorMessage(HttpURLConnection connection, String fallback) {
+        try {
+            String body = read(connection);
+            if (body == null || body.trim().isEmpty()) return fallback;
+            JSONObject payload = new JSONObject(body);
+            String message = payload.optString("message", "").trim();
+            return message.isEmpty() ? fallback : message;
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private List<LocatorNote> loadLocatorNotes() throws Exception {
@@ -413,8 +425,8 @@ public final class TicketRepository {
     private HttpURLConnection open(String path, String method) throws Exception {
         URL url = new URL(AppSettings.dashboardUrl(context) + path);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setConnectTimeout(8000);
-        connection.setReadTimeout(12000);
+        connection.setConnectTimeout(15000);
+        connection.setReadTimeout(180000);
         connection.setRequestMethod(method);
         String cookie = AppSettings.authCookie(context);
         if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);

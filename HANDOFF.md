@@ -2,6 +2,18 @@
 
 Updated: 2026-06-18
 
+## Ticket Completion Photo Upload Local Storage Fix - 2026-06-18
+
+- Reed reported native Android completion submits fail whenever pictures are attached, showing `HTTP failed` or prior timeout behavior, while separately uploading photos with a ticket number works.
+- Root cause: regular `/api/attachments` still required OneDrive auth/folder upload and returned `409`/`502` when OneDrive was not connected or slow. Native Android also used short `8s` connect / `12s` read timeouts for upload requests.
+- Fixed `/api/attachments` to save regular ticket attachments locally on the cloud server under `data/attachments/<ticket>/`, with metadata in `data/attachments/attachments.json`, and local file links through `/api/attachments/file?ticket=...&id=...`. Existing old OneDrive attachment records still redirect to their stored OneDrive URL if present.
+- Updated dashboard upload status text from `Saving OneDrive folder link...` to `Saving attachment links...`.
+- Updated native Android `TicketRepository` upload networking to use `15s` connect / `180s` read timeout and to surface the server JSON `message` if a non-2xx upload response occurs.
+- Bumped native Android to `versionCode 53`, `versionName 0.1.52`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `e9e397851c5facc34cdd13893fa4f7f8b63b9524c687ef938834f70c1b260e83`. Release APK SHA256 `b0c855914f74fd6313b1019b78a29bffca7fea15ce9968a8c5324791b08d5ee0`.
+- Web cache bust/service-worker cache version is `20260618151032`. Deployed `server.py`, `index.html`, `static/app.js`, `static/service-worker.js`, changed Android source, and rebuilt APK/AAB to `/opt/onecall-locator-dashboard`; backup path is `data/deploy_backups/20260618T151032Z`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py tools/export_vetro_google_earth_layers.py`, `node --check static/app.js`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease`, `aapt dump badging` showing `versionCode 53` / `versionName 0.1.52`, `apksigner verify --verbose`, live service restart with `onecall-dashboard` active, live hashes matching local for deployed files/artifacts, and public cache-busted JS/service-worker/AAB returning `200`.
+- Device validation note: `adb devices -l` showed no attached devices, and `adb connect 192.168.50.173:42023` failed with `No route to host`, so no live phone runtime upload test could be completed from this shell.
+
 ## Native Android Submit Progress, Dashboard Map Hold, Android Auto Polygon Tune - 2026-06-18
 
 - Reed asked for a native Android completion-submit progress bar, slightly darker/larger Android Auto ticket polygon outlines with a little more interior shade, the native map measure control moved away from the phone navigation area, the native `See on dashboard map` action to stay on the dashboard map until manually leaving, and Location Photos to be scrollable like the In-house Locate page.

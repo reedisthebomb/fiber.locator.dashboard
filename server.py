@@ -5581,17 +5581,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"ok": False, "message": f"Select {ONEDRIVE_MAX_ATTACHMENTS} attachments or fewer."}).encode("utf-8"))
             return
-        try:
-            token = onedrive_access_token(self.data_dir)
-            folder = onedrive_ensure_folder_path(token, [onedrive_root_folder_name(), ticket_number])
-            folder_id = str(folder.get("id") or "")
-            folder_url = onedrive_create_folder_link(token, folder_id, str(folder.get("webUrl") or ""))
-        except GraphRequestError as exc:
-            self.send_response(409 if exc.status == 401 else 502)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"))
-            return
         saved_items = []
         with ATTACHMENT_LOCK:
             index = load_attachments_index(self.data_dir)
@@ -5608,30 +5597,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 file_body = part.get_payload(decode=True) or b""
                 size = len(file_body)
                 content_type = str(part.get_content_type() or mimetypes.guess_type(original_name)[0] or "application/octet-stream")
-                try:
-                    drive_item = onedrive_upload_bytes(token, folder_id, original_name, file_body)
-                except GraphRequestError as exc:
-                    self.send_response(502)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"ok": False, "message": str(exc), "uploaded": saved_items}).encode("utf-8"))
-                    return
+                stored_name = f"{attachment_id}_{original_name}"
+                folder = ticket_attachment_dir(self.data_dir, ticket_number)
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / stored_name).write_bytes(file_body)
                 item = {
                     "id": attachment_id,
                     "ticket": ticket_number,
-                    "provider": "onedrive",
+                    "provider": "local",
                     "original_name": original_name,
-                    "stored_name": "",
-                    "drive_item_id": str(drive_item.get("id") or ""),
+                    "stored_name": stored_name,
+                    "drive_item_id": "",
                     "content_type": content_type,
                     "size": size,
                     "note": note,
                     "uploaded_at": dashboard_now_iso(),
                     "uploaded_by": self.current_username() or "default",
-                    "url": str(drive_item.get("webUrl") or f"/api/attachments/file?ticket={quote(ticket_number)}&id={quote(attachment_id)}"),
-                    "folder_url": folder_url,
+                    "url": f"/api/attachments/file?ticket={quote(ticket_number)}&id={quote(attachment_id)}",
+                    "folder_url": "",
                     "folder_name": ticket_number,
-                    "folder_id": folder_id,
+                    "folder_id": "",
                 }
                 items.append(item)
                 saved_items.append(item)

@@ -9056,7 +9056,7 @@ function uploadTicketAttachments(ticketNumber, fileList, uploader = null) {
         if (xhr.status < 200 || xhr.status >= 300 || payload.ok === false) {
           throw new Error(payload.message || `Upload failed: ${xhr.status}`);
         }
-        updateUploadProgress(uploader, 96, "Saving OneDrive folder link...");
+        updateUploadProgress(uploader, 96, "Saving attachment links...");
         updateTicketAttachmentSummary(ticketNumber, payload.attachment_summary);
         await loadTicketAttachments(ticketNumber, true);
         updateUploadProgress(uploader, 100, "Upload complete.");
