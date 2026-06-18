@@ -227,7 +227,7 @@ public class MainActivity extends Activity {
             showTicketDetail(activeTicket);
         } else if ("locator-note".equals(screen)) {
             showMap(activeTicket);
-        } else if ("dashboard-map".equals(screen) || "dig".equals(screen) || "restoration".equals(screen) || "in-house-requests".equals(screen) || "location-photos".equals(screen) || "profile".equals(screen)) {
+        } else if ("dig".equals(screen) || "restoration".equals(screen) || "in-house-requests".equals(screen) || "location-photos".equals(screen) || "profile".equals(screen)) {
             showTickets();
         } else if ("detail".equals(screen)) {
             showTickets();
@@ -701,7 +701,7 @@ public class MainActivity extends Activity {
         navigate.setOnClickListener(view -> openNavigation(ticket));
         page.addView(navigate, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         Button dashboard = secondaryButton("See on dashboard map");
-        dashboard.setOnClickListener(view -> showDashboardMap(ticket));
+        dashboard.setOnClickListener(view -> showMap(ticket));
         page.addView(dashboard, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         Button complete = primaryButton("Complete ticket");
         complete.setOnClickListener(view -> showCompletionForm(ticket));
@@ -721,20 +721,6 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
         }
-    }
-
-    private void showDashboardMap(Ticket ticket) {
-        screen = "dashboard-map";
-        activeTicket = ticket;
-        activeTicketNumber = ticket == null ? "" : ticket.ticketNumber;
-        pendingScreen = "";
-        activeMapWebView = null;
-        AppSettings.saveLastView(this, screen, activeTicketNumber);
-        chrome.setVisibility(View.VISIBLE);
-        title.setText("Dashboard map");
-        subtitle.setText(ticket == null ? "Dashboard ticket map" : ticket.title());
-        selectNav(menuNav);
-        openDashboardWebView("/?dashboardTicket=" + Uri.encode(activeTicketNumber));
     }
 
     private void showMap(Ticket focus) {
@@ -813,7 +799,7 @@ public class MainActivity extends Activity {
             + "<style>:root{--vetro-scale:1}html,body,#map{height:100%;margin:0;background:#eef2f5}.leaflet-container{font-family:sans-serif}.pip-toggle{position:fixed;z-index:1002;left:10px;top:10px;width:44px;height:44px;border:0;border-radius:10px;background:#0f172a;color:#f8fafc;font:900 18px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)}.locate{position:fixed;z-index:1000;right:10px;top:10px;border:0;border-radius:8px;background:#0f172a;color:#f8fafc;padding:10px 12px;font:700 14px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)}.locate.active{background:#0369a1}.locate.error{background:#991b1b}.add-note{position:fixed;z-index:1000;right:10px;top:58px;border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:10px 12px;font:700 14px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)}.add-note.active{background:#15803d}.satellite-toggle{position:fixed;z-index:1000;left:10px;top:75%;transform:translateY(-50%);border:0;border-radius:9px;background:#0f172a;color:#f8fafc;padding:11px 12px;font:800 13px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.28)}.satellite-toggle.active{background:#166534}.measure{position:fixed;z-index:1000;left:10px;bottom:12px;display:flex;gap:8px;align-items:center;background:rgba(15,23,42,.84);color:#f8fafc;border-radius:10px;padding:8px;box-shadow:0 6px 18px rgba(15,23,42,.25)}body.pip-mode .measure{display:none}.measure button{border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:9px 10px;font:700 13px sans-serif}.measure button.active{background:#15803d}.measure span{min-width:82px;font:700 13px sans-serif}.measure-dot{width:12px;height:12px;border-radius:50%;background:#facc15;border:2px solid #111827}.note-flag{width:20px;height:20px;background:var(--c);opacity:var(--o,.42);border:2px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 2px 8px rgba(15,23,42,.42)}.note-popup strong{display:block;color:#0f172a}.note-popup small{display:block;color:#64748b;margin-top:2px}.note-popup p{white-space:pre-wrap;margin:.45rem 0 0;color:#0f172a}.user-dot{width:18px;height:18px;border-radius:50%;background:#38bdf8;border:3px solid #fff;box-shadow:0 0 0 10px rgba(56,189,248,.22),0 2px 10px rgba(15,23,42,.35)}.mwrap{position:relative;width:var(--s);height:var(--s)}.m{position:absolute;left:0;top:0;width:100%;height:100%;background:var(--c);border:2px solid var(--b);opacity:calc(var(--vetro-scale) * var(--o))}.circle{border-radius:50%}.square{}.diamond{transform:rotate(45deg)}.pin{border-radius:50% 50% 50% 0;transform:rotate(-45deg)}.house{clip-path:polygon(50% 0,100% 42%,100% 100%,0 100%,0 42%)}</style></head>"
             + "<body><div id=\"map\"></div><div id=\"map3d\" style=\"position:fixed;inset:0;display:none;background:#111827;z-index:900\"></div><button id=\"pipToggle\" class=\"pip-toggle\" type=\"button\" title=\"Shrink map\">&#8600;&#8598;</button><button id=\"locateMe\" class=\"locate\" type=\"button\">Location off</button><button id=\"addNote\" class=\"add-note\" type=\"button\">Add note</button><button id=\"satelliteToggle\" class=\"satellite-toggle\" type=\"button\">Satellite</button><button id=\"toggle3d\" type=\"button\" style=\"position:fixed;z-index:1001;right:10px;top:106px;border:0;border-radius:8px;background:#0f172a;color:#f8fafc;padding:10px 12px;font:800 14px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)\">3D</button><button id=\"style3d\" type=\"button\" style=\"position:fixed;z-index:1001;right:10px;top:154px;display:none;border:0;border-radius:8px;background:#0f172a;color:#f8fafc;padding:10px 12px;font:800 13px sans-serif;box-shadow:0 6px 18px rgba(15,23,42,.25)\">Streets</button><div id=\"tiltTools\" style=\"position:fixed;z-index:1001;right:10px;top:202px;display:none;gap:7px;flex-direction:column\"><button id=\"tiltUp\" type=\"button\" style=\"border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:10px;font:800 13px sans-serif\">Tilt +</button><button id=\"tiltDown\" type=\"button\" style=\"border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:10px;font:800 13px sans-serif\">Tilt -</button><button id=\"rotate3d\" type=\"button\" style=\"border:0;border-radius:8px;background:#334155;color:#f8fafc;padding:10px;font:800 13px sans-serif\">Rotate</button></div><div class=\"measure\"><button id=\"measureToggle\" type=\"button\">Measure</button><button id=\"measureClear\" type=\"button\">Clear</button><span id=\"measureStatus\">0 ft</span></div><script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script><script src=\"https://api.mapbox.com/mapbox-gl-js/v3.24.0/mapbox-gl.js\"></script><script>"
             + "const tickets=" + json + ";const locatorNotes=" + notesJson + ";const state=" + stateJson + ";const focus=" + JSONObject.quote(focusNumber) + ";const savedCamera=" + cameraJson + ";"
-            + "let vetroOpacityScale=1;let vetroLayers=[];let locationWatch=null;let userMarker=null;let accuracyCircle=null;let measuring=false;let addingNote=false;let measurePoints=[];let measureLayer=L.layerGroup();let baseLayer=null;let currentBaseKey='';let map3d=null;let using3d=false;let saved3dLoaded=false;let map3dStyle=String(savedCamera.mode||'').includes('satellite')?'satellite':'standard';"
+            + "let vetroOpacityScale=1;let vetroLayers=[];let locationWatch=null;let userMarker=null;let accuracyCircle=null;let measuring=false;let addingNote=false;let measurePoints=[];let measureLayer=L.layerGroup();let baseLayer=null;let currentBaseKey='';let focusBounds=null;let map3d=null;let using3d=false;let saved3dLoaded=false;let map3dStyle=String(savedCamera.mode||'').includes('satellite')?'satellite':'standard';"
             + "const map=L.map('map',{zoomControl:false,preferCanvas:true}).setView([33.23,-92.67],12);"
             + "function saveLeafletCamera(){try{const c=map.getCenter();FiberLocator.saveMapCamera(c.lat,c.lng,map.getZoom(),0,0,using3d?'3d':'leaflet');}catch(e){}}"
             + "let cameraTimer=null;function scheduleCameraSave(){if(cameraTimer)clearTimeout(cameraTimer);cameraTimer=setTimeout(saveLeafletCamera,350);}"
@@ -851,7 +837,7 @@ public class MainActivity extends Activity {
             + "function addFeatureNote(kind,f,ll){const p=f.properties||{};const lid=kind==='vetro'?vetroId(f):vitId(f);const fid=prop(p,'ID','feature_id','vetro_id','vitruvi_id','id','uid');const label=kind==='vetro'?(prop(p,'Street_Address','street_address','Name','name','feature_id','ID')||lid):(prop(p,'label','name','Name','full_address','Address','feature_id')||lid);setAddingNote(false);FiberLocator.addLocatorNoteForFeature(ll.lat,ll.lng,kind,label,fid,lid,fid);}"
             + "map.on('click',e=>{if(addingNote){addMapNote(e.latlng);return;}if(measuring)addMeasurePoint(e.latlng);});"
             + "const bounds=[];tickets.forEach(t=>{const color=t.color||'#00695c';"
-            + "if(t.polygon){const p=L.geoJSON(t.polygon,{style:{color,weight:t.id===focus?5:3,fillColor:color,fillOpacity:.11}}).addTo(map);p.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(addingNote){addTicketNote(t,e.latlng);return;}if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});try{bounds.push(p.getBounds())}catch(e){}}"
+            + "if(t.polygon){const p=L.geoJSON(t.polygon,{style:{color,weight:t.id===focus?5:3,fillColor:color,fillOpacity:.11}}).addTo(map);p.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(addingNote){addTicketNote(t,e.latlng);return;}if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});try{const pb=p.getBounds();bounds.push(pb);if(t.id===focus)focusBounds=pb;}catch(e){}}"
             + "if(t.lat&&t.lon){const m=L.circleMarker([t.lat,t.lon],{radius:6,color,fillColor:color,fillOpacity:.9}).addTo(map);m.on('click',e=>{if(e.originalEvent)L.DomEvent.stopPropagation(e.originalEvent);if(addingNote){addTicketNote(t,e.latlng);return;}if(measuring){addMeasurePoint(e.latlng);return;}stopLocation();FiberLocator.openTicket(t.id);});bounds.push(L.latLng(t.lat,t.lon));}});"
             + "function esc(s){return String(s||'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}"
             + "function noteColor(c){return {instruction:'#2563eb',layer_issue:'#9333ea',locate_issue:'#dc2626',needs_attention:'#f59e0b',restoration:'#16a34a',other:'#475569'}[String(c||'')]||'#2563eb';}"
@@ -894,7 +880,7 @@ public class MainActivity extends Activity {
             + "function stopLocation(){if(locationWatch!=null&&navigator.geolocation){navigator.geolocation.clearWatch(locationWatch);}locationWatch=null;setLocate('Location off','');}"
             + "function toggleLocation(){if(locationWatch==null)startLocation();else stopLocation();}"
             + "document.getElementById('locateMe').addEventListener('click',toggleLocation);window.addEventListener('pagehide',stopLocation);window.addEventListener('beforeunload',stopLocation);"
-            + "if(focus){const item=tickets.find(t=>t.id===focus);if(item&&item.lat&&item.lon)map.setView([item.lat,item.lon],16);}"
+            + "if(focus){const item=tickets.find(t=>t.id===focus);if(item&&item.lat&&item.lon)map.setView([item.lat,item.lon],16);else if(focusBounds)map.fitBounds(focusBounds,{padding:[26,26],maxZoom:17});}"
             + "else if(savedCamera.saved){map.setView([savedCamera.lat,savedCamera.lng],savedCamera.zoom||12);if(String(savedCamera.mode||'').startsWith('3d'))setTimeout(()=>toggle3d(),800);}"
             + "else if(bounds.length){let b=L.latLngBounds([]);bounds.forEach(x=>b.extend(x));map.fitBounds(b,{padding:[18,18],maxZoom:14});}"
             + "</script></body></html>";
@@ -1258,8 +1244,6 @@ public class MainActivity extends Activity {
             else showTicketDetail(ticket);
         } else if ("map".equals(target)) {
             showMap(findTicket(activeTicketNumber));
-        } else if ("dashboard-map".equals(target)) {
-            showDashboardMap(findTicket(activeTicketNumber));
         } else if ("profile".equals(target)) {
             showProfile();
         } else if ("dig".equals(target)) {
@@ -1537,8 +1521,6 @@ public class MainActivity extends Activity {
                     view.evaluateJavascript("document.querySelector('#showLocationPhotosView')?.click()", null);
                 } else if (path.contains("#profile")) {
                     view.evaluateJavascript("document.querySelector('#openProfileEditor')?.click()", null);
-                } else if (path.contains("dashboardTicket=")) {
-                    view.evaluateJavascript("setTimeout(function(){var t=new URLSearchParams(location.search).get('dashboardTicket')||'';if(t&&window.setCurrentView&&window.selectTicket){window.setCurrentView('dashboard');window.selectTicket(t,{focus:true});}},700);", null);
                 }
             }
         });

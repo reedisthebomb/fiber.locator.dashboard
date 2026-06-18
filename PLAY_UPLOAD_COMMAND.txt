@@ -4,19 +4,19 @@ Fiber Locator Google Play Upload
 Yes, you need to update the native app in Google Play.
 
 New app version:
-versionCode 51
-versionName 0.1.50
+versionCode 52
+versionName 0.1.51
 
 Run this on the DMI tablet in PowerShell:
 
-scp linux@192.168.50.220:/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab "$env:USERPROFILE\Downloads\fiber-locator-0.1.50.aab"
+scp linux@192.168.50.220:/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab "$env:USERPROFILE\Downloads\fiber-locator-0.1.51.aab"
 
 Then upload this file to Google Play Console:
 
-Downloads\fiber-locator-0.1.50.aab
+Downloads\fiber-locator-0.1.51.aab
 
 SHA256:
-d0496ed9b23beac4e482a25c1b875737bbc3a23c6309beae9be2e2c794ea062b
+4acfad9844c4d4c50b3a98b7f0b83607af05a357c8135a0611f336f4006334b4
 
 Note:
-The native completion form now shows an in-form progress bar/status while submitting and disables the controls until the request finishes. Android Auto ticket polygons now have a darker/thicker outline with a slightly stronger fill. The native app's "See on dashboard map" action opens the dashboard map focused on the ticket and keeps it there until you leave manually. The mobile dashboard measure control is moved up away from the phone navigation area, and the Location Photos view is its own scrollable container. The web dashboard cache was bumped to 20260618131149 and deployed.
+The native completion form still shows an in-form progress bar/status while submitting. Android Auto ticket polygons still have a darker/thicker outline with a slightly stronger fill. The native app's "See on dashboard map" action now opens the native live map focused on the job and keeps the app on that live map until you manually leave it. The live map also fits the selected polygon when the ticket has polygon data instead of a single coordinate. The mobile dashboard measure control is moved up away from the phone navigation area, and the Location Photos view is its own scrollable container.

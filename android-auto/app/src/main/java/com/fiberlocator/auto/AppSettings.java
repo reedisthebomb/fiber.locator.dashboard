@@ -49,7 +49,7 @@ public final class AppSettings {
 
     public static String lastScreen(Context context) {
         String screen = value(context, "last_screen");
-        if ("map".equals(screen) || "dashboard-map".equals(screen) || "detail".equals(screen) || "complete".equals(screen) || "tickets".equals(screen)
+        if ("map".equals(screen) || "detail".equals(screen) || "complete".equals(screen) || "tickets".equals(screen)
             || "dig".equals(screen) || "restoration".equals(screen) || "in-house-requests".equals(screen)
             || "location-photos".equals(screen) || "profile".equals(screen)) {
             return screen;
