@@ -4285,7 +4285,10 @@ body:not(.restoration-can-manage) .restoration-admin-only {
 }
 
 .location-photos-view {
+  height: calc(100vh - 54px);
   min-height: calc(100vh - 78px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 22px;
   background: #eef3f8;
   color: #17202b;
@@ -4331,6 +4334,7 @@ body:not(.restoration-can-manage) .restoration-admin-only {
   display: grid;
   grid-template-columns: minmax(280px, 420px) minmax(0, 1fr);
   gap: 18px;
+  min-width: min(100%, 760px);
 }
 
 .location-photos-form {
@@ -6671,7 +6675,8 @@ body.mobile-map-open .mobile-detail-back {
   }
 
   .measure-control {
-    top: 52px;
+    top: max(96px, calc(env(safe-area-inset-top, 0px) + 18vh));
+    bottom: auto;
     width: min(390px, calc(100% - 24px));
     grid-template-columns: 76px 54px 66px minmax(0, 1fr);
   }

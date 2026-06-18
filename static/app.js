@@ -10824,6 +10824,7 @@ async function bootstrap() {
     elements.ticketList.innerHTML = `<div class="detail-content">${escapeHtml(error.message)}</div>`;
     throw error;
   }
+  const dashboardTicketParam = new URLSearchParams(window.location.search).get("dashboardTicket") || "";
   if (window.location.hash === "#sheet") {
     setCurrentView("sheet");
   } else if (window.location.hash === "#restoration") {
@@ -10838,6 +10839,12 @@ async function bootstrap() {
     setCurrentView("admin-console");
   } else if (window.location.hash === "#activity" || window.location.hash === "#app-dashboard-log") {
     setCurrentView("activity");
+  }
+  if (dashboardTicketParam) {
+    setCurrentView("dashboard");
+    requestAnimationFrame(() => {
+      window.setTimeout(() => selectTicket(dashboardTicketParam, { focus: true }), 350);
+    });
   }
   dashboardStateReady = true;
   updateHistoryButtons();

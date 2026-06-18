@@ -4,19 +4,19 @@ Fiber Locator Google Play Upload
 Yes, you need to update the native app in Google Play.
 
 New app version:
-versionCode 48
-versionName 0.1.47
+versionCode 51
+versionName 0.1.50
 
 Run this on the DMI tablet in PowerShell:
 
-scp linux@192.168.50.220:/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab "$env:USERPROFILE\Downloads\fiber-locator-0.1.47.aab"
+scp linux@192.168.50.220:/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab "$env:USERPROFILE\Downloads\fiber-locator-0.1.50.aab"
 
 Then upload this file to Google Play Console:
 
-Downloads\fiber-locator-0.1.47.aab
+Downloads\fiber-locator-0.1.50.aab
 
 SHA256:
-24c691d0cbcae814f42d712e1b9ec9dd484fc65c83269d680aa3a0254ace4c26
+d0496ed9b23beac4e482a25c1b875737bbc3a23c6309beae9be2e2c794ea062b
 
 Note:
-The native Dig Tickets page now keeps the toolbar/header fixed to its own space and leaves the ticket table scrollable vertically and horizontally in portrait and landscape. Android Auto Tickets now includes TCW/DMI tickets in the regular Tickets tab with the same TCW/DMI badge/color treatment, and the separate TCW tab is removed. Android Auto Dashboard Map now fits the selected ticket polygon instead of opening in live-follow mode, while the normal Map tab still follows live phone location. The Android Auto map also keeps the near-invisible ticket polygon fill, layer 28/42 size boosts, dashboard-style colors, high-accuracy fused location filtering, and adds throttled/offscreen-capped drawing to reduce pan/zoom freezes.
+The native completion form now shows an in-form progress bar/status while submitting and disables the controls until the request finishes. Android Auto ticket polygons now have a darker/thicker outline with a slightly stronger fill. The native app's "See on dashboard map" action opens the dashboard map focused on the ticket and keeps it there until you leave manually. The mobile dashboard measure control is moved up away from the phone navigation area, and the Location Photos view is its own scrollable container. The web dashboard cache was bumped to 20260618131149 and deployed.

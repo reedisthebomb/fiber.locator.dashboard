@@ -227,7 +227,7 @@ public class MainActivity extends Activity {
             showTicketDetail(activeTicket);
         } else if ("locator-note".equals(screen)) {
             showMap(activeTicket);
-        } else if ("dig".equals(screen) || "restoration".equals(screen) || "in-house-requests".equals(screen) || "location-photos".equals(screen) || "profile".equals(screen)) {
+        } else if ("dashboard-map".equals(screen) || "dig".equals(screen) || "restoration".equals(screen) || "in-house-requests".equals(screen) || "location-photos".equals(screen) || "profile".equals(screen)) {
             showTickets();
         } else if ("detail".equals(screen)) {
             showTickets();
@@ -701,7 +701,7 @@ public class MainActivity extends Activity {
         navigate.setOnClickListener(view -> openNavigation(ticket));
         page.addView(navigate, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         Button dashboard = secondaryButton("See on dashboard map");
-        dashboard.setOnClickListener(view -> showMap(ticket));
+        dashboard.setOnClickListener(view -> showDashboardMap(ticket));
         page.addView(dashboard, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         Button complete = primaryButton("Complete ticket");
         complete.setOnClickListener(view -> showCompletionForm(ticket));
@@ -721,6 +721,20 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    private void showDashboardMap(Ticket ticket) {
+        screen = "dashboard-map";
+        activeTicket = ticket;
+        activeTicketNumber = ticket == null ? "" : ticket.ticketNumber;
+        pendingScreen = "";
+        activeMapWebView = null;
+        AppSettings.saveLastView(this, screen, activeTicketNumber);
+        chrome.setVisibility(View.VISIBLE);
+        title.setText("Dashboard map");
+        subtitle.setText(ticket == null ? "Dashboard ticket map" : ticket.title());
+        selectNav(menuNav);
+        openDashboardWebView("/?dashboardTicket=" + Uri.encode(activeTicketNumber));
     }
 
     private void showMap(Ticket focus) {
@@ -1114,11 +1128,24 @@ public class MainActivity extends Activity {
         form.addView(attachmentStatus);
 
         Button submit = primaryButton("Submit ticket");
+        ProgressBar submitProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        submitProgress.setIndeterminate(true);
+        submitProgress.setVisibility(View.GONE);
+        TextView submitStatus = text("", 13, darkMuted, false);
         submit.setOnClickListener(view -> {
             List<String> selected = new ArrayList<>();
             for (CheckBox box : boxes) if (box.isChecked()) selected.add(String.valueOf(box.getTag()));
-            submitCompletion(ticket, selected, note.getText().toString());
+            submit.setEnabled(false);
+            choose.setEnabled(false);
+            note.setEnabled(false);
+            for (CheckBox box : boxes) box.setEnabled(false);
+            submitProgress.setVisibility(View.VISIBLE);
+            submitStatus.setTextColor(darkMuted);
+            submitStatus.setText("Submitting ticket...");
+            submitCompletion(ticket, selected, note.getText().toString(), submit, choose, note, boxes, submitProgress, submitStatus);
         });
+        form.addView(submitProgress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8)));
+        form.addView(submitStatus);
         form.addView(submit, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
         form.addView(spacer(36));
         content.addView(scroll);
@@ -1133,8 +1160,17 @@ public class MainActivity extends Activity {
         startActivityForResult(intent, PICK_ATTACHMENTS);
     }
 
-    private void submitCompletion(Ticket ticket, List<String> selected, String note) {
-        if (snapshot == null) return;
+    private void submitCompletion(Ticket ticket, List<String> selected, String note, Button submitButton, Button chooseButton, EditText noteInput, List<CheckBox> boxes, ProgressBar submitProgress, TextView submitStatus) {
+        if (snapshot == null) {
+            submitButton.setEnabled(true);
+            chooseButton.setEnabled(true);
+            noteInput.setEnabled(true);
+            for (CheckBox box : boxes) box.setEnabled(true);
+            submitProgress.setVisibility(View.GONE);
+            submitStatus.setTextColor(danger);
+            submitStatus.setText("Tickets are still loading. Refresh tickets and try again.");
+            return;
+        }
         progress.setVisibility(View.VISIBLE);
         executor.execute(() -> {
             try {
@@ -1148,6 +1184,13 @@ public class MainActivity extends Activity {
             } catch (Exception error) {
                 runOnUiThread(() -> {
                     progress.setVisibility(View.GONE);
+                    submitButton.setEnabled(true);
+                    chooseButton.setEnabled(true);
+                    noteInput.setEnabled(true);
+                    for (CheckBox box : boxes) box.setEnabled(true);
+                    submitProgress.setVisibility(View.GONE);
+                    submitStatus.setTextColor(danger);
+                    submitStatus.setText(error.getMessage());
                     if (attachmentStatus != null) {
                         attachmentStatus.setTextColor(danger);
                         attachmentStatus.setText(error.getMessage());
@@ -1215,6 +1258,8 @@ public class MainActivity extends Activity {
             else showTicketDetail(ticket);
         } else if ("map".equals(target)) {
             showMap(findTicket(activeTicketNumber));
+        } else if ("dashboard-map".equals(target)) {
+            showDashboardMap(findTicket(activeTicketNumber));
         } else if ("profile".equals(target)) {
             showProfile();
         } else if ("dig".equals(target)) {
@@ -1476,6 +1521,8 @@ public class MainActivity extends Activity {
     }
 
     private void openDashboardWebView(String path) {
+        activeMapWebView = null;
+        pendingScreen = "";
         content.removeAllViews();
         WebView web = new WebView(this);
         configureLocationWebView(web);
@@ -1490,6 +1537,8 @@ public class MainActivity extends Activity {
                     view.evaluateJavascript("document.querySelector('#showLocationPhotosView')?.click()", null);
                 } else if (path.contains("#profile")) {
                     view.evaluateJavascript("document.querySelector('#openProfileEditor')?.click()", null);
+                } else if (path.contains("dashboardTicket=")) {
+                    view.evaluateJavascript("setTimeout(function(){var t=new URLSearchParams(location.search).get('dashboardTicket')||'';if(t&&window.setCurrentView&&window.selectTicket){window.setCurrentView('dashboard');window.selectTicket(t,{focus:true});}},700);", null);
                 }
             }
         });

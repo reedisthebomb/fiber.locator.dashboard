@@ -2,6 +2,18 @@
 
 Updated: 2026-06-18
 
+## Native Android Submit Progress, Dashboard Map Hold, Android Auto Polygon Tune - 2026-06-18
+
+- Reed asked for a native Android completion-submit progress bar, slightly darker/larger Android Auto ticket polygon outlines with a little more interior shade, the native map measure control moved away from the phone navigation area, the native `See on dashboard map` action to stay on the dashboard map until manually leaving, and Location Photos to be scrollable like the In-house Locate page.
+- Native Android completion now shows an in-form indeterminate progress bar and `Submitting ticket...` status after `Submit ticket` is pressed; action checkboxes, note input, upload button, and submit are disabled until the save finishes or an error restores the form.
+- Native Android `See on dashboard map` now opens a dedicated `dashboard-map` screen at `/?dashboardTicket=<ticket>`, stores that screen in last-view state, and re-focuses the dashboard map on the selected ticket after the WebView loads instead of returning to ticket detail automatically.
+- Android Auto ticket polygon rendering changed from fill alpha `6` / outline `1.5px` alpha `115` to fill alpha `10` / outline `2.5px` alpha `150`.
+- Web dashboard mobile measure control now sits higher on small screens, away from lower Android navigation controls. Location Photos now uses its own scroll container with touch momentum, and the web cache bust/service-worker cache version is `20260618131149`.
+- Bumped native Android to `versionCode 51`, `versionName 0.1.50`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `d0496ed9b23beac4e482a25c1b875737bbc3a23c6309beae9be2e2c794ea062b`. Release APK SHA256 `4713c30561cfa0c331b6a5fe277a251b78d4eb6b6e8c762f7bad751528245ef4`.
+- Deployed `index.html`, `static/app.js`, `static/styles.css`, `static/service-worker.js`, changed Android source files, and the rebuilt APK/AAB to `/opt/onecall-locator-dashboard`; backup path is `data/deploy_backups/20260618T131149Z`.
+- Verification passed: `python3 -m py_compile server.py tools/import_vetro_tiles_from_capture.py tools/export_vetro_google_earth_layers.py`, `node --check static/app.js`, `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease`, `aapt dump badging` showing `versionCode 51` / `versionName 0.1.50`, `apksigner verify --verbose`, live service restart with `onecall-dashboard` active, live SSH hashes matching local for deployed files/artifacts, and public cache-busted JS/CSS/service-worker returning `200`.
+- Device validation note: `adb devices -l` showed no attached devices, and `adb connect 192.168.50.173:42023` failed with `No route to host`, so no live phone/Android Auto runtime visual test could be completed from this shell for this build.
+
 ## In-House Locate Lookup Upgrade - 2026-06-18
 
 - Reed asked for the In-house Locate process to be easier and searchable by utility number, layer number, handhole/flower-pot IDs, VETRO IDs, addresses, and coordinates, with details filled in where possible.
