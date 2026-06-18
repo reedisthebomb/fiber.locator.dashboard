@@ -1,4 +1,4 @@
-const CACHE_VERSION = "fiber-locator-20260618015500";
+const CACHE_VERSION = "fiber-locator-20260618172500";
 const APP_SHELL = [
   "/",
   "/mobile",

@@ -703,6 +703,10 @@ def in_house_requests_index_path(data_dir: Path) -> Path:
     return in_house_requests_root(data_dir) / "requests.json"
 
 
+def in_house_attachment_dir(data_dir: Path, request_id: str) -> Path:
+    return in_house_requests_root(data_dir) / "files" / safe_file_component(request_id, "request")
+
+
 def location_photos_root(data_dir: Path) -> Path:
     return data_dir / "location_photos"
 
@@ -880,6 +884,9 @@ def normalize_in_house_request(item: dict) -> dict:
         "updated_by": str(item.get("updated_by") or ""),
         "completed_at": str(item.get("completed_at") or ""),
         "completed_by": str(item.get("completed_by") or ""),
+        "folder_url": str(item.get("folder_url") or ""),
+        "folder_name": str(item.get("folder_name") or request_id),
+        "attachments": item.get("attachments") if isinstance(item.get("attachments"), list) else [],
     }
 
 
@@ -3776,6 +3783,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             query = parse_qs(parsed.query)
             self.send_restoration_attachment_file(query.get("job", [""])[0], query.get("id", [""])[0])
             return
+        if parsed.path == "/api/in-house-requests/file":
+            query = parse_qs(parsed.query)
+            self.send_in_house_attachment_file(query.get("request", [""])[0], query.get("id", [""])[0])
+            return
         if parsed.path.startswith("/data/history/"):
             self.send_history_file(parsed.path)
             return
@@ -3871,6 +3882,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/restoration-jobs/upload":
             self.upload_restoration_attachment()
+            return
+        if parsed.path == "/api/in-house-requests/upload":
+            self.upload_in_house_attachment()
             return
         if parsed.path == "/api/locator-notes":
             self.create_locator_note()
@@ -4541,10 +4555,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if existing:
                 request_item["created_at"] = existing.get("created_at") or request_item["created_at"]
                 request_item["created_by"] = existing.get("created_by") or username
+                request_item["attachments"] = existing.get("attachments") if isinstance(existing.get("attachments"), list) else []
+                request_item["folder_url"] = existing.get("folder_url") or request_item.get("folder_url", "")
+                request_item["folder_name"] = existing.get("folder_name") or request_item.get("folder_name", request_item["id"])
             else:
                 request_item["id"] = request_id or in_house_request_id()
                 request_item["created_at"] = now
                 request_item["created_by"] = username
+                request_item["folder_name"] = request_item["id"]
             if request_item["status"] == "completed":
                 request_item["completed_at"] = request_item.get("completed_at") or now
                 request_item["completed_by"] = request_item.get("completed_by") or username
@@ -4737,6 +4755,133 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if resolved_root not in resolved_path.parents or not resolved_path.exists():
             self.send_error(404, "Restoration attachment not found")
+            return
+        content_type = str(item.get("content_type") or mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream")
+        body = resolved_path.read_bytes()
+        disposition = "inline" if content_type.startswith(("image/", "video/")) else "attachment"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'{disposition}; filename="{safe_file_component(str(item.get("original_name") or filename))}"')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def upload_in_house_attachment(self) -> None:
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.lower().startswith("multipart/form-data"):
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": "multipart/form-data required"}).encode("utf-8"))
+            return
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(content_length)
+        message = BytesParser(policy=policy.default).parsebytes(
+            f"Content-Type: {content_type}\nMIME-Version: 1.0\n\n".encode("utf-8") + body
+        )
+        fields: dict[str, str] = {}
+        file_parts = []
+        for part in message.iter_parts():
+            if part.get_content_disposition() != "form-data":
+                continue
+            name = part.get_param("name", header="content-disposition")
+            filename = part.get_filename()
+            if filename:
+                file_parts.append(part)
+            elif name:
+                try:
+                    fields[str(name)] = str(part.get_content() or "")
+                except Exception:
+                    fields[str(name)] = part.get_payload(decode=True).decode("utf-8", errors="replace")
+        request_id = str(fields.get("request_id") or "").strip()
+        note = clean_restoration_text(fields.get("note"), 1000)
+        if len(file_parts) > ONEDRIVE_MAX_ATTACHMENTS:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "message": f"Select {ONEDRIVE_MAX_ATTACHMENTS} attachments or fewer."}).encode("utf-8"))
+            return
+        username = self.current_username() or "default"
+        with IN_HOUSE_REQUESTS_LOCK:
+            payload = load_in_house_requests(self.data_dir)
+            requests = [normalize_in_house_request(item) for item in payload.get("requests", []) if isinstance(item, dict)]
+            request_index = next((index for index, item in enumerate(requests) if item.get("id") == request_id), -1)
+            if request_index < 0:
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "message": "In-house request not found"}).encode("utf-8"))
+                return
+            request_item = requests[request_index]
+        folder_name = safe_file_component(str(request_item.get("id") or request_id), "in_house")
+        saved_items = []
+        for part in file_parts:
+            original_name = safe_file_component(part.get_filename() or "", "")
+            if not original_name:
+                continue
+            attachment_id = f"{dashboard_now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
+            file_body = part.get_payload(decode=True) or b""
+            part_content_type = str(part.get_content_type() or mimetypes.guess_type(original_name)[0] or "application/octet-stream")
+            stored_name = f"{attachment_id}_{original_name}"
+            folder = in_house_attachment_dir(self.data_dir, request_id)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / stored_name).write_bytes(file_body)
+            saved_items.append({
+                "id": attachment_id,
+                "provider": "local",
+                "original_name": original_name,
+                "stored_name": stored_name,
+                "content_type": part_content_type,
+                "size": len(file_body),
+                "note": note,
+                "uploaded_at": dashboard_now_iso(),
+                "uploaded_by": username,
+                "url": f"/api/in-house-requests/file?request={quote(request_id)}&id={quote(attachment_id)}",
+                "folder_url": "",
+                "folder_name": folder_name,
+                "drive_item_id": "",
+            })
+        with IN_HOUSE_REQUESTS_LOCK:
+            payload = load_in_house_requests(self.data_dir)
+            requests = [normalize_in_house_request(item) for item in payload.get("requests", []) if isinstance(item, dict)]
+            request_index = next((index for index, item in enumerate(requests) if item.get("id") == request_id), -1)
+            if request_index >= 0:
+                request_item = requests[request_index]
+                request_item["attachments"] = [*(request_item.get("attachments") if isinstance(request_item.get("attachments"), list) else []), *saved_items]
+                request_item["folder_url"] = ""
+                request_item["folder_name"] = folder_name
+                request_item["updated_at"] = dashboard_now_iso()
+                request_item["updated_by"] = username
+                requests[request_index] = request_item
+                payload["requests"] = requests
+                save_in_house_requests(self.data_dir, payload)
+        self.audit_event("in_house_request_files_uploaded", {"id": request_id, "count": len(saved_items)})
+        self.send_json({"ok": True, "request": request_item, "attachments": saved_items})
+
+    def send_in_house_attachment_file(self, request_id: str, attachment_id: str) -> None:
+        request_id = safe_file_component(request_id, "")
+        attachment_id = safe_file_component(attachment_id, "")
+        if not request_id or not attachment_id:
+            self.send_error(400, "Valid request and attachment id required")
+            return
+        with IN_HOUSE_REQUESTS_LOCK:
+            payload = load_in_house_requests(self.data_dir)
+            request_item = next((item for item in payload.get("requests", []) if isinstance(item, dict) and item.get("id") == request_id), None)
+            attachments = request_item.get("attachments", []) if isinstance(request_item, dict) else []
+            item = next((entry for entry in attachments if isinstance(entry, dict) and entry.get("id") == attachment_id), None)
+        if not item:
+            self.send_error(404, "In-house request attachment not found")
+            return
+        filename = safe_file_component(str(item.get("stored_name") or ""), "")
+        path = in_house_attachment_dir(self.data_dir, request_id) / filename
+        try:
+            resolved_root = in_house_attachment_dir(self.data_dir, request_id).resolve()
+            resolved_path = path.resolve()
+        except OSError:
+            self.send_error(404, "In-house request attachment not found")
+            return
+        if resolved_root not in resolved_path.parents or not resolved_path.exists():
+            self.send_error(404, "In-house request attachment not found")
             return
         content_type = str(item.get("content_type") or mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream")
         body = resolved_path.read_bytes()

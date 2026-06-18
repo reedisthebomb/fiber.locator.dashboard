@@ -7594,6 +7594,10 @@ async function saveInHouseRequest(event) {
 }
 
 function inHouseRequestRowHtml(item) {
+  const attachments = Array.isArray(item.attachments) ? item.attachments : [];
+  const attachmentLinks = attachments.length
+    ? attachments.slice(-4).map((attachment) => `<a href="${escapeHtml(attachment.url || "#")}" target="_blank" rel="noreferrer">${escapeHtml(attachment.original_name || "File")}</a>`).join("")
+    : '<span class="sheet-muted">No files</span>';
   return `
     <article class="in-house-request-row ${item.id === selectedInHouseRequestId ? "selected" : ""}">
       <div>
@@ -7605,10 +7609,32 @@ function inHouseRequestRowHtml(item) {
           <span>${escapeHtml(statusLabel(item.status))}</span>
           <span>${escapeHtml(String(item.due_at || "").replace("T", " ") || "No due date")}</span>
         </div>
+        <div class="in-house-attachments">${attachmentLinks}</div>
+        <div class="in-house-upload-row">
+          <input type="file" multiple accept="image/*,video/*,.pdf,.txt,.csv,.doc,.docx" data-in-house-file-input="${escapeHtml(item.id)}">
+          <button type="button" data-in-house-upload="${escapeHtml(item.id)}">Upload files</button>
+        </div>
       </div>
       <button type="button" data-edit-in-house-request="${escapeHtml(item.id)}">Edit</button>
     </article>
   `;
+}
+
+async function uploadInHouseFiles(requestId) {
+  const input = [...(elements.inHouseRequestList?.querySelectorAll("[data-in-house-file-input]") || [])].find((item) => item.dataset.inHouseFileInput === requestId);
+  const files = [...(input?.files || [])];
+  if (!files.length) return;
+  if (files.length > 80) throw new Error("Select 80 attachments or fewer.");
+  const data = new FormData();
+  data.set("request_id", requestId);
+  for (const file of files) data.append("files", file, file.name);
+  const response = await fetch("/api/in-house-requests/upload", { method: "POST", body: data });
+  const payload = await response.json();
+  if (!response.ok || payload.ok === false) throw new Error(payload.message || `Upload failed: ${response.status}`);
+  await loadInHouseRequests();
+  fillInHouseForm(payload.request || inHouseRequests.find((request) => request.id === requestId) || {});
+  renderInHouseRequestsView();
+  if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = `${files.length} file${files.length === 1 ? "" : "s"} uploaded to ${requestId}.`;
 }
 
 function renderInHouseRequestsView() {
@@ -7621,6 +7647,19 @@ function renderInHouseRequestsView() {
     button.addEventListener("click", () => {
       const item = inHouseRequests.find((request) => request.id === button.dataset.editInHouseRequest);
       if (item) fillInHouseForm(item);
+    });
+  }
+  for (const button of elements.inHouseRequestList.querySelectorAll("[data-in-house-upload]")) {
+    button.addEventListener("click", async () => {
+      try {
+        button.disabled = true;
+        await uploadInHouseFiles(button.dataset.inHouseUpload);
+      } catch (error) {
+        if (elements.inHouseFormStatus) elements.inHouseFormStatus.textContent = error.message || "Upload failed.";
+        console.error(error);
+      } finally {
+        button.disabled = false;
+      }
     });
   }
   requestAnimationFrame(() => {

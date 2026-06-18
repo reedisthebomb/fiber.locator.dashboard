@@ -3063,7 +3063,10 @@ button {
 
 .restoration-view,
 .in-house-requests-view {
+  height: calc(100vh - 54px);
   min-height: calc(100vh - 54px);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
   background: #edf2f7;
   color: #17202b;
   content-visibility: auto;
@@ -3309,7 +3312,7 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
-  align-items: center;
+  align-items: start;
   padding: 12px;
   border: 1px solid #cbd5e1;
   border-left: 5px solid #2563eb;
@@ -3339,6 +3342,44 @@ button {
   color: #475569;
   font-size: 13px;
   font-weight: 700;
+}
+
+.in-house-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.in-house-attachments a,
+.in-house-attachments span {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #ffffff;
+  color: #1e3a5f;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.in-house-upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.in-house-upload-row input {
+  min-width: 0;
+  width: 100%;
+  color: #17202b;
+  font-size: 12px;
 }
 
 .restoration-map-panel {
@@ -6590,7 +6631,7 @@ body.mobile-map-open .mobile-detail-back {
   }
 
   .in-house-map-panel {
-    grid-template-rows: auto minmax(330px, 48vh);
+    grid-template-rows: auto auto minmax(330px, 48vh);
     order: -1;
   }
 
@@ -6603,6 +6644,10 @@ body.mobile-map-open .mobile-detail-back {
   }
 
   .in-house-request-row {
+    grid-template-columns: 1fr;
+  }
+
+  .in-house-upload-row {
     grid-template-columns: 1fr;
   }
 
