@@ -527,13 +527,13 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
             if (rings.isEmpty()) continue;
             paint.setColor(ticketColor(ticket));
             paint.setStyle(Paint.Style.FILL);
-            paint.setAlpha(2);
+            paint.setAlpha(6);
             for (List<double[]> ring : rings) {
                 if (pathVisible(ring, 160f)) drawPath(canvas, ring, true);
             }
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(1.5f);
-            paint.setAlpha(90);
+            paint.setAlpha(115);
             for (List<double[]> ring : rings) {
                 if (pathVisible(ring, 160f)) drawPath(canvas, ring, false);
             }

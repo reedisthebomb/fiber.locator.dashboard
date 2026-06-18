@@ -20,6 +20,8 @@ Updated: 2026-06-18
 
 ## Native Dig Tickets Scroll And Android Auto Smooth Map/Tickets Update - 2026-06-18
 
+- Follow-up Android Auto polygon visibility tweak: locate ticket polygon fill alpha increased from `2` to `6`, outline alpha from `90` to `115`, keeping the previous low-transparency approach but making boundaries/fill a little easier to see on the car map.
+- Bumped native Android to `versionCode 50`, `versionName 0.1.49`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `2a03ecf477bfd6a57a93a5c233a4642d63603b1bc14e20845a2a6918835a601e`. Release APK SHA256 `919decab96e29f4adc07833f83a6178038fdf9f2be11af9e5c9b4205cee0a1f3`.
 - Follow-up native Android fix: the ticket list now preserves scroll position across the 30-second background ticket refresh so employees should no longer get kicked back to the top while reading the list. The Map tab now waits for the dashboard snapshot before rendering if the app just opened, preventing VETRO/layer styling from falling back to default blue before the user manually taps Refresh.
 - Bumped native Android to `versionCode 49`, `versionName 0.1.48`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `40e63a55400c80ca1ff7027125ca47e9df469357f9bffaf9513e9d3bddba591a`. Release APK SHA256 `3d45231dd586b390de2b0cf7ed8c05bee34a8db850a40a86117e8b009526ee12`.
 - Reed asked that previously requested Android/Android Auto changes not be lost: preserve layer `28` and `42` size boosts, near-transparent Android Auto ticket polygons, high-accuracy location filtering, Dashboard Map, and the same Google Play package.
