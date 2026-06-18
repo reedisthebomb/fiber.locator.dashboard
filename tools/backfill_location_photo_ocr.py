@@ -58,9 +58,21 @@ def main() -> int:
         result = server.extract_printed_timestamp_location(photo_path.read_bytes())
         lat = server.optional_float(result.get("lat"))
         lng = server.optional_float(result.get("lng"))
-        if lat is None or lng is None:
+        if lat is not None and lng is not None:
+            lat, lng = server.normalize_printed_coordinate_pair(lat, lng)
+        if lat is None or lng is None or not server.printed_coordinate_in_service_area(lat, lng):
             if result.get("text"):
                 item["watermark_text"] = str(result.get("text") or "")[:1000]
+            if args.force and str(item.get("coordinate_source") or "") == "timestamp_camera_watermark":
+                item["lat"] = None
+                item["lng"] = None
+                item["coordinate_source"] = "unknown"
+                item["folder_name"] = server.photo_group_folder_name(
+                    str(item.get("ticket") or ""),
+                    str(item.get("location_label") or ""),
+                    None,
+                    None,
+                )
             failed += 1
             continue
         item["lat"] = lat

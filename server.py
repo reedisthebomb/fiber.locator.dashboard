@@ -1116,6 +1116,42 @@ def extract_jpeg_gps(file_body: bytes) -> tuple[float | None, float | None]:
     return None, None
 
 
+PHOTO_COORDINATE_LAT_MIN = 31.0
+PHOTO_COORDINATE_LAT_MAX = 35.5
+PHOTO_COORDINATE_LNG_MIN = -95.5
+PHOTO_COORDINATE_LNG_MAX = -90.0
+
+
+def normalize_printed_coordinate_pair(lat: float, lng: float) -> tuple[float, float]:
+    if lat < 0 and PHOTO_COORDINATE_LAT_MIN <= abs(lat) <= PHOTO_COORDINATE_LAT_MAX:
+        lat = abs(lat)
+    if lng > 0 and abs(lng) >= 80:
+        lng = -abs(lng)
+    return lat, lng
+
+
+def printed_coordinate_in_service_area(lat: float | None, lng: float | None) -> bool:
+    if lat is None or lng is None:
+        return False
+    lat, lng = normalize_printed_coordinate_pair(float(lat), float(lng))
+    return (
+        PHOTO_COORDINATE_LAT_MIN <= lat <= PHOTO_COORDINATE_LAT_MAX
+        and PHOTO_COORDINATE_LNG_MIN <= lng <= PHOTO_COORDINATE_LNG_MAX
+    )
+
+
+def first_service_area_coordinate(
+    lat_candidates: list[float],
+    lng_candidates: list[float],
+) -> tuple[float | None, float | None]:
+    for lat in lat_candidates:
+        for lng in lng_candidates:
+            norm_lat, norm_lng = normalize_printed_coordinate_pair(lat, lng)
+            if printed_coordinate_in_service_area(norm_lat, norm_lng):
+                return norm_lat, norm_lng
+    return None, None
+
+
 def printed_coordinate_candidates(number: str, direction: str) -> list[float]:
     raw = str(number or "").strip().replace(",", ".")
     direction = str(direction or "").upper()
@@ -1144,10 +1180,14 @@ def printed_coordinate_candidates(number: str, direction: str) -> list[float]:
                 continue
     unique: list[float] = []
     for value in candidates:
-        if direction == "S" and value > 0:
-            value *= -1
-        if direction == "W" and value > 0:
-            value *= -1
+        if direction == "N":
+            value = abs(value)
+        elif direction == "S":
+            value = -abs(value)
+        elif direction == "E":
+            value = abs(value)
+        elif direction == "W":
+            value = -abs(value)
         if direction in {"N", "S"} and not -90 <= value <= 90:
             continue
         if direction in {"E", "W"} and not -180 <= value <= 180:
@@ -1160,6 +1200,8 @@ def printed_coordinate_candidates(number: str, direction: str) -> list[float]:
 def parse_printed_coordinates(text: str) -> tuple[float | None, float | None]:
     clean = str(text or "").upper()
     clean = clean.replace("°", ".").replace("—", "-").replace("_", " ")
+    clean = re.sub(r"(?<=\d)[/:](?=\d)", ".", clean)
+    spaced_clean = clean
     clean = re.sub(r"(?<=\d)\s+(?=\d)", "", clean)
     token_re = re.compile(r"([NSWE])?\s*([+-]?\d[\d.,]{5,})\s*([NSWE])?")
     lat_candidates: list[float] = []
@@ -1175,7 +1217,9 @@ def parse_printed_coordinates(text: str) -> tuple[float | None, float | None]:
         elif direction in {"E", "W"}:
             lng_candidates.extend(values)
     if lat_candidates and lng_candidates:
-        return lat_candidates[0], lng_candidates[0]
+        lat, lng = first_service_area_coordinate(lat_candidates, lng_candidates)
+        if lat is not None and lng is not None:
+            return lat, lng
     if lat_candidates:
         for line in clean.splitlines():
             if "N" not in line:
@@ -1190,8 +1234,9 @@ def parse_printed_coordinates(text: str) -> tuple[float | None, float | None]:
                         continue
                     for length in (11, 10):
                         values = printed_coordinate_candidates(chunk[:length], "W")
-                        if values:
-                            return lat_candidates[0], values[0]
+                        lat, lng = first_service_area_coordinate(lat_candidates, values)
+                        if lat is not None and lng is not None:
+                            return lat, lng
 
     decimal_pair = re.search(
         r"([+-]?\d{1,2}\.\d{4,})\D{1,12}([+-]?\d{2,3}\.\d{4,})",
@@ -1203,8 +1248,19 @@ def parse_printed_coordinates(text: str) -> tuple[float | None, float | None]:
         if lat is not None and lng is not None:
             if lng > 0 and 80 <= lng <= 105:
                 lng *= -1
-            if -90 <= lat <= 90 and -180 <= lng <= 180:
+            lat, lng = normalize_printed_coordinate_pair(lat, lng)
+            if printed_coordinate_in_service_area(lat, lng):
                 return lat, lng
+    decimal_compact_pair = re.search(
+        r"([+-]?\d{1,2}\.\d{5,})\D{1,16}((?:9[0-5])\d{6,10})(?:\D|$)",
+        spaced_clean,
+    )
+    if decimal_compact_pair:
+        lat_values = printed_coordinate_candidates(decimal_compact_pair.group(1), "N")
+        lng_values = printed_coordinate_candidates(decimal_compact_pair.group(2), "W")
+        lat, lng = first_service_area_coordinate(lat_values, lng_values)
+        if lat is not None and lng is not None:
+            return lat, lng
     return None, None
 
 
@@ -4881,8 +4937,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 lng = exif_lng
                 source = "exif"
             elif watermark_lat is not None and watermark_lng is not None:
-                lat = watermark_lat
-                lng = watermark_lng
+                lat, lng = normalize_printed_coordinate_pair(watermark_lat, watermark_lng)
                 source = "timestamp_camera_watermark"
             else:
                 lat = manual_lat
