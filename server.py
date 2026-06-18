@@ -17,6 +17,7 @@ import shlex
 import sys
 import subprocess
 import struct
+import tempfile
 import xml.etree.ElementTree as ET
 import threading
 import secrets
@@ -1113,6 +1114,207 @@ def extract_jpeg_gps(file_body: bytes) -> tuple[float | None, float | None]:
             return lat, lng
         offset = segment_end
     return None, None
+
+
+def printed_coordinate_candidates(number: str, direction: str) -> list[float]:
+    raw = str(number or "").strip().replace(",", ".")
+    direction = str(direction or "").upper()
+    candidates: list[float] = []
+    if not raw:
+        return candidates
+    try:
+        candidates.append(float(raw))
+    except ValueError:
+        pass
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) >= 7:
+        degree_digits = 2 if direction in {"N", "S"} else 3
+        if direction in {"E", "W"} and (len(digits) <= 10 or digits.startswith(("8", "9"))):
+            degree_digits = 2
+        variants = [digits]
+        expected_digits = degree_digits + 8
+        if len(digits) > expected_digits and degree_digits < len(digits):
+            variants.insert(0, digits[:degree_digits] + digits[degree_digits + 1:])
+        for item in variants:
+            if len(item) <= degree_digits:
+                continue
+            try:
+                candidates.append(float(f"{item[:degree_digits]}.{item[degree_digits:]}"))
+            except ValueError:
+                continue
+    unique: list[float] = []
+    for value in candidates:
+        if direction == "S" and value > 0:
+            value *= -1
+        if direction == "W" and value > 0:
+            value *= -1
+        if direction in {"N", "S"} and not -90 <= value <= 90:
+            continue
+        if direction in {"E", "W"} and not -180 <= value <= 180:
+            continue
+        if not any(abs(value - existing) < 0.0000001 for existing in unique):
+            unique.append(value)
+    return unique
+
+
+def parse_printed_coordinates(text: str) -> tuple[float | None, float | None]:
+    clean = str(text or "").upper()
+    clean = clean.replace("°", ".").replace("—", "-").replace("_", " ")
+    clean = re.sub(r"(?<=\d)\s+(?=\d)", "", clean)
+    token_re = re.compile(r"([NSWE])?\s*([+-]?\d[\d.,]{5,})\s*([NSWE])?")
+    lat_candidates: list[float] = []
+    lng_candidates: list[float] = []
+    for match in token_re.finditer(clean):
+        before, number, after = match.groups()
+        direction = (after or before or "").upper()
+        if not direction:
+            continue
+        values = printed_coordinate_candidates(number, direction)
+        if direction in {"N", "S"}:
+            lat_candidates.extend(values)
+        elif direction in {"E", "W"}:
+            lng_candidates.extend(values)
+    if lat_candidates and lng_candidates:
+        return lat_candidates[0], lng_candidates[0]
+    if lat_candidates:
+        for line in clean.splitlines():
+            if "N" not in line:
+                continue
+            after_lat = line.split("N", 1)[1]
+            digit_runs = re.findall(r"\d[\d\s.,]{6,}\d", after_lat)
+            for run in digit_runs:
+                compact = re.sub(r"\D", "", run)
+                for start in range(0, max(1, len(compact) - 8)):
+                    chunk = compact[start:start + 11]
+                    if not chunk.startswith(("8", "9")):
+                        continue
+                    for length in (11, 10):
+                        values = printed_coordinate_candidates(chunk[:length], "W")
+                        if values:
+                            return lat_candidates[0], values[0]
+
+    decimal_pair = re.search(
+        r"([+-]?\d{1,2}\.\d{4,})\D{1,12}([+-]?\d{2,3}\.\d{4,})",
+        clean,
+    )
+    if decimal_pair:
+        lat = optional_float(decimal_pair.group(1))
+        lng = optional_float(decimal_pair.group(2))
+        if lat is not None and lng is not None:
+            if lng > 0 and 80 <= lng <= 105:
+                lng *= -1
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                return lat, lng
+    return None, None
+
+
+def printed_watermark_address(text: str) -> str:
+    lines = [re.sub(r"\s+", " ", line).strip(" .,:;-") for line in str(text or "").splitlines()]
+    useful: list[str] = []
+    saw_coordinates = False
+    for line in lines:
+        upper = line.upper()
+        if not line:
+            continue
+        if re.search(r"\d{1,3}[\d.,]{5,}\s*[NSWE]", upper):
+            saw_coordinates = True
+            continue
+        if not saw_coordinates:
+            continue
+        if re.search(r"\b(AM|PM)\b", upper) and re.search(r"\d{1,2}:\d{2}", upper):
+            continue
+        street_match = re.search(r"\b\d{1,6}\s+[-A-Z0-9 .,'#]+", line, re.I)
+        if street_match:
+            line = street_match.group(0).strip(" .,:;-")
+        if len(line) >= 4:
+            useful.append(line)
+        if len(useful) >= 4:
+            break
+    return clean_profile_text(", ".join(useful), 220)
+
+
+def extract_printed_timestamp_location(file_body: bytes) -> dict:
+    if not file_body or not shutil.which("tesseract"):
+        return {}
+    try:
+        from PIL import Image, ImageOps
+    except Exception:
+        return {}
+    try:
+        image = ImageOps.exif_transpose(Image.open(io.BytesIO(file_body)))
+    except Exception:
+        return {}
+    width, height = image.size
+    if width < 200 or height < 200:
+        return {}
+    crop_boxes = [
+        (int(width * 0.45), int(height * 0.76), int(width * 0.995), int(height * 0.875)),
+        (int(width * 0.30), int(height * 0.735), int(width * 0.995), int(height * 0.875)),
+        (int(width * 0.30), int(height * 0.80), int(width * 0.995), int(height * 0.995)),
+        (int(width * 0.55), int(height * 0.58), int(width * 0.995), int(height * 0.91)),
+    ]
+    ocr_texts: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="timestamp-photo-ocr-") as temp_dir:
+        temp_path = Path(temp_dir)
+        for crop_index, box in enumerate(crop_boxes):
+            try:
+                crop = image.crop(box).convert("L")
+                crop = ImageOps.autocontrast(crop)
+            except Exception:
+                continue
+            variants = []
+            for scale in (0.25, 0.33):
+                resized = crop.resize((max(1, int(crop.width * scale)), max(1, int(crop.height * scale))))
+                variants.append(resized.point(lambda pixel: 0 if pixel > 150 else 255))
+                variants.append(resized)
+            for variant_index, variant in enumerate(variants):
+                image_path = temp_path / f"crop_{crop_index}_{variant_index}.png"
+                try:
+                    variant.save(image_path)
+                    command = [
+                        "tesseract",
+                        str(image_path),
+                        "stdout",
+                        "--psm",
+                        "6",
+                        "-l",
+                        "eng",
+                        "-c",
+                        "tessedit_char_whitelist=0123456789.NSEWnsew /,:-AMPJuaepmbrcKodilnty",
+                        "--dpi",
+                        "70",
+                    ]
+                    result = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        timeout=8,
+                        env={**os.environ, "OMP_THREAD_LIMIT": "1"},
+                    )
+                except Exception:
+                    continue
+                text = (result.stdout or "").strip()
+                if not text:
+                    continue
+                ocr_texts.append(text)
+                lat, lng = parse_printed_coordinates(text)
+                if lat is not None and lng is not None:
+                    return {
+                        "lat": lat,
+                        "lng": lng,
+                        "address": printed_watermark_address(text),
+                        "text": text[:1000],
+                    }
+    combined = "\n".join(ocr_texts)
+    lat, lng = parse_printed_coordinates(combined)
+    if lat is not None and lng is not None:
+        return {
+            "lat": lat,
+            "lng": lng,
+            "address": printed_watermark_address(combined),
+            "text": combined[:1000],
+        }
+    return {"text": combined[:1000]} if combined else {}
 
 
 def location_bucket_name(lat: float | None, lng: float | None) -> str:
@@ -4671,9 +4873,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 continue
             file_body = part.get_payload(decode=True) or b""
             exif_lat, exif_lng = extract_jpeg_gps(file_body)
-            lat = exif_lat if exif_lat is not None else manual_lat
-            lng = exif_lng if exif_lng is not None else manual_lng
-            source = "exif" if exif_lat is not None and exif_lng is not None else ("manual" if lat is not None and lng is not None else "unknown")
+            watermark = extract_printed_timestamp_location(file_body) if exif_lat is None or exif_lng is None else {}
+            watermark_lat = optional_float(watermark.get("lat"))
+            watermark_lng = optional_float(watermark.get("lng"))
+            if exif_lat is not None and exif_lng is not None:
+                lat = exif_lat
+                lng = exif_lng
+                source = "exif"
+            elif watermark_lat is not None and watermark_lng is not None:
+                lat = watermark_lat
+                lng = watermark_lng
+                source = "timestamp_camera_watermark"
+            else:
+                lat = manual_lat
+                lng = manual_lng
+                source = "manual" if lat is not None and lng is not None else "unknown"
+            item_address = address or clean_profile_text(watermark.get("address"), 220)
             folder_name = photo_group_folder_name(ticket, location_label, lat, lng)
             photo_id = f"{dashboard_now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}"
             content_type = str(part.get_content_type() or mimetypes.guess_type(original_name)[0] or "application/octet-stream")
@@ -4693,7 +4908,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "coordinate_source": source,
                 "ticket": ticket,
                 "location_label": location_label,
-                "address": address,
+                "address": item_address,
                 "review_status": review_status,
                 "evidence_source": "timestamp_camera",
                 "note": note,
@@ -4704,6 +4919,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "folder_name": folder_name,
                 "folder_id": "",
             }
+            if watermark.get("text"):
+                item["watermark_text"] = str(watermark.get("text") or "")[:1000]
             saved_items.append(item)
         with LOCATION_PHOTOS_LOCK:
             payload = load_location_photos(self.data_dir)
