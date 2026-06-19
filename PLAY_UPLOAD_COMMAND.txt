@@ -4,19 +4,19 @@ Fiber Locator Google Play Upload
 Yes, you need to update the native app in Google Play.
 
 New app version:
-versionCode 54
-versionName 0.1.53
+versionCode 55
+versionName 0.1.54
 
 Run this on the DMI tablet in PowerShell:
 
-scp linux@192.168.50.220:/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab "$env:USERPROFILE\Downloads\fiber-locator-0.1.53.aab"
+scp linux@192.168.50.220:/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab "$env:USERPROFILE\Downloads\fiber-locator-0.1.54.aab"
 
 Then upload this file to Google Play Console:
 
-Downloads\fiber-locator-0.1.53.aab
+Downloads\fiber-locator-0.1.54.aab
 
 SHA256:
-153ac9c1bcc08c38f39a5cea5dc70a586e002eb1c36d8644a9290c32df892d6b
+491e139f29cdfb2ef323dd0f8a5a0e2cd899f04429fed0d31b557e766c3e28ac
 
 Note:
-Every native Android ticket detail now has an Open Live GeoCall button. Contact and company phone numbers are blue tap-to-dial links that open the phone dialer without requiring call permission. Previous ticket completion photo upload, submit progress, Android Auto polygon styling, live-map ticket focus, mobile measure position, and Location Photos scroll fixes remain included.
+Android Auto live map now has automatic night mode. It follows the Android Auto host dark mode and also has a lightweight civil-dusk/dawn fallback based on current/map location. At night it switches to Mapbox Navigation Night tiles when a Mapbox token is available, otherwise Carto dark raster tiles, and clears stale day tiles during the switch. Previous Live GeoCall, tap-to-dial, ticket completion photo upload, submit progress, Android Auto polygon styling, live-map ticket focus, mobile measure position, and Location Photos scroll fixes remain included.

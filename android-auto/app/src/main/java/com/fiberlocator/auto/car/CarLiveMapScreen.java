@@ -51,11 +51,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.net.HttpURLConnection;
@@ -94,6 +96,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private JSONObject mapState = new JSONObject();
     private String mapStyle = "standard";
     private String mapboxToken = "";
+    private String activeTileStyleKey = "";
     private boolean loading = true;
     private String error = "";
     private boolean followLocation = true;
@@ -397,7 +400,16 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     }
 
     private void drawBaseMap(Canvas canvas) {
-        canvas.drawColor(getCarContext().isDarkMode() ? Color.rgb(15, 23, 42) : Color.rgb(235, 242, 248));
+        boolean night = isNightMap();
+        String tileStyle = tileStyleKey(night);
+        if (!tileStyle.equals(activeTileStyleKey)) {
+            activeTileStyleKey = tileStyle;
+            synchronized (tileCache) {
+                tileCache.clear();
+                loadingTiles.clear();
+            }
+        }
+        canvas.drawColor(night ? Color.rgb(9, 15, 27) : Color.rgb(235, 242, 248));
         int tileZ = (int) clamp(Math.round(zoom), 1, 19);
         double tileScale = Math.pow(2.0, zoom - tileZ);
         double worldScale = Math.pow(2.0, zoom) * 256.0;
@@ -411,7 +423,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         for (int x = minX; x <= maxX; x++) {
             int wrappedX = ((x % (maxTile + 1)) + (maxTile + 1)) % (maxTile + 1);
             for (int y = Math.max(0, minY); y <= Math.min(maxTile, maxY); y++) {
-                String key = tileKey(tileZ, wrappedX, y);
+                String key = tileKey(tileStyle, tileZ, wrappedX, y);
                 Bitmap tile;
                 synchronized (tileCache) {
                     tile = tileCache.get(key);
@@ -422,18 +434,18 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
                     Rect dst = new Rect(Math.round(left), Math.round(top), Math.round(left + 256f * (float) tileScale) + 1, Math.round(top + 256f * (float) tileScale) + 1);
                     canvas.drawBitmap(tile, null, dst, null);
                 } else {
-                    enqueueTileLoad(tileZ, wrappedX, y, key);
+                    enqueueTileLoad(tileZ, wrappedX, y, key, tileStyle);
                 }
             }
         }
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(1f);
-        paint.setColor(getCarContext().isDarkMode() ? Color.argb(90, 45, 55, 72) : Color.argb(90, 205, 216, 226));
+        paint.setColor(night ? Color.argb(105, 58, 70, 92) : Color.argb(90, 205, 216, 226));
         for (int x = 0; x < surfaceWidth; x += Math.max(80, surfaceWidth / 8)) canvas.drawLine(x, 0, x, surfaceHeight, paint);
         for (int y = 0; y < surfaceHeight; y += Math.max(80, surfaceHeight / 6)) canvas.drawLine(0, y, surfaceWidth, y, paint);
     }
 
-    private void enqueueTileLoad(int z, int x, int y, String key) {
+    private void enqueueTileLoad(int z, int x, int y, String key, String style) {
         synchronized (tileCache) {
             if (tileCache.containsKey(key) || loadingTiles.contains(key)) return;
             loadingTiles.add(key);
@@ -441,7 +453,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         tileExecutor.execute(() -> {
             Bitmap bitmap = null;
             try {
-                HttpURLConnection connection = (HttpURLConnection) new URL(tileUrl(z, x, y)).openConnection();
+                    HttpURLConnection connection = (HttpURLConnection) new URL(tileUrl(z, x, y, style)).openConnection();
                 connection.setConnectTimeout(3000);
                 connection.setReadTimeout(5000);
                 connection.setRequestProperty("User-Agent", "Fiber Locator Android Auto");
@@ -461,12 +473,11 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         });
     }
 
-    private String tileKey(int z, int x, int y) {
-        return tileStyleKey() + "/" + z + "/" + x + "/" + y;
+    private String tileKey(String style, int z, int x, int y) {
+        return style + "/" + z + "/" + x + "/" + y;
     }
 
-    private String tileUrl(int z, int x, int y) {
-        String style = tileStyleKey();
+    private String tileUrl(int z, int x, int y, String style) {
         if (style.startsWith("mapbox:") && !mapboxToken.isEmpty()) {
             String styleId = style.substring("mapbox:".length());
             return "https://api.mapbox.com/styles/v1/mapbox/" + styleId + "/tiles/256/" + z + "/" + x + "/" + y + "?access_token=" + mapboxToken;
@@ -483,13 +494,82 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         return "https://a.tile.openstreetmap.org/" + z + "/" + x + "/" + y + ".png";
     }
 
-    private String tileStyleKey() {
+    private String tileStyleKey(boolean night) {
+        if (night) {
+            if (!mapboxToken.isEmpty()) return "mapbox:navigation-night-v1";
+            return "carto-dark";
+        }
         String style = normalizeMapStyle(mapStyle);
         if (style.startsWith("mapbox-")) return "mapbox:" + mapboxStyleId(style);
         if ("satellite".equals(style) || "hybrid".equals(style)) return "satellite";
         if ("light".equals(style)) return "carto-light";
         if ("dark".equals(style)) return "carto-dark";
         return "osm";
+    }
+
+    private boolean isNightMap() {
+        if (getCarContext().isDarkMode()) return true;
+        double lat = currentLocation == null ? centerLat : currentLocation.getLatitude();
+        double lon = currentLocation == null ? centerLon : currentLocation.getLongitude();
+        return isAfterCivilDusk(lat, lon, System.currentTimeMillis());
+    }
+
+    private static boolean isAfterCivilDusk(double latitude, double longitude, long nowMs) {
+        Calendar calendar = Calendar.getInstance(TimeZone.getDefault(), Locale.US);
+        calendar.setTimeInMillis(nowMs);
+        int dayOfYear = calendar.get(Calendar.DAY_OF_YEAR);
+        double lngHour = longitude / 15.0;
+        double sunriseUtc = solarUtcHour(dayOfYear, latitude, lngHour, true);
+        double sunsetUtc = solarUtcHour(dayOfYear, latitude, lngHour, false);
+        if (Double.isNaN(sunriseUtc) || Double.isNaN(sunsetUtc)) {
+            int hour = calendar.get(Calendar.HOUR_OF_DAY);
+            return hour < 6 || hour >= 18;
+        }
+        double offsetHours = TimeZone.getDefault().getOffset(nowMs) / 3600000.0;
+        double sunriseLocal = wrapHour(sunriseUtc + offsetHours);
+        double sunsetLocal = wrapHour(sunsetUtc + offsetHours);
+        double nowLocal = calendar.get(Calendar.HOUR_OF_DAY)
+            + calendar.get(Calendar.MINUTE) / 60.0
+            + calendar.get(Calendar.SECOND) / 3600.0;
+        double duskLocal = wrapHour(sunsetLocal + 0.35);
+        double dawnLocal = wrapHour(sunriseLocal - 0.35);
+        if (duskLocal > dawnLocal) return nowLocal >= duskLocal || nowLocal < dawnLocal;
+        return nowLocal >= duskLocal && nowLocal < dawnLocal;
+    }
+
+    private static double solarUtcHour(int dayOfYear, double latitude, double lngHour, boolean sunrise) {
+        double t = dayOfYear + (((sunrise ? 6.0 : 18.0) - lngHour) / 24.0);
+        double meanAnomaly = (0.9856 * t) - 3.289;
+        double trueLongitude = meanAnomaly
+            + (1.916 * Math.sin(Math.toRadians(meanAnomaly)))
+            + (0.020 * Math.sin(Math.toRadians(2 * meanAnomaly)))
+            + 282.634;
+        trueLongitude = wrapDegrees(trueLongitude);
+        double rightAscension = Math.toDegrees(Math.atan(0.91764 * Math.tan(Math.toRadians(trueLongitude))));
+        rightAscension = wrapDegrees(rightAscension);
+        double longitudeQuadrant = Math.floor(trueLongitude / 90.0) * 90.0;
+        double ascensionQuadrant = Math.floor(rightAscension / 90.0) * 90.0;
+        rightAscension = (rightAscension + longitudeQuadrant - ascensionQuadrant) / 15.0;
+        double sinDeclination = 0.39782 * Math.sin(Math.toRadians(trueLongitude));
+        double cosDeclination = Math.cos(Math.asin(sinDeclination));
+        double zenith = 96.0; // Civil twilight keeps the map in night mode through dusk and dawn.
+        double cosHour = (Math.cos(Math.toRadians(zenith)) - (sinDeclination * Math.sin(Math.toRadians(latitude))))
+            / (cosDeclination * Math.cos(Math.toRadians(latitude)));
+        if (cosHour < -1 || cosHour > 1) return Double.NaN;
+        double hourAngle = sunrise ? 360.0 - Math.toDegrees(Math.acos(cosHour)) : Math.toDegrees(Math.acos(cosHour));
+        hourAngle /= 15.0;
+        double localMeanTime = hourAngle + rightAscension - (0.06571 * t) - 6.622;
+        return wrapHour(localMeanTime - lngHour);
+    }
+
+    private static double wrapDegrees(double value) {
+        double out = value % 360.0;
+        return out < 0 ? out + 360.0 : out;
+    }
+
+    private static double wrapHour(double value) {
+        double out = value % 24.0;
+        return out < 0 ? out + 24.0 : out;
     }
 
     private void drawVetro(Canvas canvas) {
@@ -581,12 +661,13 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         int left = visibleArea.isEmpty() ? 16 : Math.max(16, visibleArea.left + 12);
         int top = visibleArea.isEmpty() ? 18 : Math.max(18, visibleArea.top + 12);
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(Color.argb(188, 15, 23, 42));
+        boolean night = isNightMap();
+        paint.setColor(night ? Color.argb(210, 5, 10, 22) : Color.argb(188, 15, 23, 42));
         canvas.drawRoundRect(left, top, left + 340, top + 64, 12, 12, paint);
         paint.setColor(Color.WHITE);
         paint.setTextSize(21f);
         paint.setFakeBoldText(true);
-        canvas.drawText("Fiber live map", left + 16, top + 25, paint);
+        canvas.drawText(night ? "Fiber night map" : "Fiber live map", left + 16, top + 25, paint);
         paint.setFakeBoldText(false);
         paint.setTextSize(15f);
         canvas.drawText(statusLine(), left + 16, top + 50, paint);

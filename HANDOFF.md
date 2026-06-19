@@ -2,6 +2,17 @@
 
 Updated: 2026-06-18
 
+## Android Auto Automatic Night Map Mode - 2026-06-18
+
+- Reed asked for Android Auto live map night mode that automatically switches to a dark, sleek, fast map style at dusk.
+- Researched Android Auto/day-night handling and kept the implementation inside the existing custom `SurfaceCallback` renderer for speed. The car map now uses Android Auto host dark mode first via `CarContext.isDarkMode()`, with a lightweight civil-twilight dusk/dawn fallback based on current location or map center when host dark mode is not already active.
+- Night mode switches the Android Auto tile style to Mapbox `navigation-night-v1` when the dashboard Mapbox token is available, otherwise Carto `dark_all` raster tiles. This avoids adding a new rendering SDK and keeps the existing 4-thread tile loading/cache path.
+- Tile cache keys now include the effective day/night style and the cache is cleared when day/night mode flips, preventing stale day tiles from remaining after dusk. The HUD changes from `Fiber live map` to `Fiber night map`, and the base canvas/grid colors use darker night-safe contrast.
+- Bumped native Android to `versionCode 55`, `versionName 0.1.54`. Current Play upload AAB: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`, SHA256 `491e139f29cdfb2ef323dd0f8a5a0e2cd899f04429fed0d31b557e766c3e28ac`. Release APK SHA256 `16ee43c27b0c7debccd6022194ed87f0cfad482535c0b37f45daa6864dd3b8da`.
+- Deployed changed Android Auto source and rebuilt APK/AAB to `/opt/onecall-locator-dashboard`; backup path is `data/deploy_backups/20260618T155800Z`. Live AAB/APK hashes match local and public AAB returns `200`.
+- Verification passed: `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease`, `aapt dump badging` showing `versionCode 55` / `versionName 0.1.54`, and `apksigner verify --verbose`.
+- Device validation note: `adb devices -l` showed no attached devices, and `adb connect 192.168.50.173:42023` failed with `No route to host`, so no live Android Auto runtime visual test could be completed from this shell.
+
 ## Native Android Live GeoCall And Tap-To-Call Ticket Detail - 2026-06-18
 
 - Reed asked for every native Android ticket detail to include an `Open Live GeoCall` button like the web dashboard, so employees can see the up-to-the-minute Arkansas One Call/GeoCall page and positive response status. Reed also asked for ticket phone numbers to be blue tap-to-call links.
