@@ -13,6 +13,7 @@ let locationPhotosLoading = false;
 let locationPhotoListMode = "all";
 let locationPhotoMarkersLayer = null;
 let locationPhotoMarkersRenderer = null;
+let locationPhotoMarkerRenderScheduled = false;
 let pendingLocationPhotoMoveId = "";
 let pendingLocationPhotoMoveMap = "dashboard";
 let locationPhotoAddressLookupTimer = null;
@@ -157,6 +158,7 @@ const STORAGE_KEYS = {
   vetroSearch: "vetroSearch",
   savedViewSelected: "savedViewSelected",
   mapStyle: "mapStyle",
+  dashboardPhotoMarkersVisible: "dashboardPhotoMarkersVisible",
   mapDataOverlay: "mapDataOverlay",
   sidebarCollapsed: "sidebarCollapsed",
   ticketOpacity: "ticketOpacity",
@@ -2391,6 +2393,7 @@ let vetroOpacity = Number(localStorage.getItem("vetroOpacity") || "0.85");
 let mapOpacity = 1;
 localStorage.removeItem("mapOpacity");
 let ticketOpacity = Number(localStorage.getItem(STORAGE_KEYS.ticketOpacity) || "1");
+let dashboardPhotoMarkersVisible = readBooleanStorage(STORAGE_KEYS.dashboardPhotoMarkersVisible, false);
 let mapStyle = localStorage.getItem(STORAGE_KEYS.mapStyle) || "locator-dark-detail";
 if (!MAP_TILE_STYLES[mapStyle]) mapStyle = "locator-dark-detail";
 let lastStreetMapStyle = ["satellite", "hybrid"].includes(mapStyle) || MAP_TILE_STYLES[mapStyle]?.imagery ? "contrast" : mapStyle;
@@ -2599,6 +2602,7 @@ const elements = {
   showLiveTicketsView: document.querySelector("#showLiveTicketsView"),
   showTcwDashboardView: document.querySelector("#showTcwDashboardView"),
   dashboardSatelliteToggle: document.querySelector("#dashboardSatelliteToggle"),
+  dashboardPhotoToggle: document.querySelector("#dashboardPhotoToggle"),
   showMobileView: document.querySelector("#showMobileView"),
   addLocatorNote: document.querySelector("#addLocatorNote"),
   showDashboardView: document.querySelector("#showDashboardView"),
@@ -3415,6 +3419,7 @@ function initMap() {
   mapDataOverlayLayer = L.layerGroup().addTo(map);
   locatorNotesLayer = L.layerGroup().addTo(map);
   locationPhotoMarkersLayer = L.layerGroup().addTo(map);
+  syncDashboardPhotoToggle();
   userLocationLayer = L.layerGroup().addTo(map);
   markers = L.layerGroup().addTo(map);
   polygons = L.layerGroup().addTo(map);
@@ -3433,6 +3438,7 @@ function initMap() {
   });
   map.on("moveend zoomend", () => {
     updateVetroAddressLabels();
+    scheduleLocationPhotoMarkersRender();
     if (!dashboardStateReady || dashboardStateHydrating) return;
     scheduleDashboardStateSave();
     scheduleMapDataOverlayRefresh();
@@ -3800,7 +3806,7 @@ async function loadLocationPhotos() {
     if (!response.ok || !payload.ok) throw new Error(payload.message || `Location photos failed: ${response.status}`);
     locationPhotos = Array.isArray(payload.photos) ? payload.photos : [];
     invalidateTicketDerivedCache({ searchText: true });
-    renderLocationPhotoMarkers();
+    scheduleLocationPhotoMarkersRender();
   } finally {
     locationPhotosLoading = false;
   }
@@ -3813,7 +3819,7 @@ function mergeLocationPhotos(nextPhotos = []) {
   for (const photo of items) byId.set(String(photo.id || ""), photo);
   locationPhotos = [...byId.values()].sort((a, b) => String(b.uploaded_at || "").localeCompare(String(a.uploaded_at || "")));
   invalidateTicketDerivedCache({ searchText: true });
-  renderLocationPhotoMarkers();
+  scheduleLocationPhotoMarkersRender();
   if (currentView === "location-photos") {
     renderLocationPhotosView();
     renderLocationPhotosMap();
@@ -4114,13 +4120,32 @@ function locationPhotoGroupPopupHtml(photos, { moveMap = "dashboard" } = {}) {
 function renderLocationPhotoMarkers() {
   if (!locationPhotoMarkersLayer || typeof L === "undefined") return;
   locationPhotoMarkersLayer.clearLayers();
+  const selectedPhotoIds = new Set(locationPhotosForTicket(selectedTicket).map((photo) => String(photo.id || "")).filter(Boolean));
+  const allowAllMapPhotos = dashboardPhotoMarkersVisible && map && map.getZoom() >= 16;
+  if (!allowAllMapPhotos && !selectedPhotoIds.size) {
+    syncDashboardPhotoToggle();
+    return;
+  }
+  const bounds = allowAllMapPhotos && map ? map.getBounds().pad(0.25) : null;
+  const renderLimit = selectedPhotoIds.size ? 260 : 180;
+  let rendered = 0;
+  let nonSelectedRendered = 0;
   const groups = new Map();
   for (const photo of geotaggedLocationPhotos()) {
     const lat = Number(photo.lat);
     const lng = Number(photo.lng);
+    const photoId = String(photo.id || "");
+    const selectedPhoto = selectedPhotoIds.has(photoId);
+    if (!selectedPhoto) {
+      if (!allowAllMapPhotos) continue;
+      if (bounds && !bounds.contains([lat, lng])) continue;
+      if (nonSelectedRendered >= renderLimit) continue;
+      nonSelectedRendered += 1;
+    }
     const key = `${lat.toFixed(6)},${lng.toFixed(6)}`;
     if (!groups.has(key)) groups.set(key, { lat, lng, photos: [] });
     groups.get(key).photos.push(photo);
+    rendered += 1;
   }
   for (const group of groups.values()) {
     const { lat, lng, photos } = group;
@@ -4185,6 +4210,36 @@ function renderLocationPhotoMarkers() {
     });
     marker.addTo(locationPhotoMarkersLayer);
   }
+  syncDashboardPhotoToggle(rendered);
+}
+
+function syncDashboardPhotoToggle(renderedCount = null) {
+  if (!elements.dashboardPhotoToggle) return;
+  elements.dashboardPhotoToggle.classList.toggle("active", dashboardPhotoMarkersVisible);
+  elements.dashboardPhotoToggle.setAttribute("aria-pressed", dashboardPhotoMarkersVisible ? "true" : "false");
+  const selectedCount = selectedTicket ? locationPhotosForTicket(selectedTicket).length : 0;
+  if (!dashboardPhotoMarkersVisible) {
+    elements.dashboardPhotoToggle.textContent = selectedCount ? `Ticket photos (${selectedCount})` : "Map photos off";
+    elements.dashboardPhotoToggle.title = selectedCount ? "Only selected ticket photos are shown." : "Turn on nearby map photo markers.";
+    return;
+  }
+  if (map && map.getZoom() < 16) {
+    elements.dashboardPhotoToggle.textContent = "Photos: zoom in";
+    elements.dashboardPhotoToggle.title = "Photo markers render at zoom 16+ to keep the dashboard fast.";
+    return;
+  }
+  const count = Number.isFinite(Number(renderedCount)) ? Number(renderedCount) : geotaggedLocationPhotos().length;
+  elements.dashboardPhotoToggle.textContent = `Map photos ${count ? `(${count})` : "on"}`;
+  elements.dashboardPhotoToggle.title = "Showing nearby photo markers in the current map view.";
+}
+
+function scheduleLocationPhotoMarkersRender() {
+  if (locationPhotoMarkerRenderScheduled) return;
+  locationPhotoMarkerRenderScheduled = true;
+  requestAnimationFrame(() => {
+    locationPhotoMarkerRenderScheduled = false;
+    renderLocationPhotoMarkers();
+  });
 }
 
 async function saveLocationPhotoCoordinates(photoId, lat, lng, { reopen = false } = {}) {
@@ -4221,7 +4276,7 @@ async function saveLocationPhotoCoordinates(photoId, lat, lng, { reopen = false 
     if (elements.locationPhotoEditorLng) elements.locationPhotoEditorLng.value = Number(updated.lng).toFixed(7);
     if (elements.locationPhotoEditorAddress) elements.locationPhotoEditorAddress.value = updated.address || "";
   }
-  renderLocationPhotoMarkers();
+  scheduleLocationPhotoMarkersRender();
   if (currentView === "location-photos") renderLocationPhotosView();
   renderDetail();
   renderMobileTicketDetail();
@@ -4325,7 +4380,7 @@ async function saveLocationPhotoEditor(event) {
     if (!response.ok || payload.ok === false) throw new Error(payload.message || `Photo update failed: ${response.status}`);
     const updated = payload.photo || {};
     locationPhotos = locationPhotos.map((item) => (item.id === body.id ? updated : item));
-    renderLocationPhotoMarkers();
+    scheduleLocationPhotoMarkersRender();
     if (currentView === "location-photos") renderLocationPhotosView();
     renderDetail();
     renderMobileTicketDetail();
@@ -10294,6 +10349,7 @@ function renderMap(list = []) {
     initialTicketBoundsApplied = true;
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
   }
+  scheduleLocationPhotoMarkersRender();
   refreshMap3dLayers();
 }
 
@@ -11609,6 +11665,15 @@ if (elements.openSelectedRoute) {
 }
 if (elements.openTodayRoute) {
   elements.openTodayRoute.addEventListener("click", () => openTicketRoute(visibleTickets().filter((ticket) => ticketDueStatus(ticket) === "due-today" || ticketDueStatus(ticket) === "due-next")));
+}
+if (elements.dashboardPhotoToggle) {
+  elements.dashboardPhotoToggle.addEventListener("click", () => {
+    dashboardPhotoMarkersVisible = !dashboardPhotoMarkersVisible;
+    writeBooleanStorage(STORAGE_KEYS.dashboardPhotoMarkersVisible, dashboardPhotoMarkersVisible);
+    syncDashboardPhotoToggle();
+    scheduleLocationPhotoMarkersRender();
+    scheduleDashboardStateSave();
+  });
 }
 if (elements.dashboard3dToggle) {
   elements.dashboard3dToggle.addEventListener("click", () => {

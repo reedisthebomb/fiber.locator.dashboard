@@ -2696,6 +2696,12 @@ button {
   background: rgba(24, 36, 53, 0.96);
 }
 
+.map-work-planner button.active {
+  border-color: rgba(134, 239, 172, 0.86);
+  background: rgba(22, 101, 52, 0.94);
+  color: #f0fdf4;
+}
+
 .detail {
   position: absolute;
   top: 14px;
