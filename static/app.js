@@ -10,8 +10,21 @@ let locatorNoteMode = false;
 let pendingLocatorNoteTarget = null;
 let locationPhotos = [];
 let locationPhotosLoading = false;
+let locationPhotoListMode = "all";
+let locationPhotoMarkersLayer = null;
+let locationPhotoMarkersRenderer = null;
+let pendingLocationPhotoMoveId = "";
+let pendingLocationPhotoMoveMap = "dashboard";
+let locationPhotoAddressLookupTimer = null;
+let locationPhotoAddressLookupToken = 0;
+let locationPhotoUploadAddressLookupTimer = null;
+let locationPhotoUploadAddressLookupToken = 0;
+let locationPhotoEditorLastPositionSource = "coordinates";
 let locationPhotosMap = null;
 let locationPhotosLayer = null;
+let locationPhotoEditorMapTarget = "dashboard";
+let locationPhotoViewerZoomed = false;
+let activeLocationPhotoViewerId = "";
 let restorationJobs = [];
 let restorationCanManage = false;
 let restorationSearch = "";
@@ -41,6 +54,7 @@ let map3dEnabled = false;
 let map3dStyle = localStorage.getItem("dashboard3dStyle") === "satellite" ? "satellite" : "standard";
 let map3dAssetsPromise = null;
 let map3dUserLocation = null;
+let map3dFeatureClickLayers = new Set();
 let mobileMap = null;
 let mobileMapMarkers = null;
 let mobileMapPolygons = null;
@@ -154,6 +168,7 @@ const ACTIVE_COUNTIES = new Set(["UNION", "COLUMBIA"]);
 const FOCUS_ZOOM_THRESHOLD = 14;
 const FOCUS_TARGET_ZOOM = 17;
 const VETRO_SERVICE_LOCATION_LAYER_ID = "26";
+const VETRO_ADDRESS_LABEL_MIN_ZOOM = 18;
 const NEW_SAVED_VIEW_OPTION = "__new_saved_view__";
 const LOCATOR_NOTE_CATEGORIES = {
   instruction: { label: "Future locator instruction", color: "#2563eb" },
@@ -285,6 +300,30 @@ const MAP_TILE_STYLES = {
     styleId: "outdoors-v12",
     attribution: "&copy; Mapbox &copy; OpenStreetMap",
   },
+  "mapbox-standard": {
+    label: "Mapbox standard",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "standard",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-standard-satellite": {
+    label: "Mapbox standard satellite",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "standard-satellite",
+    imagery: true,
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-satellite-traffic": {
+    label: "Satellite streets + traffic",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "satellite-streets-v12",
+    traffic: true,
+    imagery: true,
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
   "mapbox-light": {
     label: "Mapbox light",
     group: "Mapbox",
@@ -327,6 +366,20 @@ const MAP_TILE_STYLES = {
     group: "Mapbox",
     provider: "mapbox",
     styleId: "navigation-night-v1",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-traffic-day": {
+    label: "Mapbox traffic day",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "traffic-day-v2",
+    attribution: "&copy; Mapbox &copy; OpenStreetMap",
+  },
+  "mapbox-traffic-night": {
+    label: "Mapbox traffic night",
+    group: "Mapbox",
+    provider: "mapbox",
+    styleId: "traffic-night-v2",
     attribution: "&copy; Mapbox &copy; OpenStreetMap",
   },
 };
@@ -2002,13 +2055,17 @@ function renderEmployeeAccess(payload = {}) {
   const invites = Array.isArray(payload.invites) ? payload.invites : [];
   const accountRequests = Array.isArray(payload.account_requests) ? payload.account_requests : [];
   const employeeUsers = users.filter((item) => item.role === "employee");
+  const adminUsers = users.filter((item) => item.role === "admin");
   const pendingInvites = invites.filter((item) => !item.used_at);
   const usedInvites = invites.filter((item) => item.used_at).slice(0, 8);
+  const adminRows = adminUsers.length
+    ? adminUsers.map((item) => `<li><strong>${escapeHtml(item.display_name || item.username)}</strong><span>${escapeHtml(item.username)}${item.password_set_at ? ` · active ${escapeHtml(formatDashboardDateTime(item.password_set_at))}` : ""}</span></li>`).join("")
+    : "<li><strong>No extra admin accounts yet</strong><span>Create an admin setup link below.</span></li>";
   const userRows = employeeUsers.length
     ? employeeUsers.map((item) => `<li><strong>${escapeHtml(item.display_name || item.username)}</strong><span>${escapeHtml(item.username)}${item.password_set_at ? ` · active ${escapeHtml(formatDashboardDateTime(item.password_set_at))}` : ""}</span></li>`).join("")
     : "<li><strong>No employee accounts yet</strong><span>Create a setup link below.</span></li>";
   const inviteRows = pendingInvites.length
-    ? pendingInvites.map((item) => `<li><strong>${escapeHtml(item.display_name || item.username)}</strong><span>${escapeHtml(item.username)} · pending from ${escapeHtml(formatDashboardDateTime(item.created_at))}</span></li>`).join("")
+    ? pendingInvites.map((item) => `<li><strong>${escapeHtml(item.display_name || item.username)}</strong><span>${escapeHtml(item.username)} · ${escapeHtml(item.role === "admin" ? "admin" : "employee")} · pending from ${escapeHtml(formatDashboardDateTime(item.created_at))}</span></li>`).join("")
     : "<li><strong>No pending invites</strong><span>New invite links appear here until they are used.</span></li>";
   const requestRows = accountRequests.length
     ? accountRequests.map((item) => `<li><strong>${escapeHtml(item.display_name || item.email || "Account request")}</strong><span>${escapeHtml(item.email || "")}${item.phone ? ` · ${escapeHtml(item.phone)}` : ""}${item.requested_at ? ` · ${escapeHtml(formatDashboardDateTime(item.requested_at))}` : ""}</span></li>`).join("")
@@ -2017,6 +2074,10 @@ function renderEmployeeAccess(payload = {}) {
     ? `<div class="employee-used-invites"><strong>Recently used</strong><ul>${usedInvites.map((item) => `<li>${escapeHtml(item.username)} · ${escapeHtml(formatDashboardDateTime(item.used_at))}</li>`).join("")}</ul></div>`
     : "";
   elements.employeeAccessList.innerHTML = `
+    <div class="employee-access-group">
+      <h4>Active admins</h4>
+      <ul>${adminRows}</ul>
+    </div>
     <div class="employee-access-group">
       <h4>Active employees</h4>
       <ul>${userRows}</ul>
@@ -2048,9 +2109,10 @@ async function loadEmployeeAccess() {
 function renderInviteLink(inviteUrl, invite = {}) {
   if (!elements.employeeInviteLink) return;
   const smsText = `Fiber Locator setup link: ${inviteUrl}`;
+  const accountLabel = invite.role === "admin" ? "admin" : "employee";
   elements.employeeInviteLink.hidden = false;
   elements.employeeInviteLink.innerHTML = `
-    <strong>Setup link for ${escapeHtml(invite.display_name || invite.username || "employee")}</strong>
+    <strong>Setup link for ${escapeHtml(invite.display_name || invite.username || accountLabel)} (${escapeHtml(accountLabel)})</strong>
     <input readonly value="${escapeHtml(inviteUrl)}">
     <div>
       <button type="button" data-copy-invite-link>Copy link</button>
@@ -2067,6 +2129,7 @@ async function createEmployeeInvite(event) {
   if (!elements.employeeInviteForm || !canWriteEmployeeDashboard()) return;
   const username = elements.employeeUsername?.value || "";
   const displayName = elements.employeeDisplayName?.value || "";
+  const role = elements.employeeInviteRole?.value === "admin" ? "admin" : "employee";
   if (elements.employeeInviteStatus) elements.employeeInviteStatus.textContent = "Creating setup link...";
   const button = elements.employeeInviteForm.querySelector('button[type="submit"]');
   if (button) button.disabled = true;
@@ -2074,7 +2137,7 @@ async function createEmployeeInvite(event) {
     const response = await fetch("/api/employees/invite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, display_name: displayName }),
+      body: JSON.stringify({ username, display_name: displayName, role }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload.ok === false) throw new Error(payload.message || `Invite failed: ${response.status}`);
@@ -2089,12 +2152,57 @@ async function createEmployeeInvite(event) {
   }
 }
 
+function setAdminTicketFetchProgress(payload = {}) {
+  if (!elements.adminTicketFetchProgress) return;
+  const percent = Math.max(0, Math.min(100, Number(payload.percent || 0)));
+  const completed = Number(payload.completed || 0);
+  const total = Number(payload.total || 0);
+  const currentTicket = String(payload.current_ticket || "");
+  elements.adminTicketFetchProgress.hidden = false;
+  if (elements.adminTicketFetchProgressBar) elements.adminTicketFetchProgressBar.value = percent;
+  if (elements.adminTicketFetchProgressLabel) elements.adminTicketFetchProgressLabel.textContent = `${Math.round(percent)}%`;
+  if (elements.adminTicketFetchProgressDetail) {
+    const countText = total ? `${Math.min(completed, total)} of ${total}` : "Starting";
+    elements.adminTicketFetchProgressDetail.textContent = currentTicket
+      ? `${countText} · ${currentTicket}`
+      : countText;
+  }
+}
+
+function renderAdminTicketFetchLog(payload = {}) {
+  if (!elements.adminTicketFetchLog) return;
+  const fetched = Array.isArray(payload.fetched) ? payload.fetched : [];
+  const missing = Array.isArray(payload.missing) ? payload.missing : [];
+  const lines = [
+    fetched.length ? `Fetched: ${fetched.join(", ")}` : "Fetched: none yet",
+    missing.length ? `Still missing: ${missing.join(", ")}` : payload.finished ? "Still missing: none" : "",
+  ];
+  if (payload.log) lines.push("", String(payload.log).trim());
+  elements.adminTicketFetchLog.textContent = lines.filter(Boolean).join("\n");
+  elements.adminTicketFetchLog.hidden = false;
+}
+
+async function pollAdminTicketFetch(jobId) {
+  let payload = {};
+  for (;;) {
+    const response = await fetch(`/api/admin/geocall-fetch?job=${encodeURIComponent(jobId)}`);
+    payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.message || `Ticket fetch status failed: ${response.status}`);
+    setAdminTicketFetchProgress(payload);
+    if (elements.adminTicketFetchStatus) elements.adminTicketFetchStatus.textContent = payload.message || "Fetching GeoCall pages and polygons...";
+    renderAdminTicketFetchLog(payload);
+    if (payload.finished) return payload;
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+  }
+}
+
 async function runAdminTicketFetch(event) {
   event.preventDefault();
   if (!elements.adminTicketFetchForm || !canWriteEmployeeDashboard()) return;
   const button = elements.adminTicketFetchForm.querySelector('button[type="submit"]');
   if (button) button.disabled = true;
   if (elements.adminTicketFetchStatus) elements.adminTicketFetchStatus.textContent = "Fetching GeoCall pages and polygons...";
+  setAdminTicketFetchProgress({ percent: 0, completed: 0, total: 0, message: "Starting" });
   if (elements.adminTicketFetchLog) {
     elements.adminTicketFetchLog.hidden = true;
     elements.adminTicketFetchLog.textContent = "";
@@ -2111,26 +2219,19 @@ async function runAdminTicketFetch(event) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload.ok === false) throw new Error(payload.message || `Ticket fetch failed: ${response.status}`);
-    const fetched = Array.isArray(payload.fetched) ? payload.fetched : [];
-    const missing = Array.isArray(payload.missing) ? payload.missing : [];
+    const finalPayload = await pollAdminTicketFetch(payload.job_id || "");
+    const fetched = Array.isArray(finalPayload.fetched) ? finalPayload.fetched : [];
+    const missing = Array.isArray(finalPayload.missing) ? finalPayload.missing : [];
     if (elements.adminTicketFetchStatus) {
-      elements.adminTicketFetchStatus.textContent = `${payload.message || `Fetched ${fetched.length} ticket(s).`} Refreshing dashboard tickets...`;
+      elements.adminTicketFetchStatus.textContent = `${finalPayload.message || `Fetched ${fetched.length} ticket(s).`} Refreshing dashboard tickets...`;
     }
-    if (elements.adminTicketFetchLog) {
-      const lines = [
-        fetched.length ? `Fetched: ${fetched.join(", ")}` : "Fetched: none",
-        missing.length ? `Still missing: ${missing.join(", ")}` : "Still missing: none",
-      ];
-      if (payload.stdout) lines.push("", payload.stdout.trim());
-      if (payload.stderr) lines.push("", payload.stderr.trim());
-      elements.adminTicketFetchLog.textContent = lines.filter((line) => line !== undefined).join("\n");
-      elements.adminTicketFetchLog.hidden = false;
-    }
+    renderAdminTicketFetchLog(finalPayload);
     if (elements.adminGeocallCurl) elements.adminGeocallCurl.value = "";
     await loadTickets();
     render();
     renderMobileAdminConfig();
-    if (elements.adminTicketFetchStatus) elements.adminTicketFetchStatus.textContent = payload.message || `Fetched ${fetched.length} ticket(s).`;
+    if (elements.adminTicketFetchStatus) elements.adminTicketFetchStatus.textContent = finalPayload.message || `Fetched ${fetched.length} ticket(s).`;
+    if (finalPayload.success === false) throw new Error(finalPayload.message || "Ticket fetch failed.");
     showSavedToast("Ticket fetch complete");
   } catch (error) {
     if (elements.adminTicketFetchStatus) elements.adminTicketFetchStatus.textContent = error.message || "Ticket fetch failed.";
@@ -2347,6 +2448,14 @@ const elements = {
   totalCount: document.querySelector("#totalCount"),
   dueCount: document.querySelector("#dueCount"),
   countyCount: document.querySelector("#countyCount"),
+  cockpitOpenCount: document.querySelector("#cockpitOpenCount"),
+  cockpitDueTodayCount: document.querySelector("#cockpitDueTodayCount"),
+  cockpitDueNextCount: document.querySelector("#cockpitDueNextCount"),
+  cockpitHighRiskCount: document.querySelector("#cockpitHighRiskCount"),
+  cockpitNeedsAttentionCount: document.querySelector("#cockpitNeedsAttentionCount"),
+  cockpitPhotoCount: document.querySelector("#cockpitPhotoCount"),
+  openSelectedRoute: document.querySelector("#openSelectedRoute"),
+  openTodayRoute: document.querySelector("#openTodayRoute"),
   search: document.querySelector("#search"),
   ticketQuickSearch: document.querySelector("#ticketQuickSearch"),
   mapSearchForm: document.querySelector("#mapSearchForm"),
@@ -2551,6 +2660,7 @@ const elements = {
   locationPhotosTicket: document.querySelector("#locationPhotosTicket"),
   locationPhotosLocationLabel: document.querySelector("#locationPhotosLocationLabel"),
   locationPhotosAddress: document.querySelector("#locationPhotosAddress"),
+  locationPhotosAddressSuggestions: document.querySelector("#locationPhotosAddressSuggestions"),
   locationPhotosLat: document.querySelector("#locationPhotosLat"),
   locationPhotosLng: document.querySelector("#locationPhotosLng"),
   locationPhotosNote: document.querySelector("#locationPhotosNote"),
@@ -2561,6 +2671,36 @@ const elements = {
   locationPhotosMap: document.querySelector("#locationPhotosMap"),
   locationPhotosList: document.querySelector("#locationPhotosList"),
   locationPhotosSummary: document.querySelector("#locationPhotosSummary"),
+  locationPhotosShowAll: document.querySelector("#locationPhotosShowAll"),
+  locationPhotosShowNeedsReview: document.querySelector("#locationPhotosShowNeedsReview"),
+  locationPhotoEditor: document.querySelector("#locationPhotoEditor"),
+  locationPhotoEditorForm: document.querySelector("#locationPhotoEditorForm"),
+  locationPhotoEditorClose: document.querySelector("#locationPhotoEditorClose"),
+  locationPhotoEditorId: document.querySelector("#locationPhotoEditorId"),
+  locationPhotoEditorName: document.querySelector("#locationPhotoEditorName"),
+  locationPhotoEditorPreview: document.querySelector("#locationPhotoEditorPreview"),
+  locationPhotoEditorImage: document.querySelector("#locationPhotoEditorImage"),
+  locationPhotoEditorTicket: document.querySelector("#locationPhotoEditorTicket"),
+  locationPhotoEditorLabel: document.querySelector("#locationPhotoEditorLabel"),
+  locationPhotoEditorAddress: document.querySelector("#locationPhotoEditorAddress"),
+  locationPhotoEditorAddressSuggestions: document.querySelector("#locationPhotoEditorAddressSuggestions"),
+  locationPhotoEditorGeocode: document.querySelector("#locationPhotoEditorGeocode"),
+  locationPhotoEditorUseMapCenter: document.querySelector("#locationPhotoEditorUseMapCenter"),
+  locationPhotoEditorLat: document.querySelector("#locationPhotoEditorLat"),
+  locationPhotoEditorLng: document.querySelector("#locationPhotoEditorLng"),
+  locationPhotoEditorStatus: document.querySelector("#locationPhotoEditorStatus"),
+  locationPhotoEditorNote: document.querySelector("#locationPhotoEditorNote"),
+  locationPhotoEditorStatusText: document.querySelector("#locationPhotoEditorStatusText"),
+  locationPhotoEditorMoveDashboard: document.querySelector("#locationPhotoEditorMoveDashboard"),
+  locationPhotoEditorMovePhotoMap: document.querySelector("#locationPhotoEditorMovePhotoMap"),
+  locationPhotoViewer: document.querySelector("#locationPhotoViewer"),
+  locationPhotoViewerTitle: document.querySelector("#locationPhotoViewerTitle"),
+  locationPhotoViewerImage: document.querySelector("#locationPhotoViewerImage"),
+  locationPhotoViewerFit: document.querySelector("#locationPhotoViewerFit"),
+  locationPhotoViewerZoom: document.querySelector("#locationPhotoViewerZoom"),
+  locationPhotoViewerEdit: document.querySelector("#locationPhotoViewerEdit"),
+  locationPhotoViewerOpen: document.querySelector("#locationPhotoViewerOpen"),
+  locationPhotoViewerClose: document.querySelector("#locationPhotoViewerClose"),
   refreshLocationPhotos: document.querySelector("#refreshLocationPhotos"),
   exportLocationPhotosCsv: document.querySelector("#exportLocationPhotosCsv"),
   exportLocationPhotosZip: document.querySelector("#exportLocationPhotosZip"),
@@ -2588,12 +2728,17 @@ const elements = {
   employeeInviteForm: document.querySelector("#employeeInviteForm"),
   employeeDisplayName: document.querySelector("#employeeDisplayName"),
   employeeUsername: document.querySelector("#employeeUsername"),
+  employeeInviteRole: document.querySelector("#employeeInviteRole"),
   employeeInviteStatus: document.querySelector("#employeeInviteStatus"),
   employeeInviteLink: document.querySelector("#employeeInviteLink"),
   employeeAccessList: document.querySelector("#employeeAccessList"),
   adminTicketFetchForm: document.querySelector("#adminTicketFetchForm"),
   adminTicketNumbers: document.querySelector("#adminTicketNumbers"),
   adminGeocallCurl: document.querySelector("#adminGeocallCurl"),
+  adminTicketFetchProgress: document.querySelector("#adminTicketFetchProgress"),
+  adminTicketFetchProgressLabel: document.querySelector("#adminTicketFetchProgressLabel"),
+  adminTicketFetchProgressDetail: document.querySelector("#adminTicketFetchProgressDetail"),
+  adminTicketFetchProgressBar: document.querySelector("#adminTicketFetchProgressBar"),
   adminTicketFetchStatus: document.querySelector("#adminTicketFetchStatus"),
   adminTicketFetchLog: document.querySelector("#adminTicketFetchLog"),
   adminOpenActivityLog: document.querySelector("#adminOpenActivityLog"),
@@ -2708,6 +2853,135 @@ function propValue(props, ...names) {
     if (value !== undefined && value !== null && value !== "") return String(value);
   }
   return "";
+}
+
+function propEntries(props) {
+  return Object.entries(props || {})
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim())
+    .map(([key, value]) => [String(key), String(value)]);
+}
+
+function featureAddressLabel(feature) {
+  const props = feature?.properties || {};
+  return propValue(
+    props,
+    "Street Address",
+    "Street_Address",
+    "street_address",
+    "Service Address",
+    "service_address",
+    "Customer Address",
+    "customer_address",
+    "full_address",
+    "Address",
+    "address",
+  );
+}
+
+function featurePopupRows(rows, props, usedKeys = []) {
+  const used = new Set(usedKeys.map((key) => String(key).toLowerCase()));
+  const curated = rows
+    .filter(([, value]) => value)
+    .map(([label, value]) => `<div><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`);
+  const full = propEntries(props)
+    .filter(([key]) => !used.has(key.toLowerCase()))
+    .map(([key, value]) => `<div><strong>${escapeHtml(key)}:</strong> ${escapeHtml(value)}</div>`);
+  return [...curated, ...full].join("");
+}
+
+function featureTitle(kind, feature) {
+  const props = feature?.properties || {};
+  if (kind === "vitruvi") return propValue(props, "label", "feature_id", "vitruvi_id", "name", "Name") || vitruviLayerDisplayName(vitruviLayerId(feature));
+  const sourceLayerId = propValue(props, "layer_id", "Layer_ID");
+  return featureAddressLabel(feature) || propValue(props, "feature_id", "ID", "Name", "name") || `Layer ${sourceLayerId}`.trim() || "Vetro feature";
+}
+
+function featureActionPoint(feature, latlng = null) {
+  return latlng || featureCenterLatLng(feature);
+}
+
+function featurePopupActionsHtml(kind) {
+  return `
+    <div class="feature-popup-actions">
+      <button type="button" data-feature-action="photo">Add photo</button>
+      <button type="button" data-feature-action="restoration">Restoration ticket</button>
+      <button type="button" data-feature-action="note">Locator note</button>
+    </div>
+  `;
+}
+
+function featureLayerId(kind, feature) {
+  return kind === "vitruvi" ? vitruviLayerId(feature) : vetroLayerControlId(feature);
+}
+
+function featureTargetId(kind, feature) {
+  const props = feature?.properties || {};
+  return kind === "vitruvi"
+    ? propValue(props, "vitruvi_id", "feature_id", "ID", "id", "uid")
+    : propValue(props, "ID", "feature_id", "vetro_id");
+}
+
+function openLocationPhotoUploadForFeature(kind, feature, latlng = null) {
+  const point = featureActionPoint(feature, latlng);
+  setCurrentView("location-photos");
+  window.setTimeout(() => {
+    const title = featureTitle(kind, feature);
+    const layerId = featureLayerId(kind, feature);
+    if (elements.locationPhotosTicket) elements.locationPhotosTicket.value = "";
+    if (elements.locationPhotosLocationLabel) elements.locationPhotosLocationLabel.value = `${kind === "vitruvi" ? "Vitruvi" : "VETRO"} ${layerId}: ${title}`.trim();
+    if (elements.locationPhotosAddress) elements.locationPhotosAddress.value = featureAddressLabel(feature) || "";
+    if (point) {
+      if (elements.locationPhotosLat) elements.locationPhotosLat.value = Number(point.lat).toFixed(7);
+      if (elements.locationPhotosLng) elements.locationPhotosLng.value = Number(point.lng).toFixed(7);
+      if (locationPhotosMap) locationPhotosMap.setView([point.lat, point.lng], Math.max(locationPhotosMap.getZoom(), 18));
+    }
+    if (elements.locationPhotosNote) {
+      elements.locationPhotosNote.value = `Attached to ${kind === "vitruvi" ? "Vitruvi" : "VETRO"} feature ${featureTargetId(kind, feature) || title}`;
+    }
+    elements.locationPhotosFiles?.focus();
+    if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = "Choose photo(s) to attach to this selected map feature.";
+  }, 0);
+}
+
+function openRestorationJobForFeature(kind, feature, latlng = null) {
+  const point = featureActionPoint(feature, latlng);
+  const title = featureTitle(kind, feature);
+  const layerId = featureLayerId(kind, feature);
+  setCurrentView("restoration");
+  window.setTimeout(() => {
+    openRestorationForm({
+      title: `Restore / inspect ${title}`,
+      ticket: "",
+      location: featureAddressLabel(feature) || title,
+      entity: `${kind === "vitruvi" ? "Vitruvi" : "VETRO"} ${layerId}`.trim(),
+      lat: point ? Number(point.lat).toFixed(6) : "",
+      lng: point ? Number(point.lng).toFixed(6) : "",
+      priority: "medium",
+      status: "open",
+      notes: `Created from selected ${kind === "vitruvi" ? "Vitruvi" : "VETRO"} feature ${featureTargetId(kind, feature) || title}.`,
+    });
+  }, 0);
+}
+
+function bindFeaturePopupActions(kind, feature, layer) {
+  layer.on("popupopen", (event) => {
+    const root = event.popup?.getElement?.();
+    if (!root) return;
+    const popupLatLng = event.popup.getLatLng?.() || null;
+    for (const button of root.querySelectorAll("[data-feature-action]")) {
+      button.addEventListener("click", (clickEvent) => {
+        clickEvent.preventDefault();
+        clickEvent.stopPropagation();
+        const action = button.dataset.featureAction;
+        if (action === "photo") openLocationPhotoUploadForFeature(kind, feature, popupLatLng);
+        else if (action === "restoration") openRestorationJobForFeature(kind, feature, popupLatLng);
+        else if (action === "note") {
+          if (kind === "vitruvi") beginLocatorNoteForVitruvi(feature, popupLatLng);
+          else beginLocatorNoteForVetro(feature, popupLatLng);
+        }
+      });
+    }
+  });
 }
 
 function uniqueSorted(values) {
@@ -2995,8 +3269,25 @@ function isSlFeature(feature) {
 }
 
 function slLabel(feature) {
-  const props = feature.properties || {};
-  return propValue(props, "ID", "feature_id") || "SL";
+  return featureAddressLabel(feature) || propValue(feature.properties || {}, "ID", "feature_id") || "SL";
+}
+
+function shouldLabelVetroFeature(feature) {
+  if (!featureAddressLabel(feature)) return false;
+  const layerId = vetroLayerControlId(feature);
+  if (layerId === "prefix:SL" || layerId === VETRO_SERVICE_LOCATION_LAYER_ID) return true;
+  const name = vetroLayerDisplayName(layerId).toLowerCase();
+  return name.includes("customer") || name.includes("service location") || name.includes("service point");
+}
+
+function updateVetroAddressLabels() {
+  if (!map || !vetroLayer) return;
+  const show = map.getZoom() >= VETRO_ADDRESS_LABEL_MIN_ZOOM;
+  vetroLayer.eachLayer((layer) => {
+    if (!layer.getTooltip || !layer.getTooltip()) return;
+    if (show) layer.openTooltip();
+    else layer.closeTooltip();
+  });
 }
 
 function vetroMarkerIcon(shape, color, size, opacity = 1, label = "", outlineColor = "#111827") {
@@ -3064,9 +3355,11 @@ function vetroPointToLayer(feature, latlng) {
   const shape = vetroLayerShape(layerId);
   const size = vetroLayerSize(layerId);
   const opacity = vetroLayerOpacity(layerId);
-  const label = vetroSlLabels && isSlFeature(feature) ? slLabel(feature) : "";
+  const label = "";
   return L.marker(latlng, {
+    pane: "selectableMapFeaturesPane",
     icon: vetroMarkerIcon(shape, colorForVetroLayer(layerId), size, opacity, label),
+    zIndexOffset: 8500,
   });
 }
 
@@ -3074,16 +3367,36 @@ function isValidMapDataOverlay(value) {
   return value === "none" || value === "addresses" || value === "parcels" || value === "addresses-parcels";
 }
 
+function ensureSelectableMapFeaturesPane(targetMap) {
+  if (!targetMap?.createPane || targetMap.getPane?.("selectableMapFeaturesPane")) return;
+  targetMap.createPane("selectableMapFeaturesPane");
+  const pane = targetMap.getPane("selectableMapFeaturesPane");
+  if (!pane) return;
+  pane.style.zIndex = "650";
+  pane.style.pointerEvents = "auto";
+}
+
 function initMap() {
   map = L.map("map", { zoomControl: true, preferCanvas: true }).setView([33.23, -92.67], 12);
+  map.createPane("locationPhotoMarkersPane");
+  map.getPane("locationPhotoMarkersPane").style.zIndex = "675";
+  map.getPane("locationPhotoMarkersPane").style.pointerEvents = "auto";
+  locationPhotoMarkersRenderer = L.canvas({ pane: "locationPhotoMarkersPane" });
+  ensureSelectableMapFeaturesPane(map);
   setMapTileStyle(mapStyle, false);
   mapDataOverlayLayer = L.layerGroup().addTo(map);
   locatorNotesLayer = L.layerGroup().addTo(map);
+  locationPhotoMarkersLayer = L.layerGroup().addTo(map);
   userLocationLayer = L.layerGroup().addTo(map);
   markers = L.layerGroup().addTo(map);
   polygons = L.layerGroup().addTo(map);
   map.on("click", (event) => {
     if (measureTool?.active) return;
+    if (pendingLocationPhotoMoveId && pendingLocationPhotoMoveMap === "dashboard") {
+      void saveLocationPhotoCoordinates(pendingLocationPhotoMoveId, event.latlng.lat, event.latlng.lng, { reopen: true });
+      pendingLocationPhotoMoveId = "";
+      return;
+    }
     if (locatorNoteMode) {
       beginLocatorNoteForMap(event.latlng);
       return;
@@ -3091,6 +3404,7 @@ function initMap() {
     clearSelectedTicket();
   });
   map.on("moveend zoomend", () => {
+    updateVetroAddressLabels();
     if (!dashboardStateReady || dashboardStateHydrating) return;
     scheduleDashboardStateSave();
     scheduleMapDataOverlayRefresh();
@@ -3376,12 +3690,18 @@ function locationPhotoSummaryHtml(photos = []) {
     <div class="location-photo-summary">
       <strong>Previous location photos in this area</strong>
       ${photos.map((photo) => `
-        <a href="${escapeHtml(photo.url || "#")}" target="_blank" rel="noreferrer">
-          <span>${escapeHtml(photo.original_name || "Location photo")}</span>
+        <div class="location-photo-summary-item">
+          <button type="button" data-location-photo-view="${escapeHtml(photo.id || "")}">
+            <span>${escapeHtml(photo.original_name || "Location photo")}</span>
+          </button>
           <em>${escapeHtml([photo.uploaded_by, photo.uploaded_at].filter(Boolean).join(" - "))}</em>
           <small>${escapeHtml(locationPhotoCoordinateLabel(photo))}</small>
           ${photo.note ? `<p>${escapeHtml(photo.note)}</p>` : ""}
-        </a>
+          <div class="location-photo-inline-actions">
+            <button type="button" data-location-photo-edit="${escapeHtml(photo.id || "")}">Edit</button>
+            <button type="button" data-location-photo-move="${escapeHtml(photo.id || "")}" data-location-photo-move-map="dashboard">Move</button>
+          </div>
+        </div>
       `).join("")}
     </div>
   `;
@@ -3400,8 +3720,46 @@ function locationPhotoCoordinateLabel(photo) {
   const lat = Number(photo?.lat);
   const lng = Number(photo?.lng);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "No coordinates";
-  const source = photo.coordinate_source === "exif" ? "photo GPS" : photo.coordinate_source === "manual" ? "manual" : "coordinates";
+  const sourceKey = String(photo.photo_location_source || photo.coordinate_source || "").toLowerCase();
+  const source = sourceKey === "exif" ? "photo GPS"
+    : sourceKey === "device_capture" ? "device/camera GPS"
+      : sourceKey === "ticket_fallback" ? "ticket fallback"
+        : sourceKey === "manual" || sourceKey === "manual_adjusted" ? "manual"
+          : "coordinates";
   return `${lat.toFixed(6)}, ${lng.toFixed(6)} (${source})`;
+}
+
+function locationPhotoNeedsReview(photo) {
+  const lat = Number(photo?.lat);
+  const lng = Number(photo?.lng);
+  const status = String(photo?.review_status || "").toLowerCase();
+  const source = String(photo?.coordinate_source || "").toLowerCase();
+  const locationSource = String(photo?.photo_location_source || "").toLowerCase();
+  return Boolean(photo?.needs_review)
+    || status === "needs_review"
+    || !validLocationPhotoCoordinate(lat, lng)
+    || source === "unknown"
+    || source === "missing"
+    || source === "invalid"
+    || source === "rejected_outside_arkansas"
+    || locationSource === "missing"
+    || locationSource === "invalid"
+    || locationSource === "ticket_fallback"
+    || Boolean(String(photo?.photo_location_issue || "").trim());
+}
+
+function locationPhotoPreviewUrl(photo) {
+  return String(photo?.thumbnail_url || photo?.url || "");
+}
+
+function visibleLocationPhotosForView(focusTicket = null) {
+  const base = focusTicket ? locationPhotosForTicket(focusTicket) : locationPhotos;
+  return locationPhotoListMode === "needs-review" ? base.filter(locationPhotoNeedsReview) : base;
+}
+
+function syncLocationPhotoFilterButtons() {
+  if (elements.locationPhotosShowAll) elements.locationPhotosShowAll.classList.toggle("active", locationPhotoListMode === "all");
+  if (elements.locationPhotosShowNeedsReview) elements.locationPhotosShowNeedsReview.classList.toggle("active", locationPhotoListMode === "needs-review");
 }
 
 async function loadLocationPhotos() {
@@ -3412,35 +3770,67 @@ async function loadLocationPhotos() {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.ok) throw new Error(payload.message || `Location photos failed: ${response.status}`);
     locationPhotos = Array.isArray(payload.photos) ? payload.photos : [];
+    renderLocationPhotoMarkers();
   } finally {
     locationPhotosLoading = false;
   }
 }
 
+function mergeLocationPhotos(nextPhotos = []) {
+  const items = Array.isArray(nextPhotos) ? nextPhotos.filter((photo) => photo && photo.id) : [];
+  if (!items.length) return false;
+  const byId = new Map(locationPhotos.map((photo) => [String(photo.id || ""), photo]));
+  for (const photo of items) byId.set(String(photo.id || ""), photo);
+  locationPhotos = [...byId.values()].sort((a, b) => String(b.uploaded_at || "").localeCompare(String(a.uploaded_at || "")));
+  renderLocationPhotoMarkers();
+  if (currentView === "location-photos") {
+    renderLocationPhotosView();
+    renderLocationPhotosMap();
+  }
+  renderDetail();
+  renderMobileTicketDetail();
+  return true;
+}
+
 function renderLocationPhotosView(focusTicket = null) {
   if (!elements.locationPhotosList) return;
   initLocationPhotosMap();
-  const visiblePhotos = focusTicket ? locationPhotosForTicket(focusTicket) : locationPhotos;
+  const visiblePhotos = visibleLocationPhotosForView(focusTicket);
+  const reviewCount = locationPhotos.filter(locationPhotoNeedsReview).length;
   renderLocationPhotosMap(visiblePhotos);
+  syncLocationPhotoFilterButtons();
   if (elements.locationPhotosSummary) {
     const label = focusTicket
       ? `Photo history for ${focusTicket.ticket_number}: ${visiblePhotos.length} matching photo${visiblePhotos.length === 1 ? "" : "s"}`
-      : `${locationPhotos.length} stored photo${locationPhotos.length === 1 ? "" : "s"}`;
+      : locationPhotoListMode === "needs-review"
+        ? `${visiblePhotos.length} photo${visiblePhotos.length === 1 ? "" : "s"} need location review. Open each row, set address or coordinates, then save as reviewed.`
+        : `${locationPhotos.length} stored photo${locationPhotos.length === 1 ? "" : "s"} - ${reviewCount} need location review`;
     elements.locationPhotosSummary.textContent = label;
   }
   if (!visiblePhotos.length) {
-    elements.locationPhotosList.innerHTML = '<div class="location-photo-empty">No location photos uploaded yet.</div>';
+    elements.locationPhotosList.innerHTML = `<div class="location-photo-empty">${locationPhotoListMode === "needs-review" ? "No photos need location review." : "No location photos uploaded yet."}</div>`;
     return;
   }
   elements.locationPhotosList.innerHTML = visiblePhotos.map((photo) => `
-    <a class="location-photo-row" href="${escapeHtml(photo.url || "#")}" target="_blank" rel="noreferrer">
-      <strong>${escapeHtml(photo.original_name || "Location photo")}</strong>
-      <em>${escapeHtml([photo.ticket, photo.location_label, photo.review_status].filter(Boolean).join(" - "))}</em>
-      <span>${escapeHtml(locationPhotoCoordinateLabel(photo))}</span>
-      ${photo.address ? `<span>${escapeHtml(photo.address)}</span>` : ""}
-      <small>${escapeHtml([photo.uploaded_by, photo.uploaded_at].filter(Boolean).join(" - "))}</small>
-      ${photo.note ? `<p>${escapeHtml(photo.note)}</p>` : ""}
-    </a>
+    <article class="location-photo-row${locationPhotoNeedsReview(photo) ? " needs-review" : ""}" data-location-photo-row="${escapeHtml(photo.id || "")}">
+      <button class="location-photo-row-preview" type="button" data-location-photo-view="${escapeHtml(photo.id || "")}" aria-label="View location photo">
+        ${locationPhotoPreviewUrl(photo) ? `<img src="${escapeHtml(locationPhotoPreviewUrl(photo))}" loading="lazy" decoding="async" alt="">` : "<span>No preview</span>"}
+      </button>
+      <div>
+        <strong>${escapeHtml(photo.original_name || "Location photo")}</strong>
+        <em>${escapeHtml([photo.ticket, photo.location_label, photo.review_status].filter(Boolean).join(" - "))}</em>
+        ${locationPhotoNeedsReview(photo) ? '<span class="location-photo-review-pill">Needs location review</span>' : ""}
+        <span>${escapeHtml(locationPhotoCoordinateLabel(photo))}</span>
+        ${photo.address ? `<span>${escapeHtml(photo.address)}</span>` : ""}
+        <small>${escapeHtml([photo.uploaded_by, photo.uploaded_at].filter(Boolean).join(" - "))}</small>
+        ${photo.note ? `<p>${escapeHtml(photo.note)}</p>` : ""}
+        <div class="location-photo-row-actions">
+          <button type="button" data-location-photo-view="${escapeHtml(photo.id || "")}">View</button>
+          <button type="button" data-location-photo-edit="${escapeHtml(photo.id || "")}" data-location-photo-map-target="photos">Edit</button>
+          <button type="button" data-location-photo-move="${escapeHtml(photo.id || "")}" data-location-photo-move-map="photos">Move on map</button>
+        </div>
+      </div>
+    </article>
   `).join("");
 }
 
@@ -3457,6 +3847,13 @@ function initLocationPhotosMap() {
     maxZoom: 20,
   }).addTo(locationPhotosMap);
   locationPhotosLayer = L.layerGroup().addTo(locationPhotosMap);
+  locationPhotosMap.on("click", (event) => {
+    if (!pendingLocationPhotoMoveId || pendingLocationPhotoMoveMap !== "photos") return;
+    void saveLocationPhotoCoordinates(pendingLocationPhotoMoveId, event.latlng.lat, event.latlng.lng, { reopen: true }).catch((error) => {
+      window.alert(error.message || "Unable to save photo location.");
+    });
+    pendingLocationPhotoMoveId = "";
+  });
 }
 
 function renderLocationPhotosMap(photos = locationPhotos) {
@@ -3466,22 +3863,20 @@ function renderLocationPhotosMap(photos = locationPhotos) {
   for (const photo of photos) {
     const lat = Number(photo?.lat);
     const lng = Number(photo?.lng);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-    const marker = L.circleMarker([lat, lng], {
-      radius: 7,
-      color: "#1d4ed8",
-      fillColor: "#60a5fa",
-      fillOpacity: 0.84,
-      weight: 2,
+    if (!validLocationPhotoCoordinate(lat, lng)) continue;
+    const marker = L.marker([lat, lng], {
+      draggable: true,
+      autoPan: true,
+      title: photo.original_name || "Location photo",
     });
-    marker.bindPopup(`
-      <div class="location-photo-popup">
-        <strong>${escapeHtml(photo.original_name || "Location photo")}</strong>
-        <span>${escapeHtml(locationPhotoCoordinateLabel(photo))}</span>
-        ${photo.note ? `<p>${escapeHtml(photo.note)}</p>` : ""}
-        <a href="${escapeHtml(photo.url || "#")}" target="_blank" rel="noreferrer">Open photo</a>
-      </div>
-    `);
+    marker.on("dragend", () => {
+      const next = marker.getLatLng();
+      void saveLocationPhotoCoordinates(photo.id, next.lat, next.lng).catch((error) => {
+        window.alert(error.message || "Unable to save photo location.");
+        marker.setLatLng([lat, lng]);
+      });
+    });
+    marker.bindPopup(locationPhotoMapPopupHtml(photo, { moveMap: "photos" }), { maxWidth: 300, className: "location-photo-map-leaflet-popup" });
     marker.addTo(locationPhotosLayer);
     bounds.push([lat, lng]);
   }
@@ -3491,13 +3886,513 @@ function renderLocationPhotosMap(photos = locationPhotos) {
   locationPhotosMap.invalidateSize();
 }
 
+function geotaggedLocationPhotos() {
+  return locationPhotos.filter((photo) => {
+    const lat = Number(photo?.lat);
+    const lng = Number(photo?.lng);
+    const source = String(photo?.photo_location_source || photo?.coordinate_source || "").toLowerCase();
+    return validLocationPhotoCoordinate(lat, lng) && source !== "missing" && source !== "invalid";
+  });
+}
+
+function validLocationPhotoCoordinate(lat, lng) {
+  return Number.isFinite(lat)
+    && Number.isFinite(lng)
+    && Math.abs(lat) <= 90
+    && Math.abs(lng) <= 180
+    && !(Math.abs(lat) < 0.000001 && Math.abs(lng) < 0.000001)
+    && lat >= 33
+    && lat <= 36.55
+    && lng >= -94.7
+    && lng <= -89.55;
+}
+
+function locationPhotoById(photoId) {
+  return locationPhotos.find((photo) => String(photo.id || "") === String(photoId || "")) || null;
+}
+
+async function mapSearchSuggestions(query, limit = 6) {
+  const clean = String(query || "").trim();
+  if (!clean) return [];
+  const response = await fetch(`/api/map-search?q=${encodeURIComponent(clean)}&limit=${encodeURIComponent(limit)}`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || `Map search failed: ${response.status}`);
+  return Array.isArray(payload.results) ? payload.results : (payload.ok ? [payload] : []);
+}
+
+async function reverseGeocodeAddress(lat, lng) {
+  const nextLat = Number(lat);
+  const nextLng = Number(lng);
+  if (!Number.isFinite(nextLat) || !Number.isFinite(nextLng)) return "";
+  const response = await fetch(`/api/reverse-geocode?lat=${encodeURIComponent(nextLat)}&lng=${encodeURIComponent(nextLng)}`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) return "";
+  return String(payload.address || payload.name || "").trim();
+}
+
+function hideLocationPhotoAddressSuggestions(container) {
+  if (!container) return;
+  container.hidden = true;
+  container.innerHTML = "";
+}
+
+function renderLocationPhotoAddressSuggestions(container, results, query, onSelect) {
+  if (!container) return;
+  const items = Array.isArray(results) ? results : [];
+  container.hidden = false;
+  if (!items.length) {
+    container.innerHTML = `<div class="in-house-lookup-empty">Keep typing for Arkansas address suggestions near ${escapeHtml(query)}</div>`;
+    return;
+  }
+  container.innerHTML = items.map((item, index) => `
+    <button type="button" data-location-photo-address-result="${index}">
+      <span class="in-house-lookup-type">${escapeHtml(item.type === "coordinates" ? "Coords" : "Address")}</span>
+      <strong>${escapeHtml(item.label || item.address || "Address match")}</strong>
+      <small>${escapeHtml(item.detail || item.address || "")}</small>
+    </button>
+  `).join("");
+  for (const button of container.querySelectorAll("[data-location-photo-address-result]")) {
+    button.addEventListener("click", () => {
+      const item = items[Number(button.dataset.locationPhotoAddressResult)];
+      onSelect(item);
+      hideLocationPhotoAddressSuggestions(container);
+    });
+  }
+}
+
+function applyLocationPhotoAddressMatch(item, target = "editor") {
+  if (!item || typeof item !== "object") return false;
+  const values = item.values || {};
+  const lat = Number(item.latitude ?? values.lat);
+  const lng = Number(item.longitude ?? values.lng);
+  const address = String(values.address || item.address || item.label || "").trim();
+  if (target === "upload") {
+    if (elements.locationPhotosAddress && address) elements.locationPhotosAddress.value = address;
+    if (Number.isFinite(lat) && elements.locationPhotosLat) elements.locationPhotosLat.value = lat.toFixed(7);
+    if (Number.isFinite(lng) && elements.locationPhotosLng) elements.locationPhotosLng.value = lng.toFixed(7);
+  } else {
+    if (elements.locationPhotoEditorAddress && address) elements.locationPhotoEditorAddress.value = address;
+    if (Number.isFinite(lat) && elements.locationPhotoEditorLat) elements.locationPhotoEditorLat.value = lat.toFixed(7);
+    if (Number.isFinite(lng) && elements.locationPhotoEditorLng) elements.locationPhotoEditorLng.value = lng.toFixed(7);
+    locationPhotoEditorLastPositionSource = "address";
+    setLocationPhotoEditorStatus(Number.isFinite(lat) && Number.isFinite(lng) ? "Address selected. Save when it looks right." : "Address selected. Pick a suggestion with coordinates.");
+  }
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    if (map) map.setView([lat, lng], Math.max(map.getZoom(), 18));
+    if (locationPhotosMap) locationPhotosMap.setView([lat, lng], Math.max(locationPhotosMap.getZoom(), 18));
+    return true;
+  }
+  return false;
+}
+
+function scheduleLocationPhotoAddressLookup(target = "editor", { force = false } = {}) {
+  const isUpload = target === "upload";
+  const input = isUpload ? elements.locationPhotosAddress : elements.locationPhotoEditorAddress;
+  const container = isUpload ? elements.locationPhotosAddressSuggestions : elements.locationPhotoEditorAddressSuggestions;
+  const query = String(input?.value || "").trim();
+  const timerName = isUpload ? "locationPhotoUploadAddressLookupTimer" : "locationPhotoAddressLookupTimer";
+  window.clearTimeout(isUpload ? locationPhotoUploadAddressLookupTimer : locationPhotoAddressLookupTimer);
+  if (query.length < 3) {
+    hideLocationPhotoAddressSuggestions(container);
+    return;
+  }
+  const token = isUpload ? ++locationPhotoUploadAddressLookupToken : ++locationPhotoAddressLookupToken;
+  const run = async () => {
+    try {
+      const results = await mapSearchSuggestions(query, 6);
+      if (isUpload ? token !== locationPhotoUploadAddressLookupToken : token !== locationPhotoAddressLookupToken) return;
+      renderLocationPhotoAddressSuggestions(container, results, query, (item) => applyLocationPhotoAddressMatch(item, target));
+      if (force && results[0]) applyLocationPhotoAddressMatch(results[0], target);
+      if (!isUpload) setLocationPhotoEditorStatus(results.length ? `${results.length} address suggestion${results.length === 1 ? "" : "s"} found.` : "No exact match yet. Choose the closest suggestion or keep typing.", !results.length);
+    } catch (error) {
+      if (isUpload ? token === locationPhotoUploadAddressLookupToken : token === locationPhotoAddressLookupToken) {
+        renderLocationPhotoAddressSuggestions(container, [], query, (item) => applyLocationPhotoAddressMatch(item, target));
+        if (!isUpload) setLocationPhotoEditorStatus(error.message || "Address lookup failed.", true);
+      }
+    }
+  };
+  if (force) {
+    void run();
+    return;
+  }
+  const timeout = window.setTimeout(run, 300);
+  if (timerName === "locationPhotoUploadAddressLookupTimer") locationPhotoUploadAddressLookupTimer = timeout;
+  else locationPhotoAddressLookupTimer = timeout;
+}
+
+async function syncLocationPhotoEditorAddressFromCoordinates() {
+  const lat = Number(elements.locationPhotoEditorLat?.value);
+  const lng = Number(elements.locationPhotoEditorLng?.value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  locationPhotoEditorLastPositionSource = "coordinates";
+  const address = await reverseGeocodeAddress(lat, lng);
+  if (address && elements.locationPhotoEditorAddress) elements.locationPhotoEditorAddress.value = address;
+}
+
+function locationPhotoMapPopupHtml(photo, { moveMap = "dashboard" } = {}) {
+  const lat = Number(photo?.lat);
+  const lng = Number(photo?.lng);
+  const photoId = escapeHtml(photo.id || "");
+  return `
+    <div class="location-photo-popup location-photo-map-popup" data-location-photo-popup="${photoId}">
+      <strong>${escapeHtml(photo.original_name || "Location photo")}</strong>
+      ${locationPhotoPreviewUrl(photo) ? `<button class="location-photo-thumb-link" type="button" data-location-photo-view="${photoId}"><img src="${escapeHtml(locationPhotoPreviewUrl(photo))}" loading="lazy" decoding="async" alt=""></button>` : ""}
+      <span>${escapeHtml([photo.ticket, photo.location_label].filter(Boolean).join(" - ") || "Photo location")}</span>
+      ${locationPhotoNeedsReview(photo) ? '<span class="location-photo-review-pill">Needs location review</span>' : ""}
+      <small>${escapeHtml(locationPhotoCoordinateLabel(photo))}</small>
+      <label>Lat <input type="number" step="any" data-location-photo-lat value="${Number.isFinite(lat) ? escapeHtml(lat.toFixed(7)) : ""}"></label>
+      <label>Lng <input type="number" step="any" data-location-photo-lng value="${Number.isFinite(lng) ? escapeHtml(lng.toFixed(7)) : ""}"></label>
+      <div class="location-photo-popup-actions">
+        <button type="button" data-location-photo-view="${photoId}">View</button>
+        <button type="button" data-location-photo-edit="${photoId}" data-location-photo-map-target="${escapeHtml(moveMap)}">Edit</button>
+        <button type="button" data-location-photo-save="${photoId}">Save location</button>
+        <button type="button" data-location-photo-move="${photoId}" data-location-photo-move-map="${escapeHtml(moveMap)}">Move on map</button>
+        <a href="${escapeHtml(photo.url || "#")}" target="_blank" rel="noreferrer">Open</a>
+      </div>
+      ${photo.note ? `<p>${escapeHtml(photo.note)}</p>` : ""}
+    </div>
+  `;
+}
+
+function locationPhotoGroupPopupHtml(photos, { moveMap = "dashboard" } = {}) {
+  const items = Array.isArray(photos) ? photos : [];
+  return `
+    <div class="location-photo-popup location-photo-group-popup">
+      <strong>${items.length} photos at this spot</strong>
+      <small>Select a photo to view or edit it.</small>
+      <div class="location-photo-group-list">
+        ${items.map((photo) => `
+          <article>
+            ${locationPhotoPreviewUrl(photo) ? `<button class="location-photo-thumb-link" type="button" data-location-photo-view="${escapeHtml(photo.id || "")}"><img src="${escapeHtml(locationPhotoPreviewUrl(photo))}" loading="lazy" decoding="async" alt=""></button>` : ""}
+            <div>
+              <b>${escapeHtml(photo.original_name || "Location photo")}</b>
+              <span>${escapeHtml([photo.ticket, photo.location_label, photo.coordinate_source].filter(Boolean).join(" - "))}</span>
+              <div class="location-photo-popup-actions">
+                <button type="button" data-location-photo-view="${escapeHtml(photo.id || "")}">View</button>
+                <button type="button" data-location-photo-edit="${escapeHtml(photo.id || "")}" data-location-photo-map-target="${escapeHtml(moveMap)}">Edit</button>
+                <button type="button" data-location-photo-move="${escapeHtml(photo.id || "")}" data-location-photo-move-map="${escapeHtml(moveMap)}">Move</button>
+              </div>
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderLocationPhotoMarkers() {
+  if (!locationPhotoMarkersLayer || typeof L === "undefined") return;
+  locationPhotoMarkersLayer.clearLayers();
+  const groups = new Map();
+  for (const photo of geotaggedLocationPhotos()) {
+    const lat = Number(photo.lat);
+    const lng = Number(photo.lng);
+    const key = `${lat.toFixed(6)},${lng.toFixed(6)}`;
+    if (!groups.has(key)) groups.set(key, { lat, lng, photos: [] });
+    groups.get(key).photos.push(photo);
+  }
+  for (const group of groups.values()) {
+    const { lat, lng, photos } = group;
+    if (photos.length > 1) {
+      const marker = L.circleMarker([lat, lng], {
+        pane: "locationPhotoMarkersPane",
+        renderer: locationPhotoMarkersRenderer,
+        radius: 3.5,
+        color: "#0f172a",
+        fillColor: "#f8fafc",
+        opacity: 0.2,
+        fillOpacity: 0.2,
+        weight: 1,
+        interactive: true,
+        bubblingMouseEvents: false,
+      });
+      marker.bindPopup(locationPhotoGroupPopupHtml(photos), { maxWidth: 360, className: "location-photo-map-leaflet-popup" });
+      marker.on("click touchstart", (event) => {
+        if (event.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
+        marker.openPopup();
+      });
+      marker.on("mouseover", () => {
+        marker.setRadius(7);
+        marker.setStyle({ opacity: 0.7, fillOpacity: 0.62, weight: 2 });
+        marker.bringToFront();
+        marker.openTooltip();
+      });
+      marker.on("mouseout", () => {
+        marker.setRadius(3.5);
+        marker.setStyle({ opacity: 0.2, fillOpacity: 0.2, weight: 1 });
+      });
+      marker.bindTooltip(`${photos.length} photos`, { direction: "top", opacity: 0.92 });
+      marker.addTo(locationPhotoMarkersLayer);
+      continue;
+    }
+    const photo = photos[0];
+    const marker = L.circleMarker([lat, lng], {
+      pane: "locationPhotoMarkersPane",
+      renderer: locationPhotoMarkersRenderer,
+      radius: 3.5,
+      color: "#0f172a",
+      fillColor: "#f8fafc",
+      opacity: 0.2,
+      fillOpacity: 0.2,
+      weight: 1,
+      interactive: true,
+      bubblingMouseEvents: false,
+    });
+    marker.bindPopup(locationPhotoMapPopupHtml(photo), { maxWidth: 280, className: "location-photo-map-leaflet-popup" });
+    marker.on("mouseover", () => {
+      marker.setRadius(8);
+      marker.setStyle({ opacity: 0.92, fillOpacity: 0.78, weight: 2 });
+      marker.bringToFront();
+    });
+    marker.on("mouseout", () => {
+      marker.setRadius(3.5);
+      marker.setStyle({ opacity: 0.2, fillOpacity: 0.2, weight: 1 });
+    });
+    marker.on("click", (event) => {
+      if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
+      openLocationPhotoViewer(photo.id || "");
+    });
+    marker.addTo(locationPhotoMarkersLayer);
+  }
+}
+
+async function saveLocationPhotoCoordinates(photoId, lat, lng, { reopen = false } = {}) {
+  const photo = locationPhotoById(photoId);
+  if (!photo) return;
+  const nextLat = Number(lat);
+  const nextLng = Number(lng);
+  if (!Number.isFinite(nextLat) || !Number.isFinite(nextLng)) {
+    window.alert("Enter a valid latitude and longitude.");
+    return;
+  }
+  const resolvedAddress = await reverseGeocodeAddress(nextLat, nextLng);
+  const response = await fetch("/api/location-photos/manage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: photo.id,
+      ticket: photo.ticket || "",
+      locationLabel: photo.location_label || "",
+      address: resolvedAddress || photo.address || "",
+      reviewStatus: "reviewed",
+      note: photo.note || "",
+      lat: nextLat,
+      lng: nextLng,
+      coordinateSource: "manual_adjusted",
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) throw new Error(payload.message || `Photo update failed: ${response.status}`);
+  const updated = payload.photo || {};
+  locationPhotos = locationPhotos.map((item) => (item.id === photo.id ? updated : item));
+  if (elements.locationPhotoEditorId?.value === photo.id) {
+    if (elements.locationPhotoEditorLat) elements.locationPhotoEditorLat.value = Number(updated.lat).toFixed(7);
+    if (elements.locationPhotoEditorLng) elements.locationPhotoEditorLng.value = Number(updated.lng).toFixed(7);
+    if (elements.locationPhotoEditorAddress) elements.locationPhotoEditorAddress.value = updated.address || "";
+  }
+  renderLocationPhotoMarkers();
+  if (currentView === "location-photos") renderLocationPhotosView();
+  renderDetail();
+  renderMobileTicketDetail();
+  if (reopen && map && Number.isFinite(Number(updated.lat)) && Number.isFinite(Number(updated.lng))) {
+    map.setView([Number(updated.lat), Number(updated.lng)], Math.max(map.getZoom(), 18));
+  }
+  if (reopen && locationPhotosMap && Number.isFinite(Number(updated.lat)) && Number.isFinite(Number(updated.lng))) {
+    locationPhotosMap.setView([Number(updated.lat), Number(updated.lng)], Math.max(locationPhotosMap.getZoom(), 18));
+  }
+  showSavedToast("Photo location saved");
+}
+
+function setLocationPhotoEditorStatus(text = "", isError = false) {
+  if (!elements.locationPhotoEditorStatusText) return;
+  elements.locationPhotoEditorStatusText.textContent = text;
+  elements.locationPhotoEditorStatusText.classList.toggle("error", Boolean(isError));
+}
+
+function openLocationPhotoEditor(photoId, { mapTarget = "dashboard" } = {}) {
+  const photo = locationPhotoById(photoId);
+  if (!photo || !elements.locationPhotoEditor) return;
+  locationPhotoEditorMapTarget = mapTarget === "photos" ? "photos" : "dashboard";
+  if (elements.locationPhotoEditorId) elements.locationPhotoEditorId.value = photo.id || "";
+  if (elements.locationPhotoEditorName) elements.locationPhotoEditorName.textContent = photo.original_name || "Location photo";
+  if (elements.locationPhotoEditorImage) {
+    elements.locationPhotoEditorImage.src = photo.url || "";
+    elements.locationPhotoEditorImage.alt = photo.original_name || "Location photo";
+  }
+  if (elements.locationPhotoEditorTicket) elements.locationPhotoEditorTicket.value = photo.ticket || "";
+  if (elements.locationPhotoEditorLabel) elements.locationPhotoEditorLabel.value = photo.location_label || "";
+  if (elements.locationPhotoEditorAddress) elements.locationPhotoEditorAddress.value = photo.address || "";
+  if (elements.locationPhotoEditorLat) elements.locationPhotoEditorLat.value = Number.isFinite(Number(photo.lat)) ? Number(photo.lat).toFixed(7) : "";
+  if (elements.locationPhotoEditorLng) elements.locationPhotoEditorLng.value = Number.isFinite(Number(photo.lng)) ? Number(photo.lng).toFixed(7) : "";
+  if (elements.locationPhotoEditorStatus) elements.locationPhotoEditorStatus.value = photo.review_status || "new";
+  if (elements.locationPhotoEditorNote) elements.locationPhotoEditorNote.value = photo.note || "";
+  locationPhotoEditorLastPositionSource = "coordinates";
+  hideLocationPhotoAddressSuggestions(elements.locationPhotoEditorAddressSuggestions);
+  setLocationPhotoEditorStatus("");
+  elements.locationPhotoEditor.hidden = false;
+}
+
+function closeLocationPhotoEditor() {
+  if (elements.locationPhotoEditor) elements.locationPhotoEditor.hidden = true;
+  setLocationPhotoEditorStatus("");
+}
+
+function locationPhotoEditorPayload({ coordinateSource = "manual" } = {}) {
+  const photo = locationPhotoById(elements.locationPhotoEditorId?.value || "");
+  if (!photo) throw new Error("Photo record was not found.");
+  const lat = Number(elements.locationPhotoEditorLat?.value);
+  const lng = Number(elements.locationPhotoEditorLng?.value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new Error("Enter a valid latitude and longitude.");
+  return {
+    id: photo.id,
+    ticket: (elements.locationPhotoEditorTicket?.value || "").trim(),
+    locationLabel: (elements.locationPhotoEditorLabel?.value || "").trim(),
+    address: (elements.locationPhotoEditorAddress?.value || "").trim(),
+    reviewStatus: elements.locationPhotoEditorStatus?.value || "new",
+    note: (elements.locationPhotoEditorNote?.value || "").trim(),
+    lat,
+    lng,
+    coordinateSource,
+  };
+}
+
+async function resolvedLocationPhotoEditorPayload() {
+  const address = String(elements.locationPhotoEditorAddress?.value || "").trim();
+  let lat = Number(elements.locationPhotoEditorLat?.value);
+  let lng = Number(elements.locationPhotoEditorLng?.value);
+  if ((locationPhotoEditorLastPositionSource === "address" || !Number.isFinite(lat) || !Number.isFinite(lng)) && address) {
+    const results = await mapSearchSuggestions(address, 6);
+    renderLocationPhotoAddressSuggestions(elements.locationPhotoEditorAddressSuggestions, results, address, (item) => applyLocationPhotoAddressMatch(item, "editor"));
+    if (!results.length) throw new Error("Choose the closest address suggestion before saving.");
+    applyLocationPhotoAddressMatch(results[0], "editor");
+    lat = Number(elements.locationPhotoEditorLat?.value);
+    lng = Number(elements.locationPhotoEditorLng?.value);
+  } else if (Number.isFinite(lat) && Number.isFinite(lng) && !address) {
+    const resolvedAddress = await reverseGeocodeAddress(lat, lng);
+    if (resolvedAddress && elements.locationPhotoEditorAddress) elements.locationPhotoEditorAddress.value = resolvedAddress;
+  }
+  return locationPhotoEditorPayload({ coordinateSource: locationPhotoEditorLastPositionSource === "address" ? "address_geocoded" : "manual" });
+}
+
+async function saveLocationPhotoEditor(event) {
+  if (event) event.preventDefault();
+  let body;
+  try {
+    body = await resolvedLocationPhotoEditorPayload();
+  } catch (error) {
+    setLocationPhotoEditorStatus(error.message || "Check the photo fields.", true);
+    return;
+  }
+  setLocationPhotoEditorStatus("Saving...");
+  try {
+    const response = await fetch("/api/location-photos/manage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Error(payload.message || `Photo update failed: ${response.status}`);
+    const updated = payload.photo || {};
+    locationPhotos = locationPhotos.map((item) => (item.id === body.id ? updated : item));
+    renderLocationPhotoMarkers();
+    if (currentView === "location-photos") renderLocationPhotosView();
+    renderDetail();
+    renderMobileTicketDetail();
+    setLocationPhotoEditorStatus("Saved");
+    showSavedToast("Photo saved");
+  } catch (error) {
+    setLocationPhotoEditorStatus(error.message || "Unable to save photo.", true);
+  }
+}
+
+async function geocodeLocationPhotoEditorAddress() {
+  const query = (elements.locationPhotoEditorAddress?.value || "").trim();
+  if (!query) {
+    setLocationPhotoEditorStatus("Enter an address first.", true);
+    return;
+  }
+  setLocationPhotoEditorStatus("Finding address...");
+  try {
+    const results = await mapSearchSuggestions(query, 6);
+    renderLocationPhotoAddressSuggestions(elements.locationPhotoEditorAddressSuggestions, results, query, (item) => applyLocationPhotoAddressMatch(item, "editor"));
+    const first = results[0];
+    if (!first) throw new Error("No exact match yet. Keep typing or choose the closest suggestion.");
+    const lat = Number(first.latitude ?? first.lat);
+    const lng = Number(first.longitude ?? first.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new Error("Address result did not include coordinates.");
+    if (elements.locationPhotoEditorLat) elements.locationPhotoEditorLat.value = lat.toFixed(7);
+    if (elements.locationPhotoEditorLng) elements.locationPhotoEditorLng.value = lng.toFixed(7);
+    if (elements.locationPhotoEditorAddress && first.label) elements.locationPhotoEditorAddress.value = first.label;
+    locationPhotoEditorLastPositionSource = "address";
+    if (map) map.setView([lat, lng], Math.max(map.getZoom(), 18));
+    if (locationPhotosMap) locationPhotosMap.setView([lat, lng], Math.max(locationPhotosMap.getZoom(), 18));
+    setLocationPhotoEditorStatus(`${results.length} suggestion${results.length === 1 ? "" : "s"} found. First match placed; choose another if needed.`);
+  } catch (error) {
+    setLocationPhotoEditorStatus(error.message || "Unable to find that address.", true);
+  }
+}
+
+function useLocationPhotoEditorMapCenter() {
+  const activeMap = locationPhotoEditorMapTarget === "photos" && locationPhotosMap ? locationPhotosMap : map;
+  const center = activeMap?.getCenter?.();
+  if (!center) {
+    setLocationPhotoEditorStatus("Open a map first, then use its center.", true);
+    return;
+  }
+  if (elements.locationPhotoEditorLat) elements.locationPhotoEditorLat.value = Number(center.lat).toFixed(7);
+  if (elements.locationPhotoEditorLng) elements.locationPhotoEditorLng.value = Number(center.lng).toFixed(7);
+  setLocationPhotoEditorStatus("Map center copied. Save when ready.");
+}
+
+function beginLocationPhotoMove(photoId, target = "dashboard") {
+  const photo = locationPhotoById(photoId);
+  if (!photo) return;
+  pendingLocationPhotoMoveId = photo.id || "";
+  pendingLocationPhotoMoveMap = target === "photos" ? "photos" : "dashboard";
+  closeLocationPhotoEditor();
+  if (map) map.closePopup();
+  if (locationPhotosMap) locationPhotosMap.closePopup();
+  if (pendingLocationPhotoMoveMap === "photos") {
+    setCurrentView("location-photos");
+    window.setTimeout(() => locationPhotosMap?.invalidateSize?.(), 50);
+  }
+  showSavedToast(`Click the corrected photo location on the ${pendingLocationPhotoMoveMap === "photos" ? "photo" : "dashboard"} map`);
+}
+
+function openLocationPhotoViewer(photoId) {
+  const photo = locationPhotoById(photoId);
+  if (!photo || !elements.locationPhotoViewer) return;
+  activeLocationPhotoViewerId = photo.id || "";
+  locationPhotoViewerZoomed = false;
+  elements.locationPhotoViewer.classList.remove("zoomed");
+  if (elements.locationPhotoViewerTitle) elements.locationPhotoViewerTitle.textContent = photo.original_name || "Location photo";
+  if (elements.locationPhotoViewerImage) {
+    elements.locationPhotoViewerImage.src = photo.url || "";
+    elements.locationPhotoViewerImage.alt = photo.original_name || "Location photo";
+  }
+  if (elements.locationPhotoViewerOpen) elements.locationPhotoViewerOpen.href = photo.url || "#";
+  if (elements.locationPhotoViewerZoom) elements.locationPhotoViewerZoom.textContent = "Zoom";
+  elements.locationPhotoViewer.hidden = false;
+}
+
+function closeLocationPhotoViewer() {
+  activeLocationPhotoViewerId = "";
+  if (elements.locationPhotoViewer) elements.locationPhotoViewer.hidden = true;
+}
+
+function setLocationPhotoViewerZoom(zoomed) {
+  locationPhotoViewerZoomed = Boolean(zoomed);
+  elements.locationPhotoViewer?.classList.toggle("zoomed", locationPhotoViewerZoomed);
+  if (elements.locationPhotoViewerZoom) elements.locationPhotoViewerZoom.textContent = locationPhotoViewerZoomed ? "Fit" : "Zoom";
+}
+
 function setLocationPhotosProgress(percent, text = "") {
   if (elements.locationPhotosProgress) elements.locationPhotosProgress.hidden = false;
   if (elements.locationPhotosProgressBar) elements.locationPhotosProgressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
   if (elements.locationPhotosStatus && text) elements.locationPhotosStatus.textContent = text;
 }
 
-function uploadLocationPhotos(event) {
+async function uploadLocationPhotos(event) {
   event.preventDefault();
   const files = [...(elements.locationPhotosFiles?.files || [])];
   if (!files.length) {
@@ -3507,6 +4402,19 @@ function uploadLocationPhotos(event) {
   if (files.length > 80) {
     if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = "Select 80 photos or fewer.";
     return;
+  }
+  const uploadAddress = String(elements.locationPhotosAddress?.value || "").trim();
+  const uploadLat = Number(elements.locationPhotosLat?.value);
+  const uploadLng = Number(elements.locationPhotosLng?.value);
+  if (uploadAddress && (!Number.isFinite(uploadLat) || !Number.isFinite(uploadLng))) {
+    try {
+      const results = await mapSearchSuggestions(uploadAddress, 6);
+      renderLocationPhotoAddressSuggestions(elements.locationPhotosAddressSuggestions, results, uploadAddress, (item) => applyLocationPhotoAddressMatch(item, "upload"));
+      if (results[0]) applyLocationPhotoAddressMatch(results[0], "upload");
+    } catch (error) {
+      if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = error.message || "Unable to find upload address.";
+      return;
+    }
   }
   const data = new FormData();
   for (const file of files) data.append("files", file, file.name);
@@ -3530,7 +4438,9 @@ function uploadLocationPhotos(event) {
     try {
       const payload = JSON.parse(xhr.responseText || "{}");
       if (xhr.status < 200 || xhr.status >= 300 || payload.ok === false) throw new Error(payload.message || `Upload failed: ${xhr.status}`);
-      setLocationPhotosProgress(96, "Refreshing location photos...");
+      const uploadedPhotos = Array.isArray(payload.photos) ? payload.photos : [];
+      mergeLocationPhotos(uploadedPhotos);
+      setLocationPhotosProgress(96, "Refreshing all location photos...");
       await loadLocationPhotos();
       renderLocationPhotosView();
       renderLocationPhotosMap();
@@ -4323,7 +5233,7 @@ function map3dStyledFeature(kind, feature) {
   const style = serviceLocation ? vetroSlShape : (kind === "vetro" ? vetroLayerShape(layerId) : (vitruviLayerStyleOverrides[String(layerId)] || (geometry.startsWith("Line") ? "solid" : "circle")));
   const color = serviceLocation ? vetroSlColor : (kind === "vetro" ? colorForVetroLayer(layerId) : colorForVitruviLayer(layerId));
   const outline = serviceLocation ? vetroSlOutlineColor : "#ffffff";
-  const label = serviceLocation && vetroSlLabels ? slLabel(feature) : "";
+  const label = kind === "vetro" && shouldLabelVetroFeature(feature) ? featureAddressLabel(feature) : "";
   return {
     ...feature,
     properties: {
@@ -4336,6 +5246,8 @@ function map3dStyledFeature(kind, feature) {
       _style: style,
       _icon: map3dShapeIconName(kind, style, color, outline),
       _label: label,
+      _popupTitle: label || propValue(feature.properties || {}, "ID", "feature_id", "Name", "name", "vetro_id", "vitruvi_id") || `${kind} feature`,
+      _popupKind: kind,
     },
   };
 }
@@ -4365,6 +5277,46 @@ function map3dAddLayer(spec) {
     map3d.addLayer(layerSpec);
   } catch (error) {
     console.warn("3D layer failed", spec.id, error);
+  }
+}
+
+function map3dFeaturePopupHtml(kind, feature) {
+  const props = Object.fromEntries(
+    Object.entries(feature?.properties || {}).filter(([key]) => !String(key).startsWith("_")),
+  );
+  const title = propValue(feature?.properties || {}, "_popupTitle")
+    || featureAddressLabel({ properties: props })
+    || propValue(props, "ID", "feature_id", "Name", "name", "vetro_id", "vitruvi_id")
+    || `${kind === "vetro" ? "VETRO" : "Vitruvi"} feature`;
+  const layerId = propValue(feature?.properties || {}, "_layerId");
+  const rows = featurePopupRows([
+    ["Layer", kind === "vetro" ? vetroLayerLabel(layerId) : vitruviLayerLabel(layerId)],
+    ["Address", featureAddressLabel({ properties: props }) || propValue(props, "full_address", "Address")],
+    ["Feature ID", propValue(props, "ID", "feature_id", "vetro_id", "vitruvi_id", "id", "uid")],
+    ["Name", propValue(props, "Name", "name", "label")],
+    ["Status", propValue(props, "status_id", "Status", "status")],
+    ["Plan", propValue(props, "plan", "plan_id")],
+    ["Note", propValue(props, "Note", "note")],
+  ], props, ["ID", "feature_id", "vetro_id", "vitruvi_id", "id", "uid", "full_address", "Address", "Name", "name", "label", "status_id", "Status", "status", "plan", "plan_id", "Note", "note"]);
+  return `<strong>${escapeHtml(title)}</strong>${rows ? `<div class="popup-rows feature-info-popup">${rows}</div>` : ""}`;
+}
+
+function map3dBindFeatureClicks(kind) {
+  if (!map3d) return;
+  const layerIds = [`${kind}-3d-fill`, `${kind}-3d-line-solid`, `${kind}-3d-line-dashed`, `${kind}-3d-line-dotted`, `${kind}-3d-point-symbol`, `${kind}-3d-point-label`];
+  for (const layerId of layerIds) {
+    if (!map3d.getLayer(layerId) || map3dFeatureClickLayers.has(layerId)) continue;
+    map3dFeatureClickLayers.add(layerId);
+    map3d.on("click", layerId, (event) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+      new window.mapboxgl.Popup({ closeButton: true, maxWidth: "420px" })
+        .setLngLat(event.lngLat)
+        .setHTML(map3dFeaturePopupHtml(kind, feature))
+        .addTo(map3d);
+    });
+    map3d.on("mouseenter", layerId, () => { map3d.getCanvas().style.cursor = "pointer"; });
+    map3d.on("mouseleave", layerId, () => { map3d.getCanvas().style.cursor = ""; });
   }
 }
 
@@ -4515,22 +5467,25 @@ function map3dApplyStyledSource(kind, data) {
     id: `${kind}-3d-point-label`,
     type: "symbol",
     source,
+    minzoom: VETRO_ADDRESS_LABEL_MIN_ZOOM,
     filter: ["all", ["any", ["==", ["geometry-type"], "Point"], ["==", ["geometry-type"], "MultiPoint"]], ["!=", ["get", "_label"], ""]],
     layout: {
       "text-field": ["get", "_label"],
-      "text-size": 12,
-      "text-offset": [0, 1.25],
-      "text-anchor": "top",
-      "text-allow-overlap": true,
-      "text-ignore-placement": true,
+      "text-size": 9,
+      "text-offset": [1.05, 0],
+      "text-anchor": "left",
+      "text-allow-overlap": false,
+      "text-ignore-placement": false,
     },
     paint: {
-      "text-color": "#111827",
-      "text-halo-color": "#ffffff",
-      "text-halo-width": 1.4,
-      "text-opacity": ["coalesce", ["to-number", ["get", "_opacity"]], 0.85],
+      "text-color": "#ffffff",
+      "text-halo-color": "#facc15",
+      "text-halo-width": 1.7,
+      "text-halo-blur": 0.25,
+      "text-opacity": 0.8,
     },
   });
+  map3dBindFeatureClicks(kind);
 }
 
 function refreshMap3dLayers() {
@@ -5422,9 +6377,9 @@ function bindVetroPopup(feature, layer) {
   const props = feature.properties || {};
   const layerId = vetroLayerControlId(feature);
   const sourceLayerId = propValue(props, "layer_id", "Layer_ID");
-  const title = propValue(props, "feature_id", "ID", "Name", "name") || `Layer ${sourceLayerId}`.trim() || "Vetro feature";
-  const rows = [
-    ["Customer / Address", propValue(props, "Street_Address", "street_address", "Address")],
+  const title = featureTitle("vetro", feature);
+  const rows = featurePopupRows([
+    ["Customer / Address", featureAddressLabel(feature)],
     ["VETRO feature ID", propValue(props, "ID", "feature_id")],
     ["Zone", propValue(props, "Zone_Name")],
     ["Zone Status", propValue(props, "Zone_Status")],
@@ -5453,21 +6408,36 @@ function bindVetroPopup(feature, layer) {
     ["Street Address", propValue(props, "street_address", "Street_Address", "Street Address")],
     ["Note", propValue(props, "Note", "note")],
     ["Vetro ID", propValue(props, "vetro_id")],
-  ]
-    .filter(([, value]) => value)
-    .map(([label, value]) => `<div><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`)
-    .join("");
+  ], props, [
+    "Street Address", "Street_Address", "street_address", "Address", "ID", "feature_id", "Zone_Name", "Zone Name",
+    "Zone_Status", "Zone Status", "Building_Type", "Building Type", "Drop_Type", "Drop Type", "layer_id",
+    "Layer_ID", "vector_layer", "Vector_layer", "plan", "plan_id", "status_id", "build", "Build", "placement",
+    "Placement", "Fiber_Capacity", "Fiber Capacity", "HH_Size", "Size", "Bore_Plow", "Bore Plow",
+    "Linear_Footage", "Micro_Duct_Count", "Note", "note", "vetro_id",
+  ]);
+  if (shouldLabelVetroFeature(feature)) {
+    layer.bindTooltip(escapeHtml(featureAddressLabel(feature)), {
+      permanent: true,
+      direction: "right",
+      offset: [8, 0],
+      className: "vetro-address-label",
+      opacity: 1,
+      interactive: false,
+    });
+  }
   if (layerId) {
     layer.on("click", (event) => {
+      if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
       if (locatorNoteMode) {
-        if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
         beginLocatorNoteForVetro(feature, event.latlng || null);
         return;
       }
+      layer.openPopup(event.latlng || undefined);
       setAppVetroStyleLayer(layerId, { openDrawer: true });
     });
   }
-  layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${rows ? `<div class="popup-rows">${rows}</div>` : ""}`);
+  layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${featurePopupActionsHtml("vetro")}${rows ? `<div class="popup-rows feature-info-popup">${rows}</div>` : ""}`, { maxWidth: 430 });
+  bindFeaturePopupActions("vetro", feature, layer);
 }
 
 function syncVitruviLayerSelection() {
@@ -5503,7 +6473,9 @@ function vitruviPointToLayer(feature, latlng) {
   const layerId = vitruviLayerId(feature);
   const shape = vitruviLayerStyleOverrides[String(layerId)] || "circle";
   return L.marker(latlng, {
+    pane: "selectableMapFeaturesPane",
     icon: vetroMarkerIcon(shape, colorForVitruviLayer(layerId), vitruviLayerSize(layerId), vitruviLayerOpacity(layerId), ""),
+    zIndexOffset: 8500,
   });
 }
 
@@ -5533,8 +6505,8 @@ function vitruviStyle(feature) {
 function bindVitruviPopup(feature, layer) {
   const props = feature.properties || {};
   const layerId = vitruviLayerId(feature);
-  const title = propValue(props, "label", "feature_id", "vitruvi_id", "name", "Name") || vitruviLayerDisplayName(layerId);
-  const rows = [
+  const title = featureTitle("vitruvi", feature);
+  const rows = featurePopupRows([
     ["Layer", vitruviLayerLabel(layerId)],
     ["Layer name", vitruviLayerDisplayName(layerId)],
     ["Layer note", vitruviLayerNote(layerId)],
@@ -5547,15 +6519,17 @@ function bindVitruviPopup(feature, layer) {
     ["Length", propValue(props, "planned_length", "total_length", "shape__len")],
     ["Color", colorForVitruviLayer(layerId)],
     ["Opacity", `${Math.round(vitruviLayerOpacity(layerId) * 100)}%`],
-  ].filter(([, value]) => value)
-    .map(([label, value]) => `<div><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`)
-    .join("");
+  ], props, ["label", "feature_id", "vitruvi_id", "name", "Name", "category_name", "vitruvi_layer_label", "category", "vitruvi_status", "status", "Status", "region_name", "Region", "full_address", "Address", "ID", "id", "uid", "vetro_id", "planned_length", "total_length", "shape__len"]);
   layer.on("click", (event) => {
-    if (!locatorNoteMode) return;
     if (event.originalEvent) L.DomEvent.stop(event.originalEvent);
-    beginLocatorNoteForVitruvi(feature, event.latlng || null);
+    if (locatorNoteMode) {
+      beginLocatorNoteForVitruvi(feature, event.latlng || null);
+      return;
+    }
+    layer.openPopup(event.latlng || undefined);
   });
-  layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${rows ? `<div class="popup-rows">${rows}</div>` : ""}`);
+  layer.bindPopup(`<strong>${escapeHtml(title)}</strong>${featurePopupActionsHtml("vitruvi")}${rows ? `<div class="popup-rows feature-info-popup">${rows}</div>` : ""}`, { maxWidth: 430 });
+  bindFeaturePopupActions("vitruvi", feature, layer);
 }
 
 function filteredVitruviGeojson() {
@@ -5593,10 +6567,13 @@ function renderVitruviLayer() {
   const filtered = filteredVitruviGeojson();
   const features = Array.isArray(filtered?.features) ? filtered.features : [];
   vitruviLayer = L.geoJSON(filtered, {
+    pane: "selectableMapFeaturesPane",
+    renderer: L.canvas({ pane: "selectableMapFeaturesPane" }),
     style: vitruviStyle,
     pointToLayer: vitruviPointToLayer,
     onEachFeature: bindVitruviPopup,
   }).addTo(map);
+  updateVetroAddressLabels();
   const total = Array.isArray(vitruviGeojson?.features) ? vitruviGeojson.features.length : 0;
   elements.vitruviStatus.textContent = `${features.length.toLocaleString()} / ${total.toLocaleString()}`;
   refreshMap3dLayers();
@@ -5693,10 +6670,13 @@ function renderVetroLayer() {
     return;
   }
   vetroLayer = L.geoJSON(filtered, {
+    pane: "selectableMapFeaturesPane",
+    renderer: L.canvas({ pane: "selectableMapFeaturesPane" }),
     style: vetroStyle,
     pointToLayer: vetroPointToLayer,
     onEachFeature: bindVetroPopup,
   }).addTo(map);
+  updateVetroAddressLabels();
   const shown = features.length;
   const total = Array.isArray(vetroGeojson?.features) ? vetroGeojson.features.length : 0;
   elements.vetroStatus.textContent = `${shown.toLocaleString()} / ${total.toLocaleString()}`;
@@ -5946,7 +6926,146 @@ async function refreshServerData() {
 }
 
 function ticketAddress(ticket) {
-  return [ticket.address, ticket.street, ticket.place, ticket.county].filter(Boolean).join(" ");
+  const locateStreet = String(ticket?.street || "").trim();
+  const secondaryAddress = String(ticket?.address || "").trim();
+  const base = locateStreet || secondaryAddress;
+  return [base, ticket?.place, ticket?.county].filter(Boolean).join(" ");
+}
+
+function ticketHasCoordinates(ticket) {
+  const lat = ticket?.latitude;
+  const lng = ticket?.longitude;
+  if (lat === null || lat === undefined || lat === "" || lng === null || lng === undefined || lng === "") return false;
+  return Number.isFinite(Number(lat)) && Number.isFinite(Number(lng));
+}
+
+function ticketQualityIssues(ticket) {
+  const issues = [];
+  if (!ticket?.polygon) issues.push("No polygon");
+  if (!ticketHasCoordinates(ticket)) issues.push("No coordinates");
+  if (!ticketAddress(ticket).trim()) issues.push("No address");
+  if (ticketDueStatus(ticket) === "due-today" && !ticketHasActions(ticket.ticket_number)) issues.push("Due now with no response");
+  if (!locationPhotosForTicket(ticket).length && ticketHasActions(ticket.ticket_number)) issues.push("Completed without photo evidence");
+  return issues;
+}
+
+function ticketRiskProfile(ticket) {
+  const reasons = [];
+  let score = 0;
+  const assignedPriority = ticketAssignedPriority(ticket.ticket_number);
+  const dueStatus = ticketDueStatus(ticket);
+  if (assignedPriority === "emergency") {
+    score += 55;
+    reasons.push("Admin emergency");
+  } else if (assignedPriority === "high") {
+    score += 36;
+    reasons.push("Admin high priority");
+  } else if (assignedPriority === "medium") {
+    score += 18;
+    reasons.push("Admin medium priority");
+  }
+  if (ticketIsEmergency(ticket)) {
+    score += 45;
+    reasons.push("Emergency ticket");
+  }
+  if (ticketIsRemark(ticket)) {
+    score += 28;
+    reasons.push("Recall / second request");
+  }
+  if (ticketIsRenewal(ticket)) {
+    score += 16;
+    reasons.push("Renewal");
+  }
+  if (ticketIsTcwDmiWork(ticket)) {
+    score += 14;
+    reasons.push("Priority contractor");
+  }
+  if (dueStatus === "due-today") {
+    score += 34;
+    reasons.push("Due today");
+  } else if (dueStatus === "due-next") {
+    score += 20;
+    reasons.push("Next working day");
+  }
+  const qualityIssues = ticketQualityIssues(ticket);
+  score += qualityIssues.length * 12;
+  reasons.push(...qualityIssues);
+  const photoCount = locationPhotosForTicket(ticket).length;
+  const noteCount = locatorNotesForTicket(ticket).length;
+  if (photoCount) {
+    score = Math.max(0, score - 4);
+    reasons.push(`${photoCount} photo${photoCount === 1 ? "" : "s"}`);
+  }
+  if (noteCount) {
+    score = Math.max(0, score - 3);
+    reasons.push(`${noteCount} note${noteCount === 1 ? "" : "s"}`);
+  }
+  if (ticketHasActions(ticket.ticket_number)) {
+    score = Math.max(0, score - 24);
+    reasons.push("Response selected");
+  }
+  let level = "low";
+  if (score >= 80) level = "critical";
+  else if (score >= 48) level = "high";
+  else if (score >= 22) level = "medium";
+  return { score, level, reasons, qualityIssues, photoCount, noteCount };
+}
+
+function riskLabel(level) {
+  switch (level) {
+    case "critical":
+      return "Critical";
+    case "high":
+      return "High";
+    case "medium":
+      return "Medium";
+    default:
+      return "Low";
+  }
+}
+
+function ticketEvidenceTimeline(ticket, photos = locationPhotosForTicket(ticket), notes = locatorNotesForTicket(ticket)) {
+  const events = [];
+  if (ticket.prepared_date || ticket.prepared_time) {
+    events.push({ label: "Imported", value: [ticket.prepared_date, ticket.prepared_time].filter(Boolean).join(" ") });
+  }
+  if (ticket.work_begin_date || ticket.work_begin_time) {
+    events.push({ label: "Due", value: [ticket.work_begin_date, ticket.work_begin_time].filter(Boolean).join(" ") });
+  }
+  const actions = ticketActionLabels(ticket.ticket_number);
+  if (actions.length) events.push({ label: "Response", value: actions.join(", ") });
+  if (photos.length) events.push({ label: "Photos", value: `${photos.length} matched in this ticket area` });
+  if (notes.length) events.push({ label: "Locator notes", value: `${notes.length} note${notes.length === 1 ? "" : "s"} attached or inside polygon` });
+  const attachmentCount = Array.isArray(attachmentCache[ticket.ticket_number]) ? attachmentCache[ticket.ticket_number].length : 0;
+  if (attachmentCount) events.push({ label: "Attachments", value: `${attachmentCount} uploaded` });
+  if (!events.length) events.push({ label: "Status", value: "No timeline events yet" });
+  return events;
+}
+
+function ticketTimelineHtml(ticket, photos, notes) {
+  return `
+    <div class="ticket-timeline">
+      ${ticketEvidenceTimeline(ticket, photos, notes).map((event) => `
+        <div class="ticket-timeline-row">
+          <span>${escapeHtml(event.label)}</span>
+          <strong>${escapeHtml(event.value)}</strong>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function qualityIssueListHtml(issues = []) {
+  if (!issues.length) return '<div class="quality-list quality-list-good"><span>Quality check passed</span></div>';
+  return `
+    <div class="quality-list">
+      ${issues.map((issue) => `<span>${escapeHtml(issue)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function riskPillHtml(profile) {
+  return `<span class="risk-pill risk-${escapeHtml(profile.level)}">${escapeHtml(riskLabel(profile.level))} risk</span>`;
 }
 
 function workDescription(ticket) {
@@ -7130,6 +8249,7 @@ function restorationDetailHtml(job) {
 function ensureRestorationMap() {
   if (!elements.restorationMap || restorationMap || typeof L === "undefined") return;
   restorationMap = L.map(elements.restorationMap, { zoomControl: true }).setView([33.21, -92.66], 11);
+  ensureSelectableMapFeaturesPane(restorationMap);
   const restorationTile = MAP_TILE_STYLES[mapStyle]?.url ? MAP_TILE_STYLES[mapStyle] : MAP_TILE_STYLES.standard;
   L.tileLayer(restorationTile.url, {
     maxZoom: 20,
@@ -7188,6 +8308,8 @@ function renderRestorationMap(jobs) {
     const filtered = filteredVetroGeojson();
     if (filtered) {
       restorationMapVetroLayer = L.geoJSON(filtered, {
+        pane: "selectableMapFeaturesPane",
+        renderer: L.canvas({ pane: "selectableMapFeaturesPane" }),
         style: vetroStyle,
         pointToLayer: vetroPointToLayer,
         onEachFeature: bindVetroPopup,
@@ -7287,6 +8409,7 @@ function inHouseCoordinatesFromForm() {
 function ensureInHouseMap() {
   if (!elements.inHouseMap || inHouseMap || typeof L === "undefined") return;
   inHouseMap = L.map(elements.inHouseMap, { zoomControl: true }).setView([33.21, -92.66], 12);
+  ensureSelectableMapFeaturesPane(inHouseMap);
   void renderInHouseBaseLayer();
   inHouseMap.on("click", (event) => {
     setInHouseMapPoint(event.latlng.lat, event.latlng.lng, "Map point selected", { pan: false });
@@ -7346,6 +8469,8 @@ function renderInHouseVetroLayer() {
   const features = Array.isArray(filtered?.features) ? filtered.features : [];
   if (!features.length) return;
   inHouseMapVetroLayer = L.geoJSON(filtered, {
+    pane: "selectableMapFeaturesPane",
+    renderer: L.canvas({ pane: "selectableMapFeaturesPane" }),
     style: vetroStyle,
     pointToLayer: vetroPointToLayer,
     onEachFeature: bindVetroPopup,
@@ -7904,6 +9029,12 @@ function bindTicketActionControls(container) {
         } catch (error) {
           window.alert(error.message || "Attachment upload failed.");
         }
+      } else if (files.length) {
+        try {
+          await uploadTicketAttachments(ticketNumber, input.files, uploader);
+        } catch (error) {
+          window.alert(error.message || "Attachment upload failed.");
+        }
       }
     });
   }
@@ -7915,7 +9046,6 @@ function bindTicketActionControls(container) {
       const ticketNumber = button.dataset.ticketUploadButton;
       const input = uploader.querySelector("[data-ticket-file-input]");
       if (!input?.files?.length) return;
-      if (!window.confirm(`Upload ${input.files.length} attachment${input.files.length === 1 ? "" : "s"} to ticket ${ticketNumber}?`)) return;
       try {
         await uploadTicketAttachments(ticketNumber, input.files, uploader);
       } catch (error) {
@@ -7941,6 +9071,11 @@ function bindTicketActionControls(container) {
 }
 
 function searchable(ticket) {
+  const risk = ticketRiskProfile(ticket);
+  const dueStatus = ticketDueStatus(ticket);
+  const qualityIssues = ticketQualityIssues(ticket);
+  const photoCount = locationPhotosForTicket(ticket).length;
+  const noteCount = locatorNotesForTicket(ticket).length;
   return [
     ticket.ticket_number,
     ticket.contractor,
@@ -7963,6 +9098,15 @@ function searchable(ticket) {
     ticket.message_type,
     ticket.raw_text,
     ticket.portal_ticket_id,
+    dueStatus,
+    dueStatus === "due-today" ? "due today" : "",
+    dueStatus === "due-next" ? "due next next due due tomorrow" : "",
+    `risk ${risk.level}`,
+    ["high", "critical"].includes(risk.level) ? "high risk" : "",
+    qualityIssues.length ? "needs attention quality issue" : "",
+    qualityIssues.join(" "),
+    photoCount ? "photo photos evidence" : "",
+    noteCount ? "note notes locator note" : "",
   ].join(" ").toLowerCase();
 }
 
@@ -8014,6 +9158,27 @@ function renderMetrics(list = []) {
   elements.totalCount.textContent = String(activeCount);
   elements.countyCount.textContent = String(counties.size);
   elements.dueCount.textContent = String(list.filter((ticket) => ticket.work_begin_date).length);
+  const visibleList = list.filter((ticket) => !hiddenTickets.has(ticket.ticket_number) || elements.showHiddenToggle.checked);
+  const highRisk = visibleList.filter((ticket) => ["high", "critical"].includes(ticketRiskProfile(ticket).level));
+  const needsAttention = visibleList.filter((ticket) => ticketQualityIssues(ticket).length);
+  const photoMatches = visibleList.reduce((count, ticket) => count + locationPhotosForTicket(ticket).length, 0);
+  if (elements.cockpitOpenCount) elements.cockpitOpenCount.textContent = String(visibleList.length);
+  if (elements.cockpitDueTodayCount) elements.cockpitDueTodayCount.textContent = String(visibleList.filter((ticket) => ticketDueStatus(ticket) === "due-today").length);
+  if (elements.cockpitDueNextCount) elements.cockpitDueNextCount.textContent = String(visibleList.filter((ticket) => ticketDueStatus(ticket) === "due-next").length);
+  if (elements.cockpitHighRiskCount) elements.cockpitHighRiskCount.textContent = String(highRisk.length);
+  if (elements.cockpitNeedsAttentionCount) elements.cockpitNeedsAttentionCount.textContent = String(needsAttention.length);
+  if (elements.cockpitPhotoCount) elements.cockpitPhotoCount.textContent = String(photoMatches);
+}
+
+function applyCockpitFilter(filter) {
+  let nextSearch = "";
+  if (filter === "due-today") nextSearch = "due today";
+  else if (filter === "due-next") nextSearch = "due next";
+  else if (filter === "high-risk") nextSearch = "high risk";
+  else if (filter === "needs-attention") nextSearch = "needs attention";
+  else if (filter === "photos") nextSearch = "photo";
+  updateTicketSearch(nextSearch);
+  if (filter === "open") showSavedToast("Showing open dashboard tickets");
 }
 
 function saveHiddenTickets() {
@@ -8146,7 +9311,13 @@ function renderCountyFilter() {
 }
 
 function ticketDueKey(ticket) {
-  return ticket.work_begin_date || "No due date";
+  const due = parseTicketDueDate(ticket);
+  if (!due) return "No due date";
+  return [
+    due.getFullYear(),
+    String(due.getMonth() + 1).padStart(2, "0"),
+    String(due.getDate()).padStart(2, "0"),
+  ].join("-");
 }
 
 function ticketIsEmergency(ticket) {
@@ -8303,6 +9474,43 @@ function ticketDueStatus(ticket) {
   return "due-later";
 }
 
+function ordinalDay(day) {
+  const value = Number(day);
+  if (!Number.isFinite(value)) return "";
+  const lastTwo = value % 100;
+  if (lastTwo >= 11 && lastTwo <= 13) return `${value}th`;
+  switch (value % 10) {
+    case 1:
+      return `${value}st`;
+    case 2:
+      return `${value}nd`;
+    case 3:
+      return `${value}rd`;
+    default:
+      return `${value}th`;
+  }
+}
+
+function formatDueGroupDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  const weekday = date.toLocaleDateString(undefined, { weekday: "long" });
+  const month = date.toLocaleDateString(undefined, { month: "long" });
+  return `${weekday} ${month} ${ordinalDay(date.getDate())} ${date.getFullYear()}`;
+}
+
+function ticketDueGroupLabel(key) {
+  if (!key || key === "No due date") return "No due date";
+  const date = parseTicketDueDate({ work_begin_date: key });
+  if (!date) return key;
+  const today = startOfToday();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const label = formatDueGroupDate(date);
+  if (date.getTime() === today.getTime()) return `Today — ${label}`;
+  if (date.getTime() === tomorrow.getTime()) return `Tomorrow — ${label}`;
+  return label;
+}
+
 function priorityLegendItems() {
   const today = startOfToday();
   const nextDay = nextWorkingDay(today);
@@ -8397,12 +9605,7 @@ function ticketMapColors(ticket) {
 }
 
 function sortedTickets(list) {
-  return [...list].sort((a, b) => {
-    const aDate = a.work_begin_date || "9999-99-99";
-    const bDate = b.work_begin_date || "9999-99-99";
-    if (aDate !== bDate) return aDate.localeCompare(bDate);
-    return (a.work_begin_time || "").localeCompare(b.work_begin_time || "") || a.ticket_number.localeCompare(b.ticket_number);
-  });
+  return [...list].sort(compareTicketsForDashboard);
 }
 
 function ticketDateTimeValue(ticket) {
@@ -8422,6 +9625,80 @@ function ticketDateTimeValue(ticket) {
   return dueDate.getTime();
 }
 
+function ticketDueDayValue(ticket) {
+  const due = parseTicketDueDate(ticket);
+  return due ? due.getTime() : Number.MAX_SAFE_INTEGER;
+}
+
+function ticketDueTimeValue(ticket) {
+  const dateTime = ticketDateTimeValue(ticket);
+  const dayTime = ticketDueDayValue(ticket);
+  if (!Number.isFinite(dateTime) || !Number.isFinite(dayTime)) return Number.MAX_SAFE_INTEGER;
+  return Math.max(0, dateTime - dayTime);
+}
+
+function ticketStableTimeValue(ticket) {
+  const fields = [
+    ticket.created_at,
+    ticket.imported_at,
+    ticket.updated_at,
+    ticket.received_at,
+    ticket.prepared_date && `${ticket.prepared_date} ${ticket.prepared_time || ""}`,
+  ];
+  for (const field of fields) {
+    if (!field) continue;
+    const parsed = new Date(field);
+    if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+  }
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function ticketDashboardPriorityRank(ticket) {
+  const assignedPriority = ticketAssignedPriority(ticket.ticket_number);
+  if (assignedPriority === "emergency" || ticketIsEmergency(ticket)) return 0;
+  if (assignedPriority === "high" || ticketIsRemark(ticket)) return 1;
+  if (ticketIsTcwDmiWork(ticket)) return 2;
+  if (ticketIsRenewal(ticket)) return 3;
+  if (assignedPriority === "medium") return 4;
+  if (assignedPriority === "low") return 5;
+  return 6;
+}
+
+function ticketNumberCompare(a, b) {
+  return String(a?.ticket_number || "").localeCompare(String(b?.ticket_number || ""), undefined, { numeric: true, sensitivity: "base" });
+}
+
+function compareTicketsForDashboard(a, b) {
+  const aPriority = ticketDashboardPriorityRank(a);
+  const bPriority = ticketDashboardPriorityRank(b);
+  const aDueDay = ticketDueDayValue(a);
+  const bDueDay = ticketDueDayValue(b);
+  if (aDueDay !== bDueDay) return aDueDay - bDueDay;
+  if (aPriority !== bPriority) return aPriority - bPriority;
+  const aDueTime = ticketDueTimeValue(a);
+  const bDueTime = ticketDueTimeValue(b);
+  if (aDueTime !== bDueTime) return aDueTime - bDueTime;
+  const numberCompared = ticketNumberCompare(a, b);
+  if (numberCompared) return numberCompared;
+  return ticketStableTimeValue(a) - ticketStableTimeValue(b);
+}
+
+function comparePriorityTicketsForDashboard(a, b) {
+  const aPriority = ticketDashboardPriorityRank(a);
+  const bPriority = ticketDashboardPriorityRank(b);
+  if (aPriority !== bPriority) return aPriority - bPriority;
+  const aDate = ticketDateTimeValue(a);
+  const bDate = ticketDateTimeValue(b);
+  if (aDate !== bDate) return aDate - bDate;
+  const numberCompared = ticketNumberCompare(a, b);
+  if (numberCompared) return numberCompared;
+  return ticketStableTimeValue(a) - ticketStableTimeValue(b);
+}
+
+function ticketIsDashboardTopPriority(ticket) {
+  return ticketDashboardPriorityRank(ticket) <= 1;
+}
+
 function compareTicketsByDate(a, b, direction = "asc") {
   const aValue = ticketDateTimeValue(a);
   const bValue = ticketDateTimeValue(b);
@@ -8430,7 +9707,7 @@ function compareTicketsByDate(a, b, direction = "asc") {
     const safeB = Number.isFinite(bValue) ? bValue : Number.MAX_SAFE_INTEGER;
     return (safeA - safeB) * (direction === "desc" ? -1 : 1);
   }
-  return String(a.ticket_number || "").localeCompare(String(b.ticket_number || ""), undefined, { numeric: true });
+  return ticketNumberCompare(a, b) || (ticketStableTimeValue(a) - ticketStableTimeValue(b));
 }
 
 function setTicketsHidden(ticketNumbers, hidden) {
@@ -8469,6 +9746,8 @@ function ticketCardHtml(ticket) {
   const priorityClasses = ticketPriorityClasses(ticket);
   const attachedLocatorNotes = locatorNotesForTicket(ticket);
   const attachedLocationPhotos = locationPhotosForTicket(ticket);
+  const risk = ticketRiskProfile(ticket);
+  const qualityIssues = risk.qualityIssues.slice(0, 2);
   return `
     <div class="ticket-card ${priorityClasses} ${selectedTicket?.ticket_number === ticket.ticket_number ? "active" : ""} ${hidden ? "hidden-ticket" : ""} ${archived ? "archived-ticket" : ""}" data-ticket="${escapeHtml(ticket.ticket_number)}" role="button" tabindex="0">
       <div class="ticket-card-header">
@@ -8479,6 +9758,12 @@ function ticketCardHtml(ticket) {
           </button>
           <span class="badge">${escapeHtml(ticket.county || "UNKNOWN")}</span>
         </span>
+      </div>
+      <div class="ticket-card-intel">
+        ${riskPillHtml(risk)}
+        <span class="evidence-chip">${attachedLocationPhotos.length} photo${attachedLocationPhotos.length === 1 ? "" : "s"}</span>
+        <span class="evidence-chip">${attachedLocatorNotes.length} note${attachedLocatorNotes.length === 1 ? "" : "s"}</span>
+        ${qualityIssues.map((issue) => `<span class="quality-chip">${escapeHtml(issue)}</span>`).join("")}
       </div>
       <div class="ticket-actions-row">
         ${hidden ? '<span class="mini-status hidden-status">Hidden</span>' : ""}
@@ -8542,6 +9827,64 @@ async function runMapSearch() {
   showMapSearchResult(Number(payload.latitude), Number(payload.longitude), payload.name || query);
 }
 
+function routeEligibleTickets(list = []) {
+  return list.filter(ticketHasCoordinates).sort(compareTicketsByDate).slice(0, 10);
+}
+
+function ticketRouteLabel(ticket) {
+  return ticketAddress(ticket) || ticket.ticket_number || "Ticket";
+}
+
+function googleMapsRouteUrl(list = []) {
+  const stops = routeEligibleTickets(list);
+  if (!stops.length) return "";
+  const coordinate = (ticket) => `${Number(ticket.latitude).toFixed(6)},${Number(ticket.longitude).toFixed(6)}`;
+  const destination = stops[stops.length - 1];
+  const waypoints = stops.slice(0, -1).map(coordinate);
+  const params = new URLSearchParams({
+    api: "1",
+    destination: coordinate(destination),
+    travelmode: "driving",
+  });
+  if (waypoints.length) params.set("waypoints", waypoints.join("|"));
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+function openTicketRoute(list = []) {
+  const stops = routeEligibleTickets(list);
+  if (!stops.length) {
+    window.alert("No routed tickets have coordinates.");
+    return;
+  }
+  const url = googleMapsRouteUrl(stops);
+  window.open(url, "_blank", "noopener,noreferrer");
+  showSavedToast(`Route opened for ${stops.length} stop${stops.length === 1 ? "" : "s"}`);
+}
+
+async function applyMapPreset(preset) {
+  if (preset === "fiber") {
+    if (elements.vetroToggle && !elements.vetroToggle.checked) {
+      elements.vetroToggle.checked = true;
+      elements.vetroToggle.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    await setMapTileStyle("mapbox-satellite-streets", true);
+    return;
+  }
+  if (preset === "photos") {
+    setCurrentView("location-photos");
+    return;
+  }
+  if (preset === "restoration") {
+    setCurrentView("restoration");
+    return;
+  }
+  await setMapTileStyle("locator-dark-detail", true);
+  if (elements.vetroToggle && elements.vetroToggle.checked) {
+    elements.vetroToggle.checked = false;
+    elements.vetroToggle.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
+
 function groupActionButtonHtml(items = []) {
   const activeItems = items.filter((ticket) => !archivedTickets.has(ticket.ticket_number));
   const hiddenCount = activeItems.filter((ticket) => hiddenTickets.has(ticket.ticket_number)).length;
@@ -8580,17 +9923,17 @@ function renderTicketGroup(summaryLabel, items = [], extraClass = "", open = tru
 function renderList(list = []) {
   const protectedTickets = protectedTicketNumbersFromCheckpoint();
   if (!list.length) {
-    elements.ticketList.innerHTML = '<div class="detail-content">No matching tickets.</div>';
+    elements.ticketList.innerHTML = '<div class="detail-content">No matching tickets.</div><footer class="view-end-footer dashboard-list-footer">End of Ticket List</footer>';
     return;
   }
 
-  const emergencies = [];
+  const priorityTickets = [];
   const dateGroups = new Map();
   const activeList = list.filter((ticket) => !archivedTickets.has(ticket.ticket_number));
   const archivedList = sortedTickets(scopedTickets().filter((ticket) => archivedTickets.has(ticket.ticket_number) && !protectedTickets.has(ticket.ticket_number)));
   for (const ticket of sortedTickets(activeList)) {
-    if (ticketIsEmergency(ticket)) {
-      emergencies.push(ticket);
+    if (ticketIsDashboardTopPriority(ticket)) {
+      priorityTickets.push(ticket);
       continue;
     }
     const key = ticketDueKey(ticket);
@@ -8599,25 +9942,33 @@ function renderList(list = []) {
   }
 
   const sections = [];
-  if (emergencies.length) {
+  if (priorityTickets.length) {
+    const sortedPriorityTickets = [...priorityTickets].sort(comparePriorityTicketsForDashboard);
     const visibleEmergencies = elements.showHiddenToggle.checked
-      ? emergencies.filter((ticket) => !protectedTickets.has(ticket.ticket_number))
-      : emergencies.filter((ticket) => !hiddenTickets.has(ticket.ticket_number) && !protectedTickets.has(ticket.ticket_number));
-    sections.push(renderTicketGroup("Priority emergencies", emergencies, "ticket-emergency-group", true, visibleEmergencies));
+      ? sortedPriorityTickets.filter((ticket) => !protectedTickets.has(ticket.ticket_number))
+      : sortedPriorityTickets.filter((ticket) => !hiddenTickets.has(ticket.ticket_number) && !protectedTickets.has(ticket.ticket_number));
+    sections.push(renderTicketGroup("Priority / emergency tickets", sortedPriorityTickets, "ticket-emergency-group", true, visibleEmergencies));
   }
   sections.push(
-    ...[...dateGroups.entries()].map(([dueDate, items]) => {
-      const visibleItems = elements.showHiddenToggle.checked
-        ? items.filter((ticket) => !protectedTickets.has(ticket.ticket_number))
-        : items.filter((ticket) => !hiddenTickets.has(ticket.ticket_number) && !protectedTickets.has(ticket.ticket_number));
-      return renderTicketGroup(dueDate, items, "ticket-date-folder", true, visibleItems);
-    }),
+    ...[...dateGroups.entries()]
+      .sort(([a], [b]) => {
+        const aDate = a === "No due date" ? Number.MAX_SAFE_INTEGER : ticketDueDayValue({ work_begin_date: a });
+        const bDate = b === "No due date" ? Number.MAX_SAFE_INTEGER : ticketDueDayValue({ work_begin_date: b });
+        return aDate - bDate || String(a).localeCompare(String(b));
+      })
+      .map(([dueDate, items]) => {
+        const sortedItems = [...items].sort(compareTicketsForDashboard);
+        const visibleItems = elements.showHiddenToggle.checked
+          ? sortedItems.filter((ticket) => !protectedTickets.has(ticket.ticket_number))
+          : sortedItems.filter((ticket) => !hiddenTickets.has(ticket.ticket_number) && !protectedTickets.has(ticket.ticket_number));
+        return renderTicketGroup(ticketDueGroupLabel(dueDate), sortedItems, "ticket-date-folder", true, visibleItems);
+      }),
   );
   if (archivedList.length) {
     sections.push(renderTicketGroup("Archived tickets", archivedList, "ticket-archived-group", false, archivedList));
   }
 
-  elements.ticketList.innerHTML = sections.join("");
+  elements.ticketList.innerHTML = `${sections.join("")}<footer class="view-end-footer dashboard-list-footer">End of Ticket List</footer>`;
 
   for (const card of elements.ticketList.querySelectorAll(".ticket-card")) {
     card.addEventListener("click", () => selectTicket(card.dataset.ticket, { focus: true }));
@@ -9058,7 +10409,9 @@ function uploadTicketAttachments(ticketNumber, fileList, uploader = null) {
         }
         updateUploadProgress(uploader, 96, "Saving attachment links...");
         updateTicketAttachmentSummary(ticketNumber, payload.attachment_summary);
+        mergeLocationPhotos(payload.location_photos);
         await loadTicketAttachments(ticketNumber, true);
+        await loadLocationPhotos().catch((error) => console.warn("Unable to refresh location photos after attachment upload", error));
         updateUploadProgress(uploader, 100, "Upload complete.");
         const input = uploader?.querySelector("[data-ticket-file-input]");
         if (input) input.value = "";
@@ -9221,6 +10574,7 @@ function renderMobileView() {
 function initMobileMap() {
   if (mobileMap || !elements.mobileFieldMap || typeof L === "undefined") return;
   mobileMap = L.map(elements.mobileFieldMap, { zoomControl: true, preferCanvas: true }).setView([33.23, -92.67], 12);
+  ensureSelectableMapFeaturesPane(mobileMap);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     attribution: "&copy; OpenStreetMap contributors",
     subdomains: "abc",
@@ -9331,6 +10685,8 @@ function renderMobileMap(list = []) {
     const filtered = filteredVetroGeojson();
     if (filtered) {
       mobileMapVetroLayer = L.geoJSON(filtered, {
+        pane: "selectableMapFeaturesPane",
+        renderer: L.canvas({ pane: "selectableMapFeaturesPane" }),
         style: vetroStyle,
         pointToLayer: vetroPointToLayer,
         onEachFeature: bindVetroPopup,
@@ -9708,6 +11064,7 @@ function renderDetail() {
   const priorityClasses = ticketPriorityClasses(ticket);
   const attachedLocatorNotes = locatorNotesForTicket(ticket);
   const attachedLocationPhotos = locationPhotosForTicket(ticket);
+  const risk = ticketRiskProfile(ticket);
   elements.detail.hidden = false;
   elements.detail.classList.toggle("ticket-emergency-priority", ticketIsEmergency(ticket));
   elements.detail.classList.toggle("ticket-remark-priority", ticketIsRemark(ticket));
@@ -9723,11 +11080,21 @@ function renderDetail() {
 	        <h2>${escapeHtml(ticket.ticket_number)}</h2>
 	        <button class="detail-close" type="button" data-close-ticket-detail aria-label="Close ticket detail" title="Close">x</button>
 	      </div>
-	      <div class="badge">${escapeHtml(ticket.county)} · ${escapeHtml(ticket.message_type)}</div>
+	      <div class="detail-intel-bar">
+	        ${riskPillHtml(risk)}
+	        <span>${escapeHtml(dueStatusLabel(ticketDueStatus(ticket)))}</span>
+	        <span>${escapeHtml(ticket.county)} · ${escapeHtml(ticket.message_type)}</span>
+	      </div>
       ${portalActions(ticket)}
 
       <h3>Actions</h3>
       ${actionControlHtml(ticket.ticket_number, false, { deferred: true, includeDescription: true })}
+
+      <h3>Quality Checks</h3>
+      ${qualityIssueListHtml(risk.qualityIssues)}
+
+      <h3>Evidence Timeline</h3>
+      ${ticketTimelineHtml(ticket, attachedLocationPhotos, attachedLocatorNotes)}
 
       <h3>Work Description</h3>
       <div class="description-box">${escapeHtml(workDescription(ticket))}</div>
@@ -9980,7 +11347,87 @@ document.addEventListener("click", (event) => {
   if (elements.inHouseLookup?.contains(event.target) || elements.inHouseLookupResults.contains(event.target)) return;
   hideInHouseLookupResults();
 });
+document.addEventListener("click", (event) => {
+  const viewButton = event.target.closest("[data-location-photo-view]");
+  if (viewButton) {
+    event.preventDefault();
+    openLocationPhotoViewer(viewButton.dataset.locationPhotoView || "");
+    return;
+  }
+  const editButton = event.target.closest("[data-location-photo-edit]");
+  if (editButton) {
+    event.preventDefault();
+    openLocationPhotoEditor(editButton.dataset.locationPhotoEdit || "", {
+      mapTarget: editButton.dataset.locationPhotoMapTarget || "dashboard",
+    });
+    return;
+  }
+  const saveButton = event.target.closest("[data-location-photo-save]");
+  if (saveButton) {
+    event.preventDefault();
+    const popup = saveButton.closest("[data-location-photo-popup]");
+    const lat = popup?.querySelector("[data-location-photo-lat]")?.value;
+    const lng = popup?.querySelector("[data-location-photo-lng]")?.value;
+    void saveLocationPhotoCoordinates(saveButton.dataset.locationPhotoSave, lat, lng).catch((error) => {
+      window.alert(error.message || "Unable to save photo location.");
+    });
+    return;
+  }
+  const moveButton = event.target.closest("[data-location-photo-move]");
+  if (moveButton) {
+    event.preventDefault();
+    beginLocationPhotoMove(moveButton.dataset.locationPhotoMove || "", moveButton.dataset.locationPhotoMoveMap || "dashboard");
+  }
+});
+if (elements.locationPhotoEditorForm) elements.locationPhotoEditorForm.addEventListener("submit", saveLocationPhotoEditor);
+if (elements.locationPhotoEditorClose) elements.locationPhotoEditorClose.addEventListener("click", closeLocationPhotoEditor);
+if (elements.locationPhotoEditorPreview) elements.locationPhotoEditorPreview.addEventListener("click", () => {
+  const photoId = elements.locationPhotoEditorId?.value || "";
+  if (photoId) openLocationPhotoViewer(photoId);
+});
+if (elements.locationPhotoEditorGeocode) elements.locationPhotoEditorGeocode.addEventListener("click", geocodeLocationPhotoEditorAddress);
+if (elements.locationPhotoEditorAddress) {
+  elements.locationPhotoEditorAddress.addEventListener("input", () => {
+    locationPhotoEditorLastPositionSource = "address";
+    scheduleLocationPhotoAddressLookup("editor");
+  });
+}
+for (const input of [elements.locationPhotoEditorLat, elements.locationPhotoEditorLng]) {
+  if (!input) continue;
+  input.addEventListener("input", () => {
+    locationPhotoEditorLastPositionSource = "coordinates";
+  });
+  input.addEventListener("change", () => {
+    void syncLocationPhotoEditorAddressFromCoordinates().catch((error) => console.warn("Reverse geocode failed", error));
+  });
+}
+if (elements.locationPhotosAddress) {
+  elements.locationPhotosAddress.addEventListener("input", () => scheduleLocationPhotoAddressLookup("upload"));
+}
+if (elements.locationPhotoEditorUseMapCenter) elements.locationPhotoEditorUseMapCenter.addEventListener("click", useLocationPhotoEditorMapCenter);
+if (elements.locationPhotoEditorMoveDashboard) elements.locationPhotoEditorMoveDashboard.addEventListener("click", () => {
+  beginLocationPhotoMove(elements.locationPhotoEditorId?.value || "", "dashboard");
+});
+if (elements.locationPhotoEditorMovePhotoMap) elements.locationPhotoEditorMovePhotoMap.addEventListener("click", () => {
+  beginLocationPhotoMove(elements.locationPhotoEditorId?.value || "", "photos");
+});
+if (elements.locationPhotoViewerClose) elements.locationPhotoViewerClose.addEventListener("click", closeLocationPhotoViewer);
+if (elements.locationPhotoViewerFit) elements.locationPhotoViewerFit.addEventListener("click", () => setLocationPhotoViewerZoom(false));
+if (elements.locationPhotoViewerZoom) elements.locationPhotoViewerZoom.addEventListener("click", () => setLocationPhotoViewerZoom(!locationPhotoViewerZoomed));
+if (elements.locationPhotoViewerEdit) elements.locationPhotoViewerEdit.addEventListener("click", () => {
+  if (!activeLocationPhotoViewerId) return;
+  closeLocationPhotoViewer();
+  openLocationPhotoEditor(activeLocationPhotoViewerId, { mapTarget: currentView === "location-photos" ? "photos" : "dashboard" });
+});
 if (elements.locationPhotosBackToDashboard) elements.locationPhotosBackToDashboard.addEventListener("click", () => setCurrentView("dashboard"));
+if (elements.locationPhotosShowAll) elements.locationPhotosShowAll.addEventListener("click", () => {
+  locationPhotoListMode = "all";
+  renderLocationPhotosView();
+});
+if (elements.locationPhotosShowNeedsReview) elements.locationPhotosShowNeedsReview.addEventListener("click", () => {
+  locationPhotoListMode = "needs-review";
+  renderLocationPhotosView();
+});
 if (elements.refreshLocationPhotos) elements.refreshLocationPhotos.addEventListener("click", () => {
   void loadLocationPhotos().then(renderLocationPhotosView).catch((error) => {
     if (elements.locationPhotosStatus) elements.locationPhotosStatus.textContent = error.message || "Unable to refresh location photos.";
@@ -10043,6 +11490,23 @@ if (elements.mobileFollowLocation) elements.mobileFollowLocation.addEventListene
 if (elements.mobileMapTickets) elements.mobileMapTickets.addEventListener("click", () => setMobilePanel("tickets"));
 if (elements.mobileMapFitAll) elements.mobileMapFitAll.addEventListener("click", fitMobileMapToTickets);
 if (elements.dashboardSatelliteToggle) elements.dashboardSatelliteToggle.addEventListener("click", () => void toggleDashboardSatellite().catch((error) => console.error(error)));
+for (const button of document.querySelectorAll("[data-cockpit-filter]")) {
+  button.addEventListener("click", () => applyCockpitFilter(button.dataset.cockpitFilter || "open"));
+}
+for (const button of document.querySelectorAll("[data-map-preset]")) {
+  button.addEventListener("click", () => {
+    void applyMapPreset(button.dataset.mapPreset || "locate").catch((error) => {
+      console.error(error);
+      window.alert(error.message || "Map preset failed.");
+    });
+  });
+}
+if (elements.openSelectedRoute) {
+  elements.openSelectedRoute.addEventListener("click", () => openTicketRoute(selectedTicket ? [selectedTicket] : visibleTickets()));
+}
+if (elements.openTodayRoute) {
+  elements.openTodayRoute.addEventListener("click", () => openTicketRoute(visibleTickets().filter((ticket) => ticketDueStatus(ticket) === "due-today" || ticketDueStatus(ticket) === "due-next")));
+}
 if (elements.dashboard3dToggle) {
   elements.dashboard3dToggle.addEventListener("click", () => {
     void toggleMap3d().catch((error) => {

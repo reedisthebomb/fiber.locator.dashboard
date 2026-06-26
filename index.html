@@ -11,7 +11,7 @@
     <meta name="apple-mobile-web-app-title" content="Fiber Locator">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
-    <link rel="stylesheet" href="/static/styles.css?v=20260618151032">
+  <link rel="stylesheet" href="/static/styles.css?v=20260626143000">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   </head>
   <body>
@@ -128,6 +128,16 @@
           </details>
           <button id="refresh">Refresh</button>
         </div>
+        <section class="field-cockpit" aria-label="Field cockpit summary">
+          <div class="cockpit-metrics">
+            <button type="button" data-cockpit-filter="open"><strong id="cockpitOpenCount">0</strong><span>Open</span></button>
+            <button type="button" data-cockpit-filter="due-today"><strong id="cockpitDueTodayCount">0</strong><span>Due today</span></button>
+            <button type="button" data-cockpit-filter="due-next"><strong id="cockpitDueNextCount">0</strong><span>Next due</span></button>
+            <button type="button" data-cockpit-filter="high-risk"><strong id="cockpitHighRiskCount">0</strong><span>High risk</span></button>
+            <button type="button" data-cockpit-filter="needs-attention"><strong id="cockpitNeedsAttentionCount">0</strong><span>Needs attention</span></button>
+            <button type="button" data-cockpit-filter="photos"><strong id="cockpitPhotoCount">0</strong><span>Photos</span></button>
+          </div>
+        </section>
         <div class="layer-drawers">
           <details id="vetroDrawer">
             <summary><span>Vetro</span><span id="vetroStatus">Off</span></summary>
@@ -290,6 +300,18 @@
           <input id="mapSearch" type="search" placeholder="Search map, address, intersection, coordinates">
           <button type="submit">Go</button>
         </form>
+        <div class="map-work-planner" aria-label="Map workflow controls">
+          <div class="map-work-presets" role="group" aria-label="Preset map views">
+            <button type="button" data-map-preset="locate">Locate</button>
+            <button type="button" data-map-preset="fiber">Fiber</button>
+            <button type="button" data-map-preset="photos">Photos</button>
+            <button type="button" data-map-preset="restoration">Restoration</button>
+          </div>
+          <div class="map-work-actions">
+            <button id="openSelectedRoute" type="button">Route selected</button>
+            <button id="openTodayRoute" type="button">Today route</button>
+          </div>
+        </div>
         <div class="measure-control" aria-label="Measure distance">
           <button id="measureToggle" type="button" aria-pressed="false">Measure</button>
           <button id="measureClear" type="button">Clear</button>
@@ -337,6 +359,7 @@
         <div id="sheetHorizontalScrollInner"></div>
       </div>
       <div id="sheetTableWrap" class="sheet-table-wrap"></div>
+      <footer class="view-end-footer">End of Dig Tickets</footer>
     </section>
 
     <section id="restorationView" class="restoration-view" hidden>
@@ -376,6 +399,7 @@
         </div>
         <aside id="restorationDetail" class="ops-detail-panel"></aside>
       </div>
+      <footer class="view-end-footer">End of Restoration Jobs</footer>
       <div id="restorationModal" class="ops-modal" hidden>
         <form id="restorationForm" class="restoration-form ops-modal-card">
           <div class="ops-modal-head">
@@ -512,6 +536,7 @@
         </div>
         <div id="inHouseRequestList" class="in-house-request-list"></div>
       </section>
+      <footer class="view-end-footer">End of In-house Locate Requests</footer>
     </section>
 
     <section id="liveTicketsView" class="live-tickets-view" hidden>
@@ -532,6 +557,7 @@
           <div class="live-ticket-empty">Select a live ticket</div>
         </article>
       </div>
+      <footer class="view-end-footer">End of Live Tickets</footer>
     </section>
 
     <section id="locationPhotosView" class="location-photos-view" hidden>
@@ -561,6 +587,7 @@
           <label>
             Address / site
             <input id="locationPhotosAddress" type="text" maxlength="220" placeholder="Optional searchable address or site description">
+            <div id="locationPhotosAddressSuggestions" class="in-house-lookup-results location-photo-address-results" hidden></div>
           </label>
           <div class="location-photos-grid">
             <label>
@@ -592,6 +619,8 @@
           <div class="location-photos-list-head">
             <h3>Stored photos</h3>
             <div class="location-photos-list-actions">
+              <button id="locationPhotosShowAll" type="button">All photos</button>
+              <button id="locationPhotosShowNeedsReview" type="button">Needs location review</button>
               <button id="exportLocationPhotosCsv" type="button">CSV</button>
               <button id="exportLocationPhotosZip" type="button">ZIP</button>
               <button id="refreshLocationPhotos" type="button">Refresh</button>
@@ -601,7 +630,93 @@
           <div id="locationPhotosList" class="location-photos-list"></div>
         </div>
       </div>
+      <footer class="view-end-footer">End of Location Photos</footer>
     </section>
+
+    <div id="locationPhotoEditor" class="location-photo-editor" hidden>
+      <form id="locationPhotoEditorForm" class="location-photo-editor-card">
+        <header>
+          <div>
+            <h3>Edit location photo</h3>
+            <p id="locationPhotoEditorName">Location photo</p>
+          </div>
+          <button id="locationPhotoEditorClose" type="button" aria-label="Close photo editor">x</button>
+        </header>
+        <input id="locationPhotoEditorId" type="hidden">
+        <div class="location-photo-editor-body">
+          <button id="locationPhotoEditorPreview" class="location-photo-editor-preview" type="button">
+            <img id="locationPhotoEditorImage" alt="">
+          </button>
+          <div class="location-photo-editor-fields">
+            <label>
+              Ticket number
+              <input id="locationPhotoEditorTicket" type="text" maxlength="40">
+            </label>
+            <label>
+              Location label
+              <input id="locationPhotoEditorLabel" type="text" maxlength="140">
+            </label>
+            <label>
+              Address / site
+              <input id="locationPhotoEditorAddress" type="text" maxlength="220">
+              <div id="locationPhotoEditorAddressSuggestions" class="in-house-lookup-results location-photo-address-results" hidden></div>
+            </label>
+            <div class="location-photo-editor-actions compact">
+              <button id="locationPhotoEditorGeocode" type="button">Find address</button>
+              <button id="locationPhotoEditorUseMapCenter" type="button">Use map center</button>
+            </div>
+            <div class="location-photos-grid">
+              <label>
+                Latitude
+                <input id="locationPhotoEditorLat" type="number" step="any">
+              </label>
+              <label>
+                Longitude
+                <input id="locationPhotoEditorLng" type="number" step="any">
+              </label>
+            </div>
+            <label>
+              Review status
+              <select id="locationPhotoEditorStatus">
+                <option value="new">New</option>
+                <option value="reviewed">Reviewed</option>
+                <option value="needs_review">Needs review</option>
+                <option value="exported">Exported</option>
+                <option value="synced">Synced</option>
+              </select>
+            </label>
+            <label>
+              Note
+              <textarea id="locationPhotoEditorNote" rows="4" maxlength="1000"></textarea>
+            </label>
+            <div id="locationPhotoEditorStatusText" class="location-photo-editor-status"></div>
+          </div>
+        </div>
+        <footer class="location-photo-editor-actions">
+          <button id="locationPhotoEditorMoveDashboard" type="button">Move on dashboard map</button>
+          <button id="locationPhotoEditorMovePhotoMap" type="button">Move on photo map</button>
+          <button type="submit">Save photo</button>
+        </footer>
+      </form>
+    </div>
+
+    <div id="locationPhotoViewer" class="location-photo-viewer" hidden>
+      <div class="location-photo-viewer-card">
+        <header>
+          <strong id="locationPhotoViewerTitle">Location photo</strong>
+          <div>
+            <button id="locationPhotoViewerFit" type="button">Fit</button>
+            <button id="locationPhotoViewerZoom" type="button">Zoom</button>
+            <button id="locationPhotoViewerEdit" type="button">Edit</button>
+            <a id="locationPhotoViewerOpen" href="#" target="_blank" rel="noreferrer">Open</a>
+            <button id="locationPhotoViewerClose" type="button" aria-label="Close photo viewer">x</button>
+          </div>
+        </header>
+        <div class="location-photo-viewer-frame">
+          <img id="locationPhotoViewerImage" alt="">
+        </div>
+      </div>
+    </div>
 
     <section id="mobileView" class="mobile-view" hidden>
       <header class="mobile-header">
@@ -668,6 +783,7 @@
         </div>
       </header>
       <div id="activityList" class="activity-list"></div>
+      <footer class="view-end-footer">End of Activity Log</footer>
     </section>
 
     <section id="mobileAdminView" class="mobile-admin-view" hidden>
@@ -684,7 +800,7 @@
       <div class="mobile-admin-grid">
         <section class="mobile-admin-card admin-ticket-fetch-card">
           <h3>Add missing One Call tickets</h3>
-          <p>Paste ticket numbers and a fresh Arkansas One Call GeoCall Copy as cURL request. The server will reuse the newest valid cURL for a few hours, fetch printable ticket pages and polygons, then the dashboard can refresh from the new cache.</p>
+          <p>Paste up to 1,000 ticket numbers and a fresh Arkansas One Call GeoCall Copy as cURL request. The server will reuse the newest valid cURL for a few hours, fetch printable ticket pages and polygons, then the dashboard can refresh from the new cache.</p>
           <form id="adminTicketFetchForm" class="admin-ticket-fetch-form">
             <label>
               Ticket numbers
@@ -696,12 +812,19 @@
             </label>
             <button type="submit">Fetch ticket pages and polygons</button>
           </form>
-          <p id="adminTicketFetchStatus" class="mobile-admin-status">Only administrator and site_owner can run this. The newest cURL is kept in private server storage for short reuse.</p>
+          <div id="adminTicketFetchProgress" class="admin-ticket-fetch-progress" hidden>
+            <div>
+              <strong id="adminTicketFetchProgressLabel">0%</strong>
+              <span id="adminTicketFetchProgressDetail">Waiting to start</span>
+            </div>
+            <progress id="adminTicketFetchProgressBar" max="100" value="0"></progress>
+          </div>
+          <p id="adminTicketFetchStatus" class="mobile-admin-status">Only administrator and site_owner can run this. Large batches can take several minutes. The newest cURL is kept in private server storage for short reuse.</p>
           <pre id="adminTicketFetchLog" class="admin-ticket-fetch-log" hidden></pre>
         </section>
 
         <section class="mobile-admin-card employee-admin-card">
-          <h3>Employee logins</h3>
+          <h3>Account setup links</h3>
           <form id="employeeInviteForm" class="employee-invite-form">
             <label>
               Name
@@ -711,13 +834,21 @@
               Username
               <input id="employeeUsername" type="text" maxlength="80" placeholder="first.last">
             </label>
+            <label>
+              Account type
+              <select id="employeeInviteRole">
+                <option value="employee">Employee</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
             <button type="submit">Create setup link</button>
           </form>
-          <p id="employeeInviteStatus" class="mobile-admin-status">Create a one-time link, then text or email it to the employee.</p>
+          <p id="employeeInviteStatus" class="mobile-admin-status">Create a one-time setup link, then text or email it to the employee or admin.</p>
           <div id="employeeInviteLink" class="employee-invite-link" hidden></div>
           <div id="employeeAccessList" class="employee-access-list"></div>
         </section>
       </div>
+      <footer class="view-end-footer">End of Admin Console</footer>
     </section>
 
     <div id="profileModal" class="profile-modal" hidden>
@@ -786,6 +917,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="/static/app.js?v=20260618151032"></script>
+  <script src="/static/app.js?v=20260626143000"></script>
   </body>
 </html>

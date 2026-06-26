@@ -2,6 +2,13 @@
 
 Updated: 2026-06-25
 
+## Dashboard Ticket Sorting And Scroll Reachability - 2026-06-26
+
+- Updated the dashboard ticket drawer ordering so newly imported tickets no longer jump to the top just because they are fresh imports. The active left-panel queue now uses due date/day first, then the existing priority signals, due time, ticket number, and created/imported timestamps as stable tie breakers. Emergency and assigned-high/remark tickets still get a top priority folder.
+- Due-date group headings now include readable weekday/date labels, including `Today — Friday June 26th 2026` and `Tomorrow — Saturday June 27th 2026` style labels.
+- Added an `End of Ticket List` footer to the dashboard ticket list and tightened scroll behavior for the dashboard layer/options drawers, Settings panel, Dig Tickets, Restoration Jobs, In-house Requests, Live Tickets, Location Photos, Activity Log, and Admin Console views. The changes preserve existing ticket color classes, map behavior, VETRO/Vitruvi/photo flows, and Android Auto code.
+- Web cache-bust/service-worker cache version is `20260626143000`.
+
 ## Android Auto Moving Map Tilt - 2026-06-25
 
 - Follow-up cleanup on 2026-06-26: removed the fake tilt/pseudo-3D perspective from `CarLiveMapScreen`. Android Auto live map is now a clean 2D canvas renderer again: no Y scale, no skew, no pitch anchor, no warped ticket polygons/VETRO/notes. Heading-up rotation remains, and the map falls back to north-up when stopped, too slow, or missing a usable GPS bearing.
