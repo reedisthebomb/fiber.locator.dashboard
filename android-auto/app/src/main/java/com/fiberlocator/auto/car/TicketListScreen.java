@@ -131,10 +131,20 @@ public class TicketListScreen extends Screen {
         ItemList.Builder list = new ItemList.Builder();
         if (loading) {
             list.addItem(new Row.Builder().setTitle("Loading tickets...").build());
+            list.addItem(new Row.Builder()
+                .setTitle("Open live map")
+                .addText("Map can load while tickets refresh")
+                .setOnClickListener(() -> getScreenManager().push(new CarLiveMapScreen(getCarContext())))
+                .build());
         } else if (!error.isEmpty()) {
             list.addItem(new Row.Builder()
                 .setTitle("Open phone app to sign in")
                 .addText(error)
+                .build());
+            list.addItem(new Row.Builder()
+                .setTitle("Open live map")
+                .addText("Use cached map data if available")
+                .setOnClickListener(() -> getScreenManager().push(new CarLiveMapScreen(getCarContext())))
                 .build());
         } else if (visibleTickets.isEmpty()) {
             list.addItem(new Row.Builder().setTitle("No tickets found").build());

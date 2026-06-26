@@ -29,6 +29,11 @@ import java.util.Map;
 import java.util.Set;
 
 public final class TicketRepository {
+    private static final long CACHE_MAX_AGE_MS = 1000L * 60L * 60L * 24L * 7L;
+    private static final int CONNECT_TIMEOUT_MS = 8000;
+    private static final int GET_READ_TIMEOUT_MS = 20000;
+    private static final int WRITE_READ_TIMEOUT_MS = 45000;
+    private static final int ATTACHMENT_READ_TIMEOUT_MS = 180000;
     public static final TicketAction[] ACTIONS = new TicketAction[] {
         new TicketAction("located", "Located", true),
         new TicketAction("locate-delayed", "Locate delayed", false),
@@ -41,14 +46,43 @@ public final class TicketRepository {
     };
 
     private final Context context;
+    private boolean usedCachedResponse = false;
 
     public TicketRepository(Context context) {
         this.context = context.getApplicationContext();
     }
 
+    public boolean usedCachedResponse() {
+        return usedCachedResponse;
+    }
+
     public List<Ticket> loadTickets() throws Exception {
         DashboardSnapshot snapshot = loadSnapshot();
         return snapshot.tickets.size() > 48 ? snapshot.tickets.subList(0, 48) : snapshot.tickets;
+    }
+
+    public List<LocationPhoto> loadLocationPhotos() throws Exception {
+        JSONObject payload = requestJson("/api/location-photos", "GET", null);
+        JSONArray photos = payload.optJSONArray("photos");
+        List<LocationPhoto> out = new ArrayList<>();
+        if (photos == null) return out;
+        for (int index = 0; index < photos.length(); index++) {
+            JSONObject item = photos.optJSONObject(index);
+            if (item == null) continue;
+            out.add(new LocationPhoto(
+                text(item, "id"),
+                text(item, "ticket"),
+                text(item, "original_name"),
+                text(item, "location_label"),
+                text(item, "address"),
+                text(item, "url"),
+                text(item, "uploaded_at"),
+                text(item, "review_status"),
+                item.optDouble("lat", Double.NaN),
+                item.optDouble("lng", Double.NaN)
+            ));
+        }
+        return out;
     }
 
     public DashboardSnapshot loadSnapshot() throws Exception {
@@ -111,7 +145,7 @@ public final class TicketRepository {
 
     public List<MapFeature> loadVetroMapFeatures(JSONObject state) throws Exception {
         if (state != null && state.optBoolean("vetroVisible", true) == false) return Collections.emptyList();
-        JSONObject payload = requestJson("/api/vetro", "GET", null);
+        JSONObject payload = requestJson("/api/vetro-car", "GET", null);
         JSONArray features = payload.optJSONArray("features");
         if (features == null && "FeatureCollection".equals(payload.optString("type"))) {
             features = payload.optJSONArray("features");
@@ -312,17 +346,8 @@ public final class TicketRepository {
     }
 
     private JSONObject requestJson(String path, String method, String body) throws Exception {
-        HttpURLConnection connection = open(path, method);
-        if (body != null) {
-            connection.setDoOutput(true);
-            connection.setRequestProperty("Content-Type", "application/json");
-            try (OutputStream out = connection.getOutputStream()) {
-                out.write(body.getBytes(StandardCharsets.UTF_8));
-            }
-        }
-        int status = connection.getResponseCode();
-        if (status == 401 && login()) {
-            connection = open(path, method);
+        try {
+            HttpURLConnection connection = open(path, method);
             if (body != null) {
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json");
@@ -330,12 +355,64 @@ public final class TicketRepository {
                     out.write(body.getBytes(StandardCharsets.UTF_8));
                 }
             }
-            status = connection.getResponseCode();
+            int status = connection.getResponseCode();
+            if (status == 401 && login()) {
+                connection = open(path, method);
+                if (body != null) {
+                    connection.setDoOutput(true);
+                    connection.setRequestProperty("Content-Type", "application/json");
+                    try (OutputStream out = connection.getOutputStream()) {
+                        out.write(body.getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+                status = connection.getResponseCode();
+            }
+            if (status < 200 || status >= 300) {
+                throw new IllegalStateException("Dashboard returned HTTP " + status);
+            }
+            JSONObject payload = new JSONObject(read(connection));
+            if ("GET".equals(method) && shouldCache(path)) cacheJson(path, payload);
+            return payload;
+        } catch (Exception ex) {
+            if ("GET".equals(method) && shouldCache(path)) {
+                JSONObject cached = cachedJson(path);
+                if (cached != null) {
+                    usedCachedResponse = true;
+                    return cached;
+                }
+            }
+            throw ex;
         }
-        if (status < 200 || status >= 300) {
-            throw new IllegalStateException("Dashboard returned HTTP " + status);
+    }
+
+    private void cacheJson(String path, JSONObject payload) {
+        if (payload == null) return;
+        AppSettings.prefs(context).edit()
+            .putString(cacheKey(path), payload.toString())
+            .putLong(cacheKey(path) + "_time", System.currentTimeMillis())
+            .apply();
+    }
+
+    private JSONObject cachedJson(String path) {
+        String key = cacheKey(path);
+        long savedAt = AppSettings.prefs(context).getLong(key + "_time", 0L);
+        if (savedAt <= 0L || System.currentTimeMillis() - savedAt > CACHE_MAX_AGE_MS) return null;
+        String body = AppSettings.prefs(context).getString(key, "");
+        if (body == null || body.trim().isEmpty()) return null;
+        try {
+            return new JSONObject(body);
+        } catch (Exception ignored) {
+            return null;
         }
-        return new JSONObject(read(connection));
+    }
+
+    private static String cacheKey(String path) {
+        return "api_cache_" + (path == null ? "" : path.replaceAll("[^A-Za-z0-9_]+", "_"));
+    }
+
+    private static boolean shouldCache(String path) {
+        if (path == null) return false;
+        return !path.startsWith("/api/vetro");
     }
 
     private void uploadAttachments(String ticketNumber, String note, List<Uri> attachments) throws Exception {
@@ -425,12 +502,19 @@ public final class TicketRepository {
     private HttpURLConnection open(String path, String method) throws Exception {
         URL url = new URL(AppSettings.dashboardUrl(context) + path);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setConnectTimeout(15000);
-        connection.setReadTimeout(180000);
+        connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+        connection.setReadTimeout(readTimeoutFor(path, method));
         connection.setRequestMethod(method);
         String cookie = AppSettings.authCookie(context);
         if (!cookie.isEmpty()) connection.setRequestProperty("Cookie", cookie);
         return connection;
+    }
+
+    private static int readTimeoutFor(String path, String method) {
+        if ("GET".equals(method)) return GET_READ_TIMEOUT_MS;
+        String cleanPath = path == null ? "" : path;
+        if (cleanPath.contains("attachments") || cleanPath.contains("locator-notes")) return ATTACHMENT_READ_TIMEOUT_MS;
+        return WRITE_READ_TIMEOUT_MS;
     }
 
     private static String read(HttpURLConnection connection) throws Exception {
@@ -757,6 +841,36 @@ public final class TicketRepository {
             this.key = key;
             this.label = label;
             this.hidesFromDashboard = hidesFromDashboard;
+        }
+    }
+
+    public static final class LocationPhoto {
+        public final String id;
+        public final String ticket;
+        public final String originalName;
+        public final String locationLabel;
+        public final String address;
+        public final String url;
+        public final String uploadedAt;
+        public final String reviewStatus;
+        public final double latitude;
+        public final double longitude;
+
+        LocationPhoto(String id, String ticket, String originalName, String locationLabel, String address, String url, String uploadedAt, String reviewStatus, double latitude, double longitude) {
+            this.id = id;
+            this.ticket = ticket;
+            this.originalName = originalName;
+            this.locationLabel = locationLabel;
+            this.address = address;
+            this.url = url;
+            this.uploadedAt = uploadedAt;
+            this.reviewStatus = reviewStatus;
+            this.latitude = latitude;
+            this.longitude = longitude;
+        }
+
+        public boolean hasCoordinates() {
+            return !Double.isNaN(latitude) && !Double.isNaN(longitude);
         }
     }
 

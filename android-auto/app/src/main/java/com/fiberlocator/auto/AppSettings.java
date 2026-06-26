@@ -7,6 +7,7 @@ public final class AppSettings {
     public static final String DEFAULT_DASHBOARD_URL = "https://fiber-locator.5-78-214-184.sslip.io";
     private static final String PREFS = "fiber_locator_settings";
     private static String sessionCookie = "";
+    private static String sessionPassword = "";
 
     private AppSettings() {
     }
@@ -26,7 +27,8 @@ public final class AppSettings {
     }
 
     public static String password(Context context) {
-        return value(context, "password");
+        String stored = value(context, "password");
+        return stored.isEmpty() ? sessionPassword : stored;
     }
 
     public static String authCookie(Context context) {
@@ -114,6 +116,7 @@ public final class AppSettings {
 
     public static void save(Context context, String dashboardUrl, String username, String password, String authCookie, boolean rememberMe) {
         sessionCookie = "";
+        sessionPassword = rememberMe ? "" : (password == null ? "" : password);
         prefs(context).edit()
             .putString("dashboard_url", trimTrailingSlash(dashboardUrl))
             .putString("username", username == null ? "" : username.trim())

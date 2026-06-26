@@ -1,6 +1,7 @@
 package com.fiberlocator.auto.car;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -19,6 +20,7 @@ import android.view.Surface;
 import androidx.annotation.NonNull;
 import androidx.car.app.AppManager;
 import androidx.car.app.CarContext;
+import androidx.car.app.CarToast;
 import androidx.car.app.Screen;
 import androidx.car.app.SurfaceCallback;
 import androidx.car.app.SurfaceContainer;
@@ -51,13 +53,11 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.net.HttpURLConnection;
@@ -67,8 +67,15 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private static final int MAX_DRAWN_FEATURES = 25000;
     private static final int DRAW_THROTTLE_MS = 80;
     private static final double FOLLOW_ZOOM = 18.0;
+    private static final double FOLLOW_FAST_ZOOM = 16.8;
+    private static final double FOLLOW_CITY_ZOOM = 17.25;
     private static final double MIN_ZOOM = 8.0;
     private static final double MAX_ZOOM = 20.0;
+    private static final float HEADING_UP_MIN_SPEED_MPS = 1.5f;
+    private static final float HEADING_UP_MIN_BEARING_DELTA_DEGREES = 3f;
+    private static final float HEADING_UP_SMOOTHING = 0.28f;
+    private static final long DOUBLE_TAP_TIMEOUT_MS = 360L;
+    private static final float DOUBLE_TAP_SLOP_PX = 72f;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ExecutorService tileExecutor = Executors.newFixedThreadPool(4);
@@ -77,6 +84,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private final List<LocatorNote> locatorNotes = new ArrayList<>();
     private final List<MapFeature> vetroFeatures = new ArrayList<>();
     private final Ticket focusTicket;
+    private final boolean rootScreen;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Rect visibleArea = new Rect();
     private final Map<String, Bitmap> tileCache = new LinkedHashMap<String, Bitmap>(192, 0.75f, true) {
@@ -97,14 +105,25 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private String mapStyle = "standard";
     private String mapboxToken = "";
     private String activeTileStyleKey = "";
+    private DashboardSnapshot currentSnapshot;
+    private Ticket selectedTicket;
+    private MapFeature selectedFeature;
+    private boolean usingCachedData = false;
     private boolean loading = true;
+    private boolean vetroLoading = false;
     private String error = "";
     private boolean followLocation = true;
+    private boolean headingUp = true;
     private boolean drawScheduled = false;
+    private boolean mapBearingReady = false;
     private long lastDrawMs = 0L;
+    private long lastTapMs = 0L;
+    private float lastTapX = Float.NaN;
+    private float lastTapY = Float.NaN;
     private double centerLat = 33.23;
     private double centerLon = -92.67;
     private double zoom = 13.0;
+    private double mapBearing = 0.0;
 
     private final LocationCallback fusedLocationCallback = new LocationCallback() {
         @Override
@@ -121,8 +140,13 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     }
 
     public CarLiveMapScreen(@NonNull CarContext carContext, Ticket focusTicket) {
+        this(carContext, focusTicket, false);
+    }
+
+    public CarLiveMapScreen(@NonNull CarContext carContext, Ticket focusTicket, boolean rootScreen) {
         super(carContext);
         this.focusTicket = focusTicket;
+        this.rootScreen = rootScreen;
         carContext.getCarService(AppManager.class).setSurfaceCallback(this);
         getLifecycle().addObserver((LifecycleEventObserver) (source, event) -> {
             if (event == Lifecycle.Event.ON_DESTROY) {
@@ -142,18 +166,16 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         if (getCarContext().getCarAppApiLevel() < CarAppApiLevels.LEVEL_7) {
             return fallbackTemplate();
         }
-        Pane pane = new Pane.Builder()
-            .addRow(new Row.Builder()
-                .setTitle(loading ? "Loading live map" : "Live map")
-                .addText(statusLine())
-                .addText("Same saved view, VETRO styling, basemap, and live location")
-                .build())
-            .build();
+        Pane.Builder paneBuilder = new Pane.Builder();
+        paneBuilder.addRow(new Row.Builder()
+            .setTitle("Live Map")
+            .addText(statusLine())
+            .build());
+        Pane pane = paneBuilder.build();
         ActionStrip actions = new ActionStrip.Builder()
-            .addAction(new Action.Builder().setTitle("Tickets").setOnClickListener(this::finish).build())
+            .addAction(new Action.Builder().setTitle("Tickets").setOnClickListener(this::openTickets).build())
             .addAction(new Action.Builder().setTitle(followLocation ? "Following" : "Follow").setOnClickListener(this::followCurrentLocation).build())
-            .addAction(new Action.Builder().setTitle("+").setOnClickListener(() -> zoomBy(1.0)).build())
-            .addAction(new Action.Builder().setTitle("-").setOnClickListener(() -> zoomBy(-1.0)).build())
+            .addAction(new Action.Builder().setTitle(headingUp ? "North" : "Heading").setOnClickListener(this::toggleHeadingMode).build())
             .build();
         MapController controller = new MapController.Builder()
             .setMapActionStrip(new ActionStrip.Builder().addAction(Action.PAN).build())
@@ -199,15 +221,39 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     @Override
     public void onScale(float focusX, float focusY, float scaleFactor) {
         if (scaleFactor > 0) {
-            zoom = clamp(zoom + (Math.log(scaleFactor) / Math.log(2.0)), MIN_ZOOM, MAX_ZOOM);
-            drawMap();
+            zoomAt(focusX, focusY, Math.log(scaleFactor) / Math.log(2.0));
         }
     }
 
     @Override
     public void onClick(float x, float y) {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (isDoubleTap(now, x, y)) {
+            clearLastTap();
+            zoomAt(x, y, 1.0);
+            return;
+        }
+        lastTapMs = now;
+        lastTapX = x;
+        lastTapY = y;
+        MapFeature feature = nearestVetroFeature(x, y);
+        if (feature != null) {
+            selectedFeature = feature;
+            selectedTicket = null;
+            CarToast.makeText(getCarContext(), featureToast(feature), CarToast.LENGTH_SHORT).show();
+            drawMap();
+            return;
+        }
         Ticket nearest = nearestTicket(x, y);
-        if (nearest != null) getScreenManager().push(new TicketDetailScreen(getCarContext(), nearest));
+        if (nearest != null) {
+            selectedFeature = null;
+            selectedTicket = nearest;
+            centerOnTicket(nearest, false);
+            return;
+        }
+        selectedFeature = null;
+        selectedTicket = null;
+        drawMap();
     }
 
     private Template fallbackTemplate() {
@@ -231,7 +277,6 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
             try {
                 TicketRepository repository = new TicketRepository(getCarContext());
                 DashboardSnapshot snapshot = repository.loadSnapshot();
-                List<MapFeature> layers = repository.loadVetroMapFeatures(snapshot.state);
                 JSONObject mapConfig;
                 try {
                     mapConfig = repository.loadMapConfig();
@@ -240,21 +285,29 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
                 }
                 JSONObject loadedMapConfig = mapConfig;
                 main.post(() -> {
+                    currentSnapshot = snapshot;
+                    usingCachedData = repository.usedCachedResponse();
                     tickets.clear();
                     tickets.addAll(snapshot.tickets);
+                    if (selectedTicket != null) selectedTicket = ticketByNumber(selectedTicket.ticketNumber);
+                    selectedFeature = null;
                     locatorNotes.clear();
                     locatorNotes.addAll(snapshot.locatorNotes);
                     vetroFeatures.clear();
-                    vetroFeatures.addAll(layers);
                     mapState = snapshot.state == null ? new JSONObject() : snapshot.state;
                     mapStyle = normalizeMapStyle(snapshot.mapStyle);
                     mapboxToken = loadedMapConfig.optString("mapboxAccessToken", "");
                     loading = false;
-                    if (focusTicket != null && focusTicket.hasCoordinates) centerOnTicket(focusTicket);
+                    vetroLoading = true;
+                    if (focusTicket != null && focusTicket.hasCoordinates) {
+                        selectedTicket = ticketByNumber(focusTicket.ticketNumber);
+                        centerOnTicket(selectedTicket == null ? focusTicket : selectedTicket);
+                    }
                     else if (currentLocation != null) followCurrentLocation();
                     else centerOnWork(false);
                     invalidate();
                     drawMap();
+                    loadVetroLayers();
                 });
             } catch (Exception ex) {
                 main.post(() -> {
@@ -267,10 +320,46 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         });
     }
 
+    private void loadVetroLayers() {
+        DashboardSnapshot snapshot = currentSnapshot;
+        if (snapshot == null) {
+            vetroLoading = false;
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                List<MapFeature> layers = new TicketRepository(getCarContext()).loadVetroMapFeatures(snapshot.state);
+                main.post(() -> {
+                    vetroFeatures.clear();
+                    vetroFeatures.addAll(layers);
+                    if (selectedFeature != null && !vetroFeatures.contains(selectedFeature)) selectedFeature = null;
+                    vetroLoading = false;
+                    invalidate();
+                    drawMap();
+                });
+            } catch (OutOfMemoryError oom) {
+                main.post(() -> {
+                    vetroFeatures.clear();
+                    vetroLoading = false;
+                    invalidate();
+                    drawMap();
+                });
+            } catch (Exception ignored) {
+                main.post(() -> {
+                    vetroLoading = false;
+                    invalidate();
+                    drawMap();
+                });
+            }
+        });
+    }
+
     private String statusLine() {
         if (!error.isEmpty()) return error;
         if (loading) return "Loading from dashboard";
-        return String.format(Locale.US, "%d tickets | %d notes | %d VETRO features", tickets.size(), locatorNotes.size(), vetroFeatures.size());
+        String mode = !followLocation ? "Free Pan" : (activeMapBearing() == 0.0 ? "North Up" : "Heading Up");
+        String fiber = vetroLoading ? "loading fiber" : String.format(Locale.US, "%d fiber", vetroFeatures.size());
+        return String.format(Locale.US, "%d tickets • %d notes • %s • %s%s", tickets.size(), locatorNotes.size(), fiber, mode, usingCachedData ? " • cached" : "");
     }
 
     private void startLocationUpdates() {
@@ -308,10 +397,13 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private void acceptLocation(Location location, boolean fromLastKnown) {
         if (!shouldAcceptLocation(location, fromLastKnown)) return;
         currentLocation = new Location(location);
+        if (!fromLastKnown) updateMapBearing(location);
         if (followLocation) {
             centerLat = location.getLatitude();
             centerLon = location.getLongitude();
-            if (zoom < FOLLOW_ZOOM) zoom = FOLLOW_ZOOM;
+            double targetZoom = targetFollowZoom(location);
+            if (fromLastKnown || Math.abs(zoom - targetZoom) > 1.4) zoom = targetZoom;
+            else zoom += (targetZoom - zoom) * 0.24;
         }
         drawMap();
     }
@@ -381,13 +473,22 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         Canvas canvas = null;
         try {
             canvas = drawSurface.lockCanvas(null);
-            drawBaseMap(canvas);
+            double bearing = activeMapBearing();
+            if (bearing != 0.0) {
+                canvas.save();
+                canvas.rotate(-(float) bearing, surfaceWidth / 2f, surfaceHeight / 2f);
+                drawBaseMap(canvas, true);
+                canvas.restore();
+            } else {
+                drawBaseMap(canvas, false);
+            }
             drawVetro(canvas);
             drawTicketPolygons(canvas);
             drawLocatorNotes(canvas);
             drawTickets(canvas);
             drawCurrentLocation(canvas);
-            drawHud(canvas);
+            drawSelectedFeatureInfo(canvas);
+            drawCompass(canvas);
         } catch (Exception ignored) {
         } finally {
             if (canvas != null) {
@@ -399,9 +500,8 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         }
     }
 
-    private void drawBaseMap(Canvas canvas) {
-        boolean night = isNightMap();
-        String tileStyle = tileStyleKey(night);
+    private void drawBaseMap(Canvas canvas, boolean rotated) {
+        String tileStyle = tileStyleKey();
         if (!tileStyle.equals(activeTileStyleKey)) {
             activeTileStyleKey = tileStyle;
             synchronized (tileCache) {
@@ -409,17 +509,23 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
                 loadingTiles.clear();
             }
         }
-        canvas.drawColor(night ? Color.rgb(9, 15, 27) : Color.rgb(235, 242, 248));
+        canvas.drawColor(Color.rgb(235, 242, 248));
         int tileZ = (int) clamp(Math.round(zoom), 1, 19);
         double tileScale = Math.pow(2.0, zoom - tileZ);
         double worldScale = Math.pow(2.0, zoom) * 256.0;
         double centerX = lonToWorld(centerLon, worldScale);
         double centerY = latToWorld(centerLat, worldScale);
-        int minX = (int) Math.floor((centerX - surfaceWidth / 2.0) / (256.0 * tileScale)) - 1;
-        int maxX = (int) Math.floor((centerX + surfaceWidth / 2.0) / (256.0 * tileScale)) + 1;
-        int minY = (int) Math.floor((centerY - surfaceHeight / 2.0) / (256.0 * tileScale)) - 1;
-        int maxY = (int) Math.floor((centerY + surfaceHeight / 2.0) / (256.0 * tileScale)) + 1;
+        double transformedSpan = Math.hypot(surfaceWidth, surfaceHeight);
+        double tileViewportWidth = rotated ? transformedSpan : surfaceWidth;
+        double tileViewportHeight = rotated ? transformedSpan : surfaceHeight;
+        int minX = (int) Math.floor((centerX - tileViewportWidth / 2.0) / (256.0 * tileScale)) - 1;
+        int maxX = (int) Math.floor((centerX + tileViewportWidth / 2.0) / (256.0 * tileScale)) + 1;
+        int minY = (int) Math.floor((centerY - tileViewportHeight / 2.0) / (256.0 * tileScale)) - 1;
+        int maxY = (int) Math.floor((centerY + tileViewportHeight / 2.0) / (256.0 * tileScale)) + 1;
         int maxTile = (1 << tileZ) - 1;
+        int centerTileX = (int) Math.floor(centerX / (256.0 * tileScale));
+        int centerTileY = (int) Math.floor(centerY / (256.0 * tileScale));
+        List<int[]> missingTiles = new ArrayList<>();
         for (int x = minX; x <= maxX; x++) {
             int wrappedX = ((x % (maxTile + 1)) + (maxTile + 1)) % (maxTile + 1);
             for (int y = Math.max(0, minY); y <= Math.min(maxTile, maxY); y++) {
@@ -434,13 +540,21 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
                     Rect dst = new Rect(Math.round(left), Math.round(top), Math.round(left + 256f * (float) tileScale) + 1, Math.round(top + 256f * (float) tileScale) + 1);
                     canvas.drawBitmap(tile, null, dst, null);
                 } else {
-                    enqueueTileLoad(tileZ, wrappedX, y, key, tileStyle);
+                    missingTiles.add(new int[] { tileZ, wrappedX, y, x });
                 }
             }
         }
+        Collections.sort(missingTiles, (a, b) -> {
+            int da = Math.abs(a[3] - centerTileX) + Math.abs(a[2] - centerTileY);
+            int db = Math.abs(b[3] - centerTileX) + Math.abs(b[2] - centerTileY);
+            return Integer.compare(da, db);
+        });
+        for (int[] tile : missingTiles) {
+            enqueueTileLoad(tile[0], tile[1], tile[2], tileKey(tileStyle, tile[0], tile[1], tile[2]), tileStyle);
+        }
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(1f);
-        paint.setColor(night ? Color.argb(105, 58, 70, 92) : Color.argb(90, 205, 216, 226));
+        paint.setColor(Color.argb(90, 205, 216, 226));
         for (int x = 0; x < surfaceWidth; x += Math.max(80, surfaceWidth / 8)) canvas.drawLine(x, 0, x, surfaceHeight, paint);
         for (int y = 0; y < surfaceHeight; y += Math.max(80, surfaceHeight / 6)) canvas.drawLine(0, y, surfaceWidth, y, paint);
     }
@@ -480,7 +594,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private String tileUrl(int z, int x, int y, String style) {
         if (style.startsWith("mapbox:") && !mapboxToken.isEmpty()) {
             String styleId = style.substring("mapbox:".length());
-            return "https://api.mapbox.com/styles/v1/mapbox/" + styleId + "/tiles/256/" + z + "/" + x + "/" + y + "?access_token=" + mapboxToken;
+            return "https://api.mapbox.com/styles/v1/mapbox/" + styleId + "/tiles/512/" + z + "/" + x + "/" + y + "?access_token=" + mapboxToken;
         }
         if ("satellite".equals(style)) {
             return "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/" + z + "/" + y + "/" + x;
@@ -494,11 +608,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         return "https://a.tile.openstreetmap.org/" + z + "/" + x + "/" + y + ".png";
     }
 
-    private String tileStyleKey(boolean night) {
-        if (night) {
-            if (!mapboxToken.isEmpty()) return "mapbox:navigation-night-v1";
-            return "carto-dark";
-        }
+    private String tileStyleKey() {
         String style = normalizeMapStyle(mapStyle);
         if (style.startsWith("mapbox-")) return "mapbox:" + mapboxStyleId(style);
         if ("satellite".equals(style) || "hybrid".equals(style)) return "satellite";
@@ -507,77 +617,13 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         return "osm";
     }
 
-    private boolean isNightMap() {
-        if (getCarContext().isDarkMode()) return true;
-        double lat = currentLocation == null ? centerLat : currentLocation.getLatitude();
-        double lon = currentLocation == null ? centerLon : currentLocation.getLongitude();
-        return isAfterCivilDusk(lat, lon, System.currentTimeMillis());
-    }
-
-    private static boolean isAfterCivilDusk(double latitude, double longitude, long nowMs) {
-        Calendar calendar = Calendar.getInstance(TimeZone.getDefault(), Locale.US);
-        calendar.setTimeInMillis(nowMs);
-        int dayOfYear = calendar.get(Calendar.DAY_OF_YEAR);
-        double lngHour = longitude / 15.0;
-        double sunriseUtc = solarUtcHour(dayOfYear, latitude, lngHour, true);
-        double sunsetUtc = solarUtcHour(dayOfYear, latitude, lngHour, false);
-        if (Double.isNaN(sunriseUtc) || Double.isNaN(sunsetUtc)) {
-            int hour = calendar.get(Calendar.HOUR_OF_DAY);
-            return hour < 6 || hour >= 18;
-        }
-        double offsetHours = TimeZone.getDefault().getOffset(nowMs) / 3600000.0;
-        double sunriseLocal = wrapHour(sunriseUtc + offsetHours);
-        double sunsetLocal = wrapHour(sunsetUtc + offsetHours);
-        double nowLocal = calendar.get(Calendar.HOUR_OF_DAY)
-            + calendar.get(Calendar.MINUTE) / 60.0
-            + calendar.get(Calendar.SECOND) / 3600.0;
-        double duskLocal = wrapHour(sunsetLocal + 0.35);
-        double dawnLocal = wrapHour(sunriseLocal - 0.35);
-        if (duskLocal > dawnLocal) return nowLocal >= duskLocal || nowLocal < dawnLocal;
-        return nowLocal >= duskLocal && nowLocal < dawnLocal;
-    }
-
-    private static double solarUtcHour(int dayOfYear, double latitude, double lngHour, boolean sunrise) {
-        double t = dayOfYear + (((sunrise ? 6.0 : 18.0) - lngHour) / 24.0);
-        double meanAnomaly = (0.9856 * t) - 3.289;
-        double trueLongitude = meanAnomaly
-            + (1.916 * Math.sin(Math.toRadians(meanAnomaly)))
-            + (0.020 * Math.sin(Math.toRadians(2 * meanAnomaly)))
-            + 282.634;
-        trueLongitude = wrapDegrees(trueLongitude);
-        double rightAscension = Math.toDegrees(Math.atan(0.91764 * Math.tan(Math.toRadians(trueLongitude))));
-        rightAscension = wrapDegrees(rightAscension);
-        double longitudeQuadrant = Math.floor(trueLongitude / 90.0) * 90.0;
-        double ascensionQuadrant = Math.floor(rightAscension / 90.0) * 90.0;
-        rightAscension = (rightAscension + longitudeQuadrant - ascensionQuadrant) / 15.0;
-        double sinDeclination = 0.39782 * Math.sin(Math.toRadians(trueLongitude));
-        double cosDeclination = Math.cos(Math.asin(sinDeclination));
-        double zenith = 96.0; // Civil twilight keeps the map in night mode through dusk and dawn.
-        double cosHour = (Math.cos(Math.toRadians(zenith)) - (sinDeclination * Math.sin(Math.toRadians(latitude))))
-            / (cosDeclination * Math.cos(Math.toRadians(latitude)));
-        if (cosHour < -1 || cosHour > 1) return Double.NaN;
-        double hourAngle = sunrise ? 360.0 - Math.toDegrees(Math.acos(cosHour)) : Math.toDegrees(Math.acos(cosHour));
-        hourAngle /= 15.0;
-        double localMeanTime = hourAngle + rightAscension - (0.06571 * t) - 6.622;
-        return wrapHour(localMeanTime - lngHour);
-    }
-
-    private static double wrapDegrees(double value) {
-        double out = value % 360.0;
-        return out < 0 ? out + 360.0 : out;
-    }
-
-    private static double wrapHour(double value) {
-        double out = value % 24.0;
-        return out < 0 ? out + 24.0 : out;
-    }
-
     private void drawVetro(Canvas canvas) {
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeCap(Paint.Cap.ROUND);
         int drawn = 0;
         for (MapFeature feature : vetroFeatures) {
             if (drawn >= MAX_DRAWN_FEATURES) break;
+            if (!shouldDrawVetroFeature(feature)) continue;
             VetroStyle style = vetroStyle(feature);
             paint.setColor(style.color);
             paint.setStrokeWidth(feature.isPoint() ? Math.max(4f, style.size) : Math.max(2f, style.size));
@@ -588,6 +634,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
                     float[] p = project(path.get(0)[0], path.get(0)[1]);
                     if (!pointVisible(p[0], p[1], 96f)) continue;
                     drawShape(canvas, p[0], p[1], style);
+                    if (shouldDrawVetroLabel(feature)) drawFeatureLabel(canvas, featureAddressLabel(feature), p[0], p[1], style);
                     drawn++;
                 } else {
                     if (!pathVisible(path, 128f)) continue;
@@ -598,6 +645,27 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         }
         paint.setAlpha(255);
         paint.setPathEffect(null);
+        paint.setFakeBoldText(false);
+    }
+
+    private boolean shouldDrawVetroFeature(MapFeature feature) {
+        if (feature == null) return false;
+        if (zoom < 10.5) return false;
+        if (feature.isPoint()) {
+            if ("26".equals(feature.layerId)) return zoom >= 14.0;
+            if ("28".equals(feature.layerId) || "42".equals(feature.layerId)) return zoom >= 15.0;
+            return zoom >= 16.0;
+        }
+        if ("17".equals(feature.layerId) || "654".equals(feature.layerId)) return zoom >= 11.0;
+        return zoom >= 13.0;
+    }
+
+    private boolean shouldDrawVetroLabel(MapFeature feature) {
+        if (feature == null || !feature.isPoint() || zoom < 18.0) return false;
+        if (featureAddressLabel(feature).isEmpty()) return false;
+        if ("26".equals(feature.layerId) || "prefix:SL".equals(feature.layerId)) return true;
+        String label = first(feature.label, feature.layerId).toLowerCase(Locale.US);
+        return label.contains("customer") || label.contains("service");
     }
 
     private void drawTicketPolygons(Canvas canvas) {
@@ -605,15 +673,16 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         for (Ticket ticket : tickets) {
             List<List<double[]>> rings = ticketPolygon(ticket);
             if (rings.isEmpty()) continue;
+            boolean selected = isSelectedTicket(ticket);
             paint.setColor(ticketColor(ticket));
             paint.setStyle(Paint.Style.FILL);
-            paint.setAlpha(10);
+            paint.setAlpha(selected ? 36 : 10);
             for (List<double[]> ring : rings) {
                 if (pathVisible(ring, 160f)) drawPath(canvas, ring, true);
             }
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(2.5f);
-            paint.setAlpha(150);
+            paint.setStrokeWidth(selected ? 6f : 2.5f);
+            paint.setAlpha(selected ? 245 : 150);
             for (List<double[]> ring : rings) {
                 if (pathVisible(ring, 160f)) drawPath(canvas, ring, false);
             }
@@ -627,10 +696,18 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
             if (!ticket.hasCoordinates) continue;
             float[] p = project(ticket.latitude, ticket.longitude);
             if (!pointVisible(p[0], p[1], 40f)) continue;
+            boolean selected = isSelectedTicket(ticket);
             paint.setColor(Color.WHITE);
-            canvas.drawCircle(p[0], p[1], 10f, paint);
+            canvas.drawCircle(p[0], p[1], selected ? 15f : 10f, paint);
             paint.setColor(ticketColor(ticket));
-            canvas.drawCircle(p[0], p[1], 7f, paint);
+            canvas.drawCircle(p[0], p[1], selected ? 11f : 7f, paint);
+            if (selected) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(3f);
+                paint.setColor(Color.WHITE);
+                canvas.drawCircle(p[0], p[1], 19f, paint);
+                paint.setStyle(Paint.Style.FILL);
+            }
         }
     }
 
@@ -649,28 +726,142 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         if (currentLocation == null) return;
         float[] p = project(currentLocation.getLatitude(), currentLocation.getLongitude());
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(Color.argb(56, 56, 189, 248));
-        canvas.drawCircle(p[0], p[1], 22f, paint);
+        float accuracyRadius = currentLocation.hasAccuracy()
+            ? (float) clamp((currentLocation.getAccuracy() / metersPerPixel(currentLocation.getLatitude())) / 2.0, 18.0, 90.0)
+            : 24f;
+        paint.setColor(Color.argb(46, 56, 189, 248));
+        canvas.drawCircle(p[0], p[1], accuracyRadius, paint);
         paint.setColor(Color.WHITE);
-        canvas.drawCircle(p[0], p[1], 10f, paint);
+        canvas.drawCircle(p[0], p[1], 12f, paint);
         paint.setColor(Color.rgb(2, 132, 199));
-        canvas.drawCircle(p[0], p[1], 7f, paint);
+        canvas.drawCircle(p[0], p[1], 8f, paint);
+        if (currentLocation.hasBearing() && currentLocation.hasSpeed() && currentLocation.getSpeed() > 0.8f) {
+            drawHeadingArrow(canvas, p[0], p[1], (float) normalizeBearing(currentLocation.getBearing() - activeMapBearing()));
+        }
     }
 
-    private void drawHud(Canvas canvas) {
-        int left = visibleArea.isEmpty() ? 16 : Math.max(16, visibleArea.left + 12);
-        int top = visibleArea.isEmpty() ? 18 : Math.max(18, visibleArea.top + 12);
+    private void drawHeadingArrow(Canvas canvas, float x, float y, float bearing) {
+        canvas.save();
+        canvas.rotate(bearing, x, y);
+        Path arrow = new Path();
+        arrow.moveTo(x, y - 28f);
+        arrow.lineTo(x + 10f, y - 4f);
+        arrow.lineTo(x, y - 10f);
+        arrow.lineTo(x - 10f, y - 4f);
+        arrow.close();
         paint.setStyle(Paint.Style.FILL);
-        boolean night = isNightMap();
-        paint.setColor(night ? Color.argb(210, 5, 10, 22) : Color.argb(188, 15, 23, 42));
-        canvas.drawRoundRect(left, top, left + 340, top + 64, 12, 12, paint);
+        paint.setColor(Color.rgb(2, 132, 199));
+        canvas.drawPath(arrow, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2f);
         paint.setColor(Color.WHITE);
-        paint.setTextSize(21f);
-        paint.setFakeBoldText(true);
-        canvas.drawText(night ? "Fiber night map" : "Fiber live map", left + 16, top + 25, paint);
-        paint.setFakeBoldText(false);
+        canvas.drawPath(arrow, paint);
+        canvas.restore();
+    }
+
+    private void drawCompass(Canvas canvas) {
+        int top = visibleArea.isEmpty() ? 18 : Math.max(18, visibleArea.top + 12);
+        int right = visibleArea.isEmpty() ? surfaceWidth - 16 : Math.min(surfaceWidth - 16, visibleArea.right - 12);
+        float cx = right - 34f;
+        float cy = top + 34f;
+        double bearing = activeMapBearing();
+        double radians = Math.toRadians(bearing);
+        float northX = (float) (-Math.sin(radians) * 18.0);
+        float northY = (float) (-Math.cos(radians) * 18.0);
+
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.argb(188, 15, 23, 42));
+        canvas.drawCircle(cx, cy, 28f, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2f);
+        paint.setColor(Color.argb(215, 255, 255, 255));
+        canvas.drawCircle(cx, cy, 28f, paint);
+        paint.setStrokeWidth(4f);
+        paint.setColor(Color.WHITE);
+        canvas.drawLine(cx, cy, cx + northX, cy + northY, paint);
+        paint.setStyle(Paint.Style.FILL);
         paint.setTextSize(15f);
-        canvas.drawText(statusLine(), left + 16, top + 50, paint);
+        paint.setFakeBoldText(true);
+        canvas.drawText("N", cx + northX - 5f, cy + northY - 5f, paint);
+        paint.setFakeBoldText(false);
+    }
+
+    private void drawFeatureLabel(Canvas canvas, String text, float x, float y, VetroStyle style) {
+        if (text == null || text.isEmpty()) return;
+        paint.setPathEffect(null);
+        paint.setTextSize(11f);
+        paint.setFakeBoldText(true);
+        float maxWidth = Math.max(90f, Math.min(190f, surfaceWidth * 0.3f));
+        String label = ellipsize(text, maxWidth - 14f, paint);
+        float width = paint.measureText(label) + 10f;
+        float height = 17f;
+        float left = x + Math.max(10f, style.size + 6f);
+        float top = y - height / 2f;
+        if (left + width > surfaceWidth - 10f) left = x - width - Math.max(10f, style.size + 6f);
+        if (top < 8f) top = 8f;
+        if (top + height > surfaceHeight - 8f) top = surfaceHeight - height - 8f;
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.argb(204, 2, 6, 23));
+        canvas.drawRoundRect(left, top, left + width, top + height, 5f, 5f, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(1.5f);
+        paint.setColor(Color.argb(204, 250, 204, 21));
+        canvas.drawRoundRect(left, top, left + width, top + height, 5f, 5f, paint);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.WHITE);
+        canvas.drawText(label, left + 5f, top + 12.5f, paint);
+        paint.setFakeBoldText(false);
+    }
+
+    private void drawSelectedFeatureInfo(Canvas canvas) {
+        MapFeature feature = selectedFeature;
+        if (feature == null) return;
+        int left = visibleArea.isEmpty() ? 16 : Math.max(16, visibleArea.left + 12);
+        int bottom = visibleArea.isEmpty() ? surfaceHeight - 18 : Math.min(surfaceHeight - 18, visibleArea.bottom - 12);
+        int width = Math.min(Math.max(360, surfaceWidth / 2), Math.max(260, surfaceWidth - left - 24));
+        int rowHeight = 20;
+        List<String[]> rows = featureInfoRows(feature);
+        int maxRows = Math.max(4, Math.min(10, (bottom - 118) / rowHeight));
+        int shown = Math.min(rows.size(), maxRows);
+        int height = 48 + shown * rowHeight + (rows.size() > shown ? 20 : 0);
+        int top = Math.max(92, bottom - height);
+
+        paint.setPathEffect(null);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.argb(220, 248, 250, 252));
+        canvas.drawRoundRect(left, top, left + width, top + height, 12f, 12f, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2f);
+        paint.setColor(Color.rgb(250, 204, 21));
+        canvas.drawRoundRect(left, top, left + width, top + height, 12f, 12f, paint);
+
+        paint.setStyle(Paint.Style.FILL);
+        paint.setFakeBoldText(true);
+        paint.setTextSize(18f);
+        paint.setColor(Color.rgb(15, 23, 42));
+        canvas.drawText(ellipsize(featureTitle(feature), width - 28f, paint), left + 14f, top + 24f, paint);
+        paint.setFakeBoldText(false);
+        paint.setTextSize(14f);
+        paint.setColor(Color.rgb(71, 85, 105));
+        canvas.drawText("Tap empty map to clear", left + 14f, top + 43f, paint);
+
+        int y = top + 66;
+        for (int i = 0; i < shown; i++) {
+            String[] row = rows.get(i);
+            paint.setFakeBoldText(true);
+            paint.setTextSize(14f);
+            paint.setColor(Color.rgb(15, 23, 42));
+            String key = ellipsize(row[0] + ":", 118f, paint);
+            canvas.drawText(key, left + 14f, y, paint);
+            paint.setFakeBoldText(false);
+            paint.setColor(Color.rgb(30, 41, 59));
+            canvas.drawText(ellipsize(row[1], width - 148f, paint), left + 132f, y, paint);
+            y += rowHeight;
+        }
+        if (rows.size() > shown) {
+            paint.setColor(Color.rgb(146, 64, 14));
+            canvas.drawText("+" + (rows.size() - shown) + " more fields in the phone/web detail view", left + 14f, y, paint);
+        }
     }
 
     private void drawPath(Canvas canvas, List<double[]> coordinates, boolean fill) {
@@ -678,7 +869,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         Path path = new Path();
         float[] first = project(coordinates.get(0)[0], coordinates.get(0)[1]);
         path.moveTo(first[0], first[1]);
-        int targetPoints = zoom >= 17 ? 180 : (zoom >= 14 ? 110 : 70);
+        int targetPoints = zoom >= 18 ? 180 : (zoom >= 15 ? 110 : (zoom >= 12 ? 56 : 32));
         int stride = Math.max(1, coordinates.size() / targetPoints);
         for (int i = stride; i < coordinates.size(); i += stride) {
             float[] p = project(coordinates.get(i)[0], coordinates.get(i)[1]);
@@ -859,6 +1050,10 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     }
 
     private void centerOnTicket(Ticket ticket) {
+        centerOnTicket(ticket, true);
+    }
+
+    private void centerOnTicket(Ticket ticket, boolean updateTemplate) {
         followLocation = false;
         List<List<double[]>> rings = ticketPolygon(ticket);
         if (!rings.isEmpty()) {
@@ -869,35 +1064,153 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
             zoom = Math.max(18.0, zoom);
         }
         drawMap();
-        invalidate();
+        if (updateTemplate) invalidate();
     }
 
     private void zoomBy(double delta) {
-        zoom = clamp(zoom + delta, MIN_ZOOM, MAX_ZOOM);
-        drawMap();
-        invalidate();
+        zoomAt(surfaceWidth / 2f, surfaceHeight / 2f, delta);
+    }
+
+    private void navigateToTicket(Ticket ticket) {
+        if (ticket == null) return;
+        try {
+            getCarContext().startCarApp(new Intent(CarContext.ACTION_NAVIGATE, ticket.navigationUri()));
+        } catch (Exception ex) {
+            CarToast.makeText(getCarContext(), "Navigation is unavailable", CarToast.LENGTH_LONG).show();
+        }
+    }
+
+    private void saveSelectedTicketAction(String actionKey) {
+        Ticket ticket = selectedTicket;
+        DashboardSnapshot snapshot = currentSnapshot;
+        if (ticket == null || snapshot == null) return;
+        CarToast.makeText(getCarContext(), "Saving " + ticket.title(), CarToast.LENGTH_SHORT).show();
+        executor.execute(() -> {
+            try {
+                new TicketRepository(getCarContext()).saveTicketActions(snapshot, ticket.ticketNumber, Collections.singletonList(actionKey));
+                main.post(() -> {
+                    CarToast.makeText(getCarContext(), "Ticket updated", CarToast.LENGTH_SHORT).show();
+                    reload();
+                });
+            } catch (Exception ex) {
+                main.post(() -> CarToast.makeText(getCarContext(), "Unable to save ticket", CarToast.LENGTH_LONG).show());
+            }
+        });
     }
 
     private void panBy(float distanceX, float distanceY) {
+        double bearing = activeMapBearing();
         followLocation = false;
         double scale = Math.pow(2.0, zoom) * 256.0;
-        double centerX = lonToWorld(centerLon, scale) + distanceX;
-        double centerY = latToWorld(centerLat, scale) + distanceY;
+        double radians = Math.toRadians(bearing);
+        double cos = Math.cos(radians);
+        double sin = Math.sin(radians);
+        double worldDeltaX = distanceX * cos - distanceY * sin;
+        double worldDeltaY = distanceX * sin + distanceY * cos;
+        double centerX = lonToWorld(centerLon, scale) + worldDeltaX;
+        double centerY = latToWorld(centerLat, scale) + worldDeltaY;
         centerLon = worldToLon(centerX, scale);
         centerLat = worldToLat(centerY, scale);
         drawMap();
         invalidate();
     }
 
+    private void zoomAt(float focusX, float focusY, double delta) {
+        if (surfaceWidth <= 0 || surfaceHeight <= 0 || delta == 0.0) return;
+        double nextZoom = clamp(zoom + delta, MIN_ZOOM, MAX_ZOOM);
+        if (nextZoom == zoom) return;
+
+        double bearing = activeMapBearing();
+        double oldScale = Math.pow(2.0, zoom) * 256.0;
+        double[] oldDelta = screenDeltaToWorldDelta(focusX - surfaceWidth / 2.0, focusY - surfaceHeight / 2.0, bearing);
+        double focusWorldX = lonToWorld(centerLon, oldScale) + oldDelta[0];
+        double focusWorldY = latToWorld(centerLat, oldScale) + oldDelta[1];
+        double focusLon = worldToLon(focusWorldX, oldScale);
+        double focusLat = worldToLat(focusWorldY, oldScale);
+
+        zoom = nextZoom;
+        double newScale = Math.pow(2.0, zoom) * 256.0;
+        double[] newDelta = screenDeltaToWorldDelta(focusX - surfaceWidth / 2.0, focusY - surfaceHeight / 2.0, bearing);
+        centerLon = worldToLon(lonToWorld(focusLon, newScale) - newDelta[0], newScale);
+        centerLat = worldToLat(latToWorld(focusLat, newScale) - newDelta[1], newScale);
+        drawMap();
+        invalidate();
+    }
+
+    private double[] screenDeltaToWorldDelta(double screenDx, double screenDy, double bearing) {
+        if (bearing == 0.0) return new double[] { screenDx, screenDy };
+        double radians = Math.toRadians(bearing);
+        double cos = Math.cos(radians);
+        double sin = Math.sin(radians);
+        return new double[] {
+            screenDx * cos - screenDy * sin,
+            screenDx * sin + screenDy * cos
+        };
+    }
+
+    private boolean isDoubleTap(long now, float x, float y) {
+        if (lastTapMs <= 0L || now - lastTapMs > DOUBLE_TAP_TIMEOUT_MS) return false;
+        if (Float.isNaN(lastTapX) || Float.isNaN(lastTapY)) return false;
+        float dx = x - lastTapX;
+        float dy = y - lastTapY;
+        return dx * dx + dy * dy <= DOUBLE_TAP_SLOP_PX * DOUBLE_TAP_SLOP_PX;
+    }
+
+    private void clearLastTap() {
+        lastTapMs = 0L;
+        lastTapX = Float.NaN;
+        lastTapY = Float.NaN;
+    }
+
     private void followCurrentLocation() {
         followLocation = true;
+        headingUp = true;
+        if (currentLocation != null) updateMapBearing(currentLocation);
         if (currentLocation != null) {
             centerLat = currentLocation.getLatitude();
             centerLon = currentLocation.getLongitude();
-            if (zoom < FOLLOW_ZOOM) zoom = FOLLOW_ZOOM;
+            zoom = targetFollowZoom(currentLocation);
         }
         invalidate();
         drawMap();
+    }
+
+    private void toggleHeadingMode() {
+        headingUp = !headingUp;
+        if (headingUp) {
+            followLocation = true;
+            if (currentLocation != null) {
+                updateMapBearing(currentLocation);
+                centerLat = currentLocation.getLatitude();
+                centerLon = currentLocation.getLongitude();
+                zoom = targetFollowZoom(currentLocation);
+            }
+        } else {
+            mapBearing = 0.0;
+            mapBearingReady = false;
+        }
+        invalidate();
+        drawMap();
+    }
+
+    private void openTickets() {
+        if (rootScreen) {
+            getScreenManager().push(new TicketListScreen(getCarContext()));
+        } else {
+            finish();
+        }
+    }
+
+    private Ticket ticketByNumber(String ticketNumber) {
+        if (ticketNumber == null || ticketNumber.trim().isEmpty()) return null;
+        for (Ticket ticket : tickets) {
+            if (ticket.ticketNumber.equals(ticketNumber)) return ticket;
+        }
+        return null;
+    }
+
+    private boolean isSelectedTicket(Ticket ticket) {
+        return ticket != null && selectedTicket != null && ticket.ticketNumber.equals(selectedTicket.ticketNumber);
     }
 
     private Ticket nearestTicket(float x, float y) {
@@ -914,7 +1227,195 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
                 nearest = ticket;
             }
         }
+        if (nearest != null) return nearest;
+        for (Ticket ticket : tickets) {
+            if (screenPointInTicket(ticket, x, y)) return ticket;
+        }
         return nearest;
+    }
+
+    private MapFeature nearestVetroFeature(float x, float y) {
+        MapFeature nearest = null;
+        double best = 34 * 34;
+        for (MapFeature feature : vetroFeatures) {
+            if (!shouldDrawVetroFeature(feature)) continue;
+            VetroStyle style = vetroStyle(feature);
+            double threshold = Math.max(18.0, style.size + 12.0);
+            double thresholdSquared = threshold * threshold;
+            for (List<double[]> path : feature.paths) {
+                if (path == null || path.isEmpty() || !pathVisible(path, 128f)) continue;
+                double dist;
+                if (feature.isPoint() || path.size() == 1) {
+                    float[] p = project(path.get(0)[0], path.get(0)[1]);
+                    double dx = x - p[0];
+                    double dy = y - p[1];
+                    dist = dx * dx + dy * dy;
+                } else {
+                    if (screenPointInPath(path, x, y)) return feature;
+                    dist = screenDistanceToPath(path, x, y);
+                }
+                if (dist <= thresholdSquared && dist < best) {
+                    best = dist;
+                    nearest = feature;
+                }
+            }
+        }
+        return nearest;
+    }
+
+    private String featureToast(MapFeature feature) {
+        String label = featureTitle(feature);
+        String layer = feature.layerId.isEmpty() ? "VETRO" : "Layer " + feature.layerId;
+        if (label.isEmpty()) return layer;
+        return layer + ": " + label;
+    }
+
+    private String featureTitle(MapFeature feature) {
+        if (feature == null) return "";
+        return first(
+            featureAddressLabel(feature),
+            feature.label,
+            prop(feature, "ID", "feature_id", "Name", "name", "label", "vetro_id", "vitruvi_id"),
+            feature.layerId.isEmpty() ? feature.kind : "Layer " + feature.layerId
+        );
+    }
+
+    private String featureAddressLabel(MapFeature feature) {
+        return prop(
+            feature,
+            "Street Address",
+            "Street_Address",
+            "street_address",
+            "Service Address",
+            "service_address",
+            "Customer Address",
+            "customer_address",
+            "full_address",
+            "Address",
+            "address"
+        );
+    }
+
+    private String prop(MapFeature feature, String... keys) {
+        if (feature == null || feature.properties == null) return "";
+        for (String key : keys) {
+            String value = feature.properties.get(key);
+            if (value != null && !value.trim().isEmpty()) return value.trim();
+        }
+        for (String wanted : keys) {
+            for (Map.Entry<String, String> entry : feature.properties.entrySet()) {
+                if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(wanted) && entry.getValue() != null && !entry.getValue().trim().isEmpty()) {
+                    return entry.getValue().trim();
+                }
+            }
+        }
+        return "";
+    }
+
+    private List<String[]> featureInfoRows(MapFeature feature) {
+        List<String[]> rows = new ArrayList<>();
+        LinkedHashMap<String, String> curated = new LinkedHashMap<>();
+        curated.put("Layer", first(feature.layerId, feature.kind));
+        curated.put("Address", featureAddressLabel(feature));
+        curated.put("Feature ID", prop(feature, "ID", "feature_id", "vetro_id", "vitruvi_id", "id", "uid"));
+        curated.put("Name", prop(feature, "Name", "name", "label"));
+        curated.put("Status", prop(feature, "status_id", "Status", "status"));
+        curated.put("Plan", first(prop(feature, "plan"), prop(feature, "plan_id")));
+        curated.put("Build", prop(feature, "Build", "build"));
+        curated.put("Placement", prop(feature, "Placement", "placement"));
+        curated.put("Note", prop(feature, "Note", "note"));
+        List<String> used = new ArrayList<>();
+        for (Map.Entry<String, String> entry : curated.entrySet()) {
+            if (entry.getValue() == null || entry.getValue().trim().isEmpty()) continue;
+            rows.add(new String[] { entry.getKey(), entry.getValue().trim() });
+        }
+        Collections.addAll(used,
+            "Street Address", "Street_Address", "street_address", "Service Address", "service_address",
+            "Customer Address", "customer_address", "full_address", "Address", "address", "ID", "feature_id",
+            "vetro_id", "vitruvi_id", "id", "uid", "Name", "name", "label", "status_id", "Status", "status",
+            "plan", "plan_id", "Build", "build", "Placement", "placement", "Note", "note"
+        );
+        for (Map.Entry<String, String> entry : feature.properties.entrySet()) {
+            String key = entry.getKey() == null ? "" : entry.getKey().trim();
+            String value = entry.getValue() == null ? "" : entry.getValue().trim();
+            if (key.isEmpty() || value.isEmpty()) continue;
+            boolean duplicate = false;
+            for (String usedKey : used) {
+                if (key.equalsIgnoreCase(usedKey)) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) rows.add(new String[] { key, value });
+        }
+        return rows;
+    }
+
+    private String ellipsize(String text, float maxWidth, Paint textPaint) {
+        if (text == null) return "";
+        String clean = text.trim();
+        if (clean.isEmpty() || textPaint.measureText(clean) <= maxWidth) return clean;
+        String suffix = "...";
+        while (clean.length() > 1 && textPaint.measureText(clean + suffix) > maxWidth) {
+            clean = clean.substring(0, clean.length() - 1);
+        }
+        return clean + suffix;
+    }
+
+    private boolean screenPointInPath(List<double[]> path, float x, float y) {
+        if (path.size() < 3) return false;
+        boolean inside = false;
+        for (int i = 0, j = path.size() - 1; i < path.size(); j = i++) {
+            float[] pi = project(path.get(i)[0], path.get(i)[1]);
+            float[] pj = project(path.get(j)[0], path.get(j)[1]);
+            if (((pi[1] > y) != (pj[1] > y)) && (x < (pj[0] - pi[0]) * (y - pi[1]) / ((pj[1] - pi[1]) == 0 ? 0.0001f : (pj[1] - pi[1])) + pi[0])) {
+                inside = !inside;
+            }
+        }
+        return inside;
+    }
+
+    private double screenDistanceToPath(List<double[]> path, float x, float y) {
+        double best = Double.MAX_VALUE;
+        for (int index = 1; index < path.size(); index++) {
+            float[] a = project(path.get(index - 1)[0], path.get(index - 1)[1]);
+            float[] b = project(path.get(index)[0], path.get(index)[1]);
+            best = Math.min(best, distanceToSegmentSquared(x, y, a[0], a[1], b[0], b[1]));
+        }
+        return best;
+    }
+
+    private double distanceToSegmentSquared(float px, float py, float ax, float ay, float bx, float by) {
+        double dx = bx - ax;
+        double dy = by - ay;
+        if (dx == 0 && dy == 0) {
+            double x = px - ax;
+            double y = py - ay;
+            return x * x + y * y;
+        }
+        double t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+        t = Math.max(0, Math.min(1, t));
+        double cx = ax + t * dx;
+        double cy = ay + t * dy;
+        double x = px - cx;
+        double y = py - cy;
+        return x * x + y * y;
+    }
+
+    private boolean screenPointInTicket(Ticket ticket, float x, float y) {
+        for (List<double[]> ring : ticketPolygon(ticket)) {
+            if (ring.size() < 3 || !pathVisible(ring, 80f)) continue;
+            boolean inside = false;
+            for (int i = 0, j = ring.size() - 1; i < ring.size(); j = i++) {
+                float[] pi = project(ring.get(i)[0], ring.get(i)[1]);
+                float[] pj = project(ring.get(j)[0], ring.get(j)[1]);
+                if (((pi[1] > y) != (pj[1] > y)) && (x < (pj[0] - pi[0]) * (y - pi[1]) / ((pj[1] - pi[1]) == 0 ? 0.0001f : (pj[1] - pi[1])) + pi[0])) {
+                    inside = !inside;
+                }
+            }
+            if (inside) return true;
+        }
+        return false;
     }
 
     private boolean pointVisible(float x, float y, float margin) {
@@ -958,9 +1459,69 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
 
     private float[] project(double lat, double lon) {
         double scale = Math.pow(2.0, zoom) * 256.0;
-        double x = lonToWorld(lon, scale) - lonToWorld(centerLon, scale) + surfaceWidth / 2.0;
-        double y = latToWorld(lat, scale) - latToWorld(centerLat, scale) + surfaceHeight / 2.0;
+        double dx = lonToWorld(lon, scale) - lonToWorld(centerLon, scale);
+        double dy = latToWorld(lat, scale) - latToWorld(centerLat, scale);
+        double bearing = activeMapBearing();
+        if (bearing != 0.0) {
+            double radians = Math.toRadians(bearing);
+            double cos = Math.cos(radians);
+            double sin = Math.sin(radians);
+            double rotatedX = dx * cos + dy * sin;
+            double rotatedY = -dx * sin + dy * cos;
+            dx = rotatedX;
+            dy = rotatedY;
+        }
+        double x = dx + surfaceWidth / 2.0;
+        double y = dy + surfaceHeight / 2.0;
         return new float[] { (float) x, (float) y };
+    }
+
+    private void updateMapBearing(Location location) {
+        if (!headingUp || !followLocation || !hasUsableBearing(location)) return;
+        double target = normalizeBearing(location.getBearing());
+        if (!mapBearingReady) {
+            mapBearing = target;
+            mapBearingReady = true;
+            return;
+        }
+        double delta = shortestBearingDelta(mapBearing, target);
+        if (Math.abs(delta) < HEADING_UP_MIN_BEARING_DELTA_DEGREES) return;
+        mapBearing = normalizeBearing(mapBearing + delta * HEADING_UP_SMOOTHING);
+    }
+
+    private boolean hasUsableBearing(Location location) {
+        return location != null
+            && location.hasBearing()
+            && location.hasSpeed()
+            && location.getSpeed() >= HEADING_UP_MIN_SPEED_MPS;
+    }
+
+    private double targetFollowZoom(Location location) {
+        if (location == null || !location.hasSpeed()) return FOLLOW_ZOOM;
+        float speed = location.getSpeed();
+        if (speed >= 17.0f) return FOLLOW_FAST_ZOOM;
+        if (speed >= 8.0f) return FOLLOW_CITY_ZOOM;
+        return FOLLOW_ZOOM;
+    }
+
+    private double activeMapBearing() {
+        if (!followLocation || !headingUp) return 0.0;
+        if (!hasUsableBearing(currentLocation) || !mapBearingReady) return 0.0;
+        return normalizeBearing(mapBearing);
+    }
+
+    private static double normalizeBearing(double bearing) {
+        double normalized = bearing % 360.0;
+        return normalized < 0.0 ? normalized + 360.0 : normalized;
+    }
+
+    private static double shortestBearingDelta(double from, double to) {
+        double delta = normalizeBearing(to - from);
+        return delta > 180.0 ? delta - 360.0 : delta;
+    }
+
+    private double metersPerPixel(double latitude) {
+        return 156543.03392 * Math.cos(Math.toRadians(latitude)) / Math.pow(2.0, zoom);
     }
 
     private static double lonToWorld(double lon, double scale) {
@@ -1005,13 +1566,18 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     }
 
     private static String mapboxStyleId(String style) {
+        if ("mapbox-standard".equals(style)) return "standard";
+        if ("mapbox-standard-satellite".equals(style)) return "standard-satellite";
         if ("mapbox-outdoors".equals(style)) return "outdoors-v12";
         if ("mapbox-light".equals(style)) return "light-v11";
         if ("mapbox-dark".equals(style)) return "dark-v11";
         if ("mapbox-satellite".equals(style)) return "satellite-v9";
+        if ("mapbox-satellite-traffic".equals(style)) return "satellite-streets-v12";
         if ("mapbox-satellite-streets".equals(style)) return "satellite-streets-v12";
         if ("mapbox-navigation-day".equals(style)) return "navigation-day-v1";
         if ("mapbox-navigation-night".equals(style)) return "navigation-night-v1";
+        if ("mapbox-traffic-day".equals(style)) return "traffic-day-v2";
+        if ("mapbox-traffic-night".equals(style)) return "traffic-night-v2";
         return "streets-v12";
     }
 

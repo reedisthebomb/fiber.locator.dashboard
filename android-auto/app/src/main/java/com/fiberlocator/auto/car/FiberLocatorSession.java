@@ -10,6 +10,6 @@ public class FiberLocatorSession extends Session {
     @NonNull
     @Override
     public Screen onCreateScreen(@NonNull Intent intent) {
-        return new TicketListScreen(getCarContext());
+        return new CarLiveMapScreen(getCarContext(), null, true);
     }
 }

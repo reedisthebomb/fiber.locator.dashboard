@@ -27,8 +27,8 @@ cd /home/linux/fiber.locator.dashboard/android-auto
 - Google Play developer account exists.
 - Fiber Locator app exists in Play Console and is in Internal testing/review.
 - Latest local package name: `com.fiberlocator.auto`.
-- Latest local release: `versionCode 48`, `versionName 0.1.47`.
+- Latest local release: `versionCode 82`, `versionName 0.1.81`.
 - Current AAB for upload: `/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab`
-- Current AAB SHA256: `24c691d0cbcae814f42d712e1b9ec9dd484fc65c83269d680aa3a0254ace4c26`
+- Current AAB SHA256: `707ce672c6369cc3177b1f88567cdbe24246dcd772c745b8a2ff41da90f6dc62`
 - Android Auto is included in the same AAB, not a separate app.
 - Current target behavior for Android Auto: merged regular/TCW Tickets tab with TCW/DMI badging, ticket details, Dashboard Map fit-to-ticket polygon, Google Maps navigation, tile-backed live map, VETRO app-view styling, near-transparent ticket polygons, larger layer 28/42 points, smoother throttled map drawing, and high-accuracy fused location follow mode.
