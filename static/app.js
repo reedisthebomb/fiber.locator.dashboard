@@ -38,8 +38,11 @@ let inHouseRequests = [];
 let selectedInHouseRequestId = "";
 let inHouseMap = null;
 let inHouseBaseTileLayer = null;
+let inHouseBaseLayerPromise = null;
+let inHouseBaseLayerStyleKey = "";
 let inHouseMapMarker = null;
 let inHouseMapVetroLayer = null;
+let inHouseMapRenderScheduled = false;
 let inHouseMapSearchTimer = null;
 let inHouseMapSearchToken = 0;
 let inHouseLookupTimer = null;
@@ -5146,7 +5149,7 @@ async function setMapTileStyle(style, save = true) {
   }
   scheduleMapDataOverlayRefresh();
   syncDashboardSatelliteToggle();
-  void renderInHouseBaseLayer();
+  scheduleInHouseMapRender();
   if (save) scheduleDashboardStateSave();
 }
 
@@ -6814,6 +6817,11 @@ async function ensureVetroLoaded() {
   })();
   try {
     await vetroLoadPromise;
+  } catch (error) {
+    vetroGeojson = { type: "FeatureCollection", features: [] };
+    vetroLoaded = true;
+    if (elements.vetroStatus) elements.vetroStatus.textContent = "Unavailable";
+    throw error;
   } finally {
     vetroLoadPromise = null;
   }
@@ -8452,7 +8460,7 @@ function ensureInHouseMap() {
   if (!elements.inHouseMap || inHouseMap || typeof L === "undefined") return;
   inHouseMap = L.map(elements.inHouseMap, { zoomControl: true }).setView([33.21, -92.66], 12);
   ensureSelectableMapFeaturesPane(inHouseMap);
-  void renderInHouseBaseLayer();
+  scheduleInHouseMapRender();
   inHouseMap.on("click", (event) => {
     setInHouseMapPoint(event.latlng.lat, event.latlng.lng, "Map point selected", { pan: false });
   });
@@ -8460,9 +8468,16 @@ function ensureInHouseMap() {
 
 async function renderInHouseBaseLayer() {
   if (!inHouseMap) return;
+  const tile = MAP_TILE_STYLES[mapStyle] || MAP_TILE_STYLES["locator-dark-detail"] || MAP_TILE_STYLES.standard;
+  const styleKey = `${mapStyle}|${mapOpacity}|${tile.provider || ""}|${tile.url || tile.styleUrl || ""}`;
+  if (inHouseBaseTileLayer && inHouseBaseLayerStyleKey === styleKey) return;
+  if (inHouseBaseLayerPromise) {
+    await inHouseBaseLayerPromise;
+    if (inHouseBaseTileLayer && inHouseBaseLayerStyleKey === styleKey) return;
+  }
+  inHouseBaseLayerPromise = (async () => {
   const priorLayer = inHouseBaseTileLayer;
   let nextLayer = null;
-  const tile = MAP_TILE_STYLES[mapStyle] || MAP_TILE_STYLES["locator-dark-detail"] || MAP_TILE_STYLES.standard;
   try {
     if (tile.provider === "maplibre") {
       nextLayer = await maplibreTileLayer(tile);
@@ -8496,8 +8511,15 @@ async function renderInHouseBaseLayer() {
   }
   if (priorLayer && inHouseMap.hasLayer(priorLayer)) inHouseMap.removeLayer(priorLayer);
   inHouseBaseTileLayer = nextLayer.addTo(inHouseMap);
+  inHouseBaseLayerStyleKey = styleKey;
   bringBaseLayerToBack(inHouseBaseTileLayer);
   renderInHouseVetroLayer();
+  })();
+  try {
+    await inHouseBaseLayerPromise;
+  } finally {
+    inHouseBaseLayerPromise = null;
+  }
 }
 
 function renderInHouseVetroLayer() {
@@ -8556,6 +8578,28 @@ function syncInHouseMapFromCoordinates() {
   if (!coordinates) return false;
   setInHouseMapPoint(coordinates.latitude, coordinates.longitude, "Coordinates selected");
   return true;
+}
+
+function scheduleInHouseMapRender() {
+  if (inHouseMapRenderScheduled) return;
+  inHouseMapRenderScheduled = true;
+  requestAnimationFrame(() => {
+    inHouseMapRenderScheduled = false;
+    if (currentView !== "in-house-requests") return;
+    ensureInHouseMap();
+    void renderInHouseBaseLayer().then(() => {
+      if (currentView !== "in-house-requests") return;
+      if (!vetroGeojson) {
+        void ensureVetroLoaded().then(() => {
+          if (currentView === "in-house-requests") renderInHouseVetroLayer();
+        }).catch((error) => console.warn(error));
+      } else {
+        renderInHouseVetroLayer();
+      }
+      if (inHouseMap) inHouseMap.invalidateSize();
+      if (!inHouseMapMarker) syncInHouseMapFromCoordinates();
+    }).catch((error) => console.warn("In-house map render failed", error));
+  });
 }
 
 function inHouseLookupText() {
@@ -8829,19 +8873,7 @@ function renderInHouseRequestsView() {
       }
     });
   }
-  requestAnimationFrame(() => {
-    ensureInHouseMap();
-    void renderInHouseBaseLayer();
-    if (!vetroGeojson) {
-      void ensureVetroLoaded().then(() => {
-        if (currentView === "in-house-requests") renderInHouseVetroLayer();
-      }).catch((error) => console.warn(error));
-    } else {
-      renderInHouseVetroLayer();
-    }
-    if (inHouseMap) inHouseMap.invalidateSize();
-    if (!inHouseMapMarker) syncInHouseMapFromCoordinates();
-  });
+  scheduleInHouseMapRender();
 }
 
 function bindSheetFilterControls() {
