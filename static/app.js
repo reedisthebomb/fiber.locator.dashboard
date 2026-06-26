@@ -1831,7 +1831,18 @@ function scheduleDashboardStateSave() {
   dashboardStateSaveTimer = window.setTimeout(() => {
     dashboardStateSaveTimer = null;
     void saveDashboardState();
-  }, 400);
+  }, 900);
+}
+
+function debounceUiWork(callback, delay = 140) {
+  let timer = null;
+  return (...args) => {
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      timer = null;
+      callback(...args);
+    }, delay);
+  };
 }
 
 async function saveDashboardState(stateOverride = null, { force = false } = {}) {
@@ -11235,24 +11246,24 @@ async function loadVetroControls() {
   }
 }
 
-elements.search.addEventListener("input", () => {
+elements.search.addEventListener("input", debounceUiWork(() => {
   updateTicketSearch(elements.search.value);
-});
+}));
 if (elements.ticketQuickSearch) {
-  elements.ticketQuickSearch.addEventListener("input", () => {
+  elements.ticketQuickSearch.addEventListener("input", debounceUiWork(() => {
     updateTicketSearch(elements.ticketQuickSearch.value);
-  });
+  }));
 }
 if (elements.sheetSearch) {
-  elements.sheetSearch.addEventListener("input", () => {
+  elements.sheetSearch.addEventListener("input", debounceUiWork(() => {
     updateTicketSearch(elements.sheetSearch.value, { renderSheet: true });
-  });
+  }));
 }
 if (elements.liveTicketsSearch) {
-  elements.liveTicketsSearch.addEventListener("input", () => {
+  elements.liveTicketsSearch.addEventListener("input", debounceUiWork(() => {
     updateTicketSearch(elements.liveTicketsSearch.value);
     renderLiveTicketsView();
-  });
+  }));
 }
 elements.undoAction.addEventListener("click", undoLastChange);
 elements.redoAction.addEventListener("click", redoLastChange);
@@ -11475,9 +11486,9 @@ if (elements.exportSheetPdf) elements.exportSheetPdf.addEventListener("click", e
 if (elements.exportSheetExcel) elements.exportSheetExcel.addEventListener("click", exportSheetExcel);
 if (elements.exportSheetCsv) elements.exportSheetCsv.addEventListener("click", exportSheetCsv);
 if (elements.mobileSearch) {
-  elements.mobileSearch.addEventListener("input", () => {
+  elements.mobileSearch.addEventListener("input", debounceUiWork(() => {
     updateTicketSearch(elements.mobileSearch.value);
-  });
+  }));
 }
 if (elements.mobilePanelTabs) {
   for (const button of elements.mobilePanelTabs.querySelectorAll("[data-mobile-panel]")) {
@@ -11952,13 +11963,13 @@ elements.vetroLayerClear.addEventListener("click", () => {
     setFilterChecked(container, false);
   });
 });
-elements.vetroSearch.addEventListener("input", () => {
+elements.vetroSearch.addEventListener("input", debounceUiWork(() => {
   if (!canEditVetroAppearance()) return;
   rememberUndoState();
   syncVetroFacetSelection();
   renderVetroLayer();
   scheduleEmployeeDashboardSync();
-});
+}, 180));
 if (elements.vetroSlToggle) {
 	  elements.vetroSlToggle.addEventListener("change", () => {
     if (!canEditVetroAppearance()) return;
@@ -12175,14 +12186,14 @@ if (elements.vitruviLayerClear) {
   });
 }
 if (elements.vitruviSearch) {
-  elements.vitruviSearch.addEventListener("input", () => {
+  elements.vitruviSearch.addEventListener("input", debounceUiWork(() => {
     if (!isSiteOwner()) return;
     rememberUndoState();
     vitruviSearch = elements.vitruviSearch.value.trim();
     localStorage.setItem(STORAGE_KEYS.vitruviSearch, vitruviSearch);
     renderVitruviLayer();
     scheduleDashboardStateSave();
-  });
+  }, 180));
 }
 if (elements.vitruviOpacity) {
   elements.vitruviOpacity.addEventListener("input", () => {

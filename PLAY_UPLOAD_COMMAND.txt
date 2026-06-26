@@ -4,19 +4,19 @@ Fiber Locator Google Play Upload
 Yes, you need to update the native app in Google Play.
 
 New app version:
-versionCode 82
-versionName 0.1.81
+versionCode 83
+versionName 0.1.82
 
 Run this on the DMI tablet in PowerShell:
 
-scp linux@192.168.50.220:/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab "$env:USERPROFILE\Downloads\fiber-locator-0.1.81.aab"
+scp linux@192.168.50.220:/home/linux/fiber.locator.dashboard/android-auto/app/build/outputs/bundle/release/app-release.aab "$env:USERPROFILE\Downloads\fiber-locator-0.1.82.aab"
 
 Then upload this file to Google Play Console:
 
-Downloads\fiber-locator-0.1.81.aab
+Downloads\fiber-locator-0.1.82.aab
 
 SHA256:
-707ce672c6369cc3177b1f88567cdbe24246dcd772c745b8a2ff41da90f6dc62
+a1dfc587d4cdb8b40b8664ff150917483c30a64365b191f9219cc92909565917
 
 Note:
-Android Auto live map is back to a clean 2D heading-up renderer. The fake tilt/perspective stretch is removed, stale headings fall back to north-up when stopped, duplicate map status text is removed, and Mapbox basemap tiles use sharper 512px style tiles while layers/tickets stay accurately aligned.
+Android Auto live map keeps the clean 2D heading-up renderer, adds a safe Day/Night overlay toggle, starts closer to max zoom, preserves manual zoom, and smooths follow movement. The native phone app now uses a foreground ticket-completion service for attachment uploads, preserves multi-photo selection before submit, and sorts tickets by priority and due date.

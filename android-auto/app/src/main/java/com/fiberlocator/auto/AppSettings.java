@@ -110,6 +110,14 @@ public final class AppSettings {
         return value(context, "map_mode");
     }
 
+    public static boolean carNightMode(Context context) {
+        return prefs(context).getBoolean("car_night_mode", false);
+    }
+
+    public static void saveCarNightMode(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean("car_night_mode", enabled).apply();
+    }
+
     public static void save(Context context, String dashboardUrl, String username, String password, String authCookie) {
         save(context, dashboardUrl, username, password, authCookie, true);
     }

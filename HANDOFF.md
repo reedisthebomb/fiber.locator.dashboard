@@ -2,6 +2,15 @@
 
 Updated: 2026-06-25
 
+## Android Uploads, Map Controls, Sorting, And Dashboard Responsiveness - 2026-06-26
+
+- Native Android app now starts ticket completion/attachment uploads through `TicketCompletionService`, a foreground data-sync service with completion/failure notifications, so uploads continue after leaving the completion screen. The completion form now says `Select photos/videos`, preserves selected URI permissions, deduplicates selected media, and does not start upload until `Submit ticket`.
+- Android ticket ordering now uses shared `TicketSort.DASHBOARD`: emergency/damage/priority/remark items first, then closest due date/time, then priority, ticket number, and prepared timestamp as stable tie breakers. `TicketRepository.loadSnapshot()` and the phone `visibleTickets()` path both apply it.
+- Android Auto live map remains clean 2D with Mapbox tile routing intact. Added persisted Day/Night overlay toggle without switching tile URLs, closer default follow zoom, manual zoom lock after pinch/double-tap, gentler center/bearing smoothing, and auto zoom-out only around 50 mph or faster.
+- Dashboard JS responsiveness pass: dashboard state saves now coalesce for 900 ms, and heavy ticket/mobile/live/VETRO/Vitruvi search inputs are debounced before rerendering.
+- Rebuilt native release as `versionCode 83`, `versionName 0.1.82`. Current Play AAB: `android-auto/app/build/outputs/bundle/release/app-release.aab`; SHA256 `a1dfc587d4cdb8b40b8664ff150917483c30a64365b191f9219cc92909565917`. `PLAY_UPLOAD_COMMAND.txt` has the updated DMI tablet copy/upload instructions.
+- Verification passed: `python3 -m py_compile server.py`; `node --check static/app.js`; requested `./gradlew -p android-auto assembleDebug` still cannot run because no wrapper is checked in; equivalent `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle -p android-auto assembleDebug` passed; `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle -p android-auto test assembleRelease bundleRelease` passed; `aapt dump badging` confirmed package `com.fiberlocator.auto`, `versionCode 83`, `versionName 0.1.82`; `apksigner verify --verbose` passed v2 signing.
+
 ## Dashboard Ticket Sorting And Scroll Reachability - 2026-06-26
 
 - Updated the dashboard ticket drawer ordering so newly imported tickets no longer jump to the top just because they are fresh imports. The active left-panel queue now uses due date/day first, then the existing priority signals, due time, ticket number, and created/imported timestamps as stable tie breakers. Emergency and assigned-high/remark tickets still get a top priority folder.

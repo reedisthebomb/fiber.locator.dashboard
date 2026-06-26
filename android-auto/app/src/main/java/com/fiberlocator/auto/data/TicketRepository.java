@@ -127,7 +127,7 @@ public final class TicketRepository {
                 if (ticket.hasCoordinates || !ticket.locationLine().isEmpty()) out.add(ticket);
             }
         }
-        Collections.sort(out, (left, right) -> left.dueLine().compareToIgnoreCase(right.dueLine()));
+        out.sort(TicketSort.DASHBOARD);
         return new DashboardSnapshot(
             out,
             locatorNotes,

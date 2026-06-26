@@ -37,6 +37,7 @@ import androidx.car.app.versioning.CarAppApiLevels;
 import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleEventObserver;
 
+import com.fiberlocator.auto.AppSettings;
 import com.fiberlocator.auto.data.LocatorNote;
 import com.fiberlocator.auto.data.MapFeature;
 import com.fiberlocator.auto.data.Ticket;
@@ -65,15 +66,16 @@ import java.net.URL;
 
 public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private static final int MAX_DRAWN_FEATURES = 25000;
-    private static final int DRAW_THROTTLE_MS = 80;
-    private static final double FOLLOW_ZOOM = 18.0;
-    private static final double FOLLOW_FAST_ZOOM = 16.8;
-    private static final double FOLLOW_CITY_ZOOM = 17.25;
+    private static final int DRAW_THROTTLE_MS = 66;
+    private static final double FOLLOW_ZOOM = 19.0;
+    private static final double FOLLOW_FAST_ZOOM = 18.25;
     private static final double MIN_ZOOM = 8.0;
     private static final double MAX_ZOOM = 20.0;
     private static final float HEADING_UP_MIN_SPEED_MPS = 1.5f;
     private static final float HEADING_UP_MIN_BEARING_DELTA_DEGREES = 3f;
-    private static final float HEADING_UP_SMOOTHING = 0.28f;
+    private static final float HEADING_UP_SMOOTHING = 0.18f;
+    private static final float FOLLOW_CENTER_SMOOTHING = 0.32f;
+    private static final float FAST_ZOOM_OUT_SPEED_MPS = 22.35f;
     private static final long DOUBLE_TAP_TIMEOUT_MS = 360L;
     private static final float DOUBLE_TAP_SLOP_PX = 72f;
 
@@ -114,6 +116,8 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private String error = "";
     private boolean followLocation = true;
     private boolean headingUp = true;
+    private boolean manualZoomOverride = false;
+    private boolean nightMode = false;
     private boolean drawScheduled = false;
     private boolean mapBearingReady = false;
     private long lastDrawMs = 0L;
@@ -147,6 +151,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         super(carContext);
         this.focusTicket = focusTicket;
         this.rootScreen = rootScreen;
+        this.nightMode = AppSettings.carNightMode(carContext);
         carContext.getCarService(AppManager.class).setSurfaceCallback(this);
         getLifecycle().addObserver((LifecycleEventObserver) (source, event) -> {
             if (event == Lifecycle.Event.ON_DESTROY) {
@@ -175,6 +180,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         ActionStrip actions = new ActionStrip.Builder()
             .addAction(new Action.Builder().setTitle("Tickets").setOnClickListener(this::openTickets).build())
             .addAction(new Action.Builder().setTitle(followLocation ? "Following" : "Follow").setOnClickListener(this::followCurrentLocation).build())
+            .addAction(new Action.Builder().setTitle(nightMode ? "Day" : "Night").setOnClickListener(this::toggleDayNightMode).build())
             .addAction(new Action.Builder().setTitle(headingUp ? "North" : "Heading").setOnClickListener(this::toggleHeadingMode).build())
             .build();
         MapController controller = new MapController.Builder()
@@ -359,7 +365,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         if (loading) return "Loading from dashboard";
         String mode = !followLocation ? "Free Pan" : (activeMapBearing() == 0.0 ? "North Up" : "Heading Up");
         String fiber = vetroLoading ? "loading fiber" : String.format(Locale.US, "%d fiber", vetroFeatures.size());
-        return String.format(Locale.US, "%d tickets • %d notes • %s • %s%s", tickets.size(), locatorNotes.size(), fiber, mode, usingCachedData ? " • cached" : "");
+        return String.format(Locale.US, "%d tickets • %d notes • %s • %s • %s%s", tickets.size(), locatorNotes.size(), fiber, mode, nightMode ? "Night" : "Day", usingCachedData ? " • cached" : "");
     }
 
     private void startLocationUpdates() {
@@ -396,14 +402,24 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
 
     private void acceptLocation(Location location, boolean fromLastKnown) {
         if (!shouldAcceptLocation(location, fromLastKnown)) return;
+        Location previous = currentLocation;
         currentLocation = new Location(location);
         if (!fromLastKnown) updateMapBearing(location);
         if (followLocation) {
-            centerLat = location.getLatitude();
-            centerLon = location.getLongitude();
-            double targetZoom = targetFollowZoom(location);
-            if (fromLastKnown || Math.abs(zoom - targetZoom) > 1.4) zoom = targetZoom;
-            else zoom += (targetZoom - zoom) * 0.24;
+            double targetLat = location.getLatitude();
+            double targetLon = location.getLongitude();
+            if (previous == null || fromLastKnown) {
+                centerLat = targetLat;
+                centerLon = targetLon;
+            } else {
+                centerLat += (targetLat - centerLat) * FOLLOW_CENTER_SMOOTHING;
+                centerLon += (targetLon - centerLon) * FOLLOW_CENTER_SMOOTHING;
+            }
+            if (!manualZoomOverride) {
+                double targetZoom = targetFollowZoom(location);
+                if (fromLastKnown || Math.abs(zoom - targetZoom) > 1.4) zoom = targetZoom;
+                else zoom += (targetZoom - zoom) * 0.16;
+            }
         }
         drawMap();
     }
@@ -509,7 +525,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
                 loadingTiles.clear();
             }
         }
-        canvas.drawColor(Color.rgb(235, 242, 248));
+        canvas.drawColor(nightMode ? Color.rgb(18, 24, 34) : Color.rgb(235, 242, 248));
         int tileZ = (int) clamp(Math.round(zoom), 1, 19);
         double tileScale = Math.pow(2.0, zoom - tileZ);
         double worldScale = Math.pow(2.0, zoom) * 256.0;
@@ -552,9 +568,14 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         for (int[] tile : missingTiles) {
             enqueueTileLoad(tile[0], tile[1], tile[2], tileKey(tileStyle, tile[0], tile[1], tile[2]), tileStyle);
         }
+        if (nightMode) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(82, 2, 6, 23));
+            canvas.drawRect(0, 0, surfaceWidth, surfaceHeight, paint);
+        }
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(1f);
-        paint.setColor(Color.argb(90, 205, 216, 226));
+        paint.setColor(nightMode ? Color.argb(70, 148, 163, 184) : Color.argb(90, 205, 216, 226));
         for (int x = 0; x < surfaceWidth; x += Math.max(80, surfaceWidth / 8)) canvas.drawLine(x, 0, x, surfaceHeight, paint);
         for (int y = 0; y < surfaceHeight; y += Math.max(80, surfaceHeight / 6)) canvas.drawLine(0, y, surfaceWidth, y, paint);
     }
@@ -1119,6 +1140,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
         if (surfaceWidth <= 0 || surfaceHeight <= 0 || delta == 0.0) return;
         double nextZoom = clamp(zoom + delta, MIN_ZOOM, MAX_ZOOM);
         if (nextZoom == zoom) return;
+        manualZoomOverride = true;
 
         double bearing = activeMapBearing();
         double oldScale = Math.pow(2.0, zoom) * 256.0;
@@ -1165,6 +1187,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private void followCurrentLocation() {
         followLocation = true;
         headingUp = true;
+        manualZoomOverride = false;
         if (currentLocation != null) updateMapBearing(currentLocation);
         if (currentLocation != null) {
             centerLat = currentLocation.getLatitude();
@@ -1189,6 +1212,14 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
             mapBearing = 0.0;
             mapBearingReady = false;
         }
+        invalidate();
+        drawMap();
+    }
+
+    private void toggleDayNightMode() {
+        nightMode = !nightMode;
+        AppSettings.saveCarNightMode(getCarContext(), nightMode);
+        CarToast.makeText(getCarContext(), nightMode ? "Night map" : "Day map", CarToast.LENGTH_SHORT).show();
         invalidate();
         drawMap();
     }
@@ -1499,8 +1530,7 @@ public final class CarLiveMapScreen extends Screen implements SurfaceCallback {
     private double targetFollowZoom(Location location) {
         if (location == null || !location.hasSpeed()) return FOLLOW_ZOOM;
         float speed = location.getSpeed();
-        if (speed >= 17.0f) return FOLLOW_FAST_ZOOM;
-        if (speed >= 8.0f) return FOLLOW_CITY_ZOOM;
+        if (speed >= FAST_ZOOM_OUT_SPEED_MPS) return FOLLOW_FAST_ZOOM;
         return FOLLOW_ZOOM;
     }
 

@@ -49,6 +49,7 @@ import android.widget.ScrollView;
 import android.widget.ArrayAdapter;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.fiberlocator.auto.data.LocatorNote;
 import com.fiberlocator.auto.data.Ticket;
@@ -56,6 +57,7 @@ import com.fiberlocator.auto.data.TicketRepository;
 import com.fiberlocator.auto.data.TicketRepository.DashboardSnapshot;
 import com.fiberlocator.auto.data.TicketRepository.LocationPhoto;
 import com.fiberlocator.auto.data.TicketRepository.TicketAction;
+import com.fiberlocator.auto.data.TicketSort;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -82,6 +84,7 @@ public class MainActivity extends Activity {
     private static final int LOCATION_PERMISSION_REQUEST = 4108;
     private static final int PICK_PROFILE_PHOTO = 4109;
     private static final int PICK_WEB_FILE = 4110;
+    private static final int NOTIFICATION_PERMISSION_REQUEST = 4111;
     private static final String SECURE_MAP_ORIGIN = "https://appassets.androidplatform.net/";
     private static final Pattern PHONE_PATTERN = Pattern.compile("(?<![A-Za-z0-9@])(\\+?1?[\\s.-]?\\(?\\d{3}\\)?[\\s.-]?\\d{3}[\\s.-]?\\d{4})(?![A-Za-z0-9])");
 
@@ -164,6 +167,7 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(bg);
         getWindow().setNavigationBarColor(bg);
         repository = new TicketRepository(this);
+        requestNotificationPermissionIfNeeded();
         if (bundle != null) {
             pendingScreen = bundle.getString("screen", "");
             activeTicketNumber = bundle.getString("ticket", "");
@@ -280,13 +284,32 @@ public class MainActivity extends Activity {
         if (requestCode != PICK_ATTACHMENTS || resultCode != RESULT_OK || data == null) return;
         if (data.getClipData() != null) {
             for (int index = 0; index < data.getClipData().getItemCount(); index++) {
-                pendingAttachments.add(data.getClipData().getItemAt(index).getUri());
+                addPendingAttachment(data.getClipData().getItemAt(index).getUri());
             }
         } else if (data.getData() != null) {
-            pendingAttachments.add(data.getData());
+            addPendingAttachment(data.getData());
         }
-        if (attachmentStatus != null) attachmentStatus.setText(pendingAttachments.size() + " photo/video attachment(s) selected");
-        if (locatorNoteAttachmentStatus != null) locatorNoteAttachmentStatus.setText(pendingAttachments.size() + " photo/video attachment(s) selected");
+        String message = pendingAttachments.size() + " photo/video attachment(s) selected. Submit when ready.";
+        if (attachmentStatus != null) attachmentStatus.setText(message);
+        if (locatorNoteAttachmentStatus != null) locatorNoteAttachmentStatus.setText(message);
+    }
+
+    private void addPendingAttachment(Uri uri) {
+        if (uri == null) return;
+        for (Uri existing : pendingAttachments) {
+            if (uri.equals(existing)) return;
+        }
+        try {
+            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        } catch (Exception ignored) {
+        }
+        pendingAttachments.add(uri);
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return;
+        requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, NOTIFICATION_PERMISSION_REQUEST);
     }
 
     private void showLogin(String message) {
@@ -489,6 +512,7 @@ public class MainActivity extends Activity {
             if (!ticketShouldShowOnDashboard(ticket)) continue;
             out.add(ticket);
         }
+        out.sort(TicketSort.DASHBOARD);
         return out;
     }
 
@@ -1253,8 +1277,8 @@ public class MainActivity extends Activity {
         note.setSingleLine(false);
         form.addView(note);
 
-        attachmentStatus = text("No photos selected", 13, darkMuted, false);
-        Button choose = secondaryButton("Upload photos");
+        attachmentStatus = text("No photos selected yet", 13, darkMuted, false);
+        Button choose = secondaryButton("Select photos/videos");
         choose.setOnClickListener(view -> pickAttachments());
         form.addView(choose, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         form.addView(attachmentStatus);
@@ -1273,7 +1297,7 @@ public class MainActivity extends Activity {
             for (CheckBox box : boxes) box.setEnabled(false);
             submitProgress.setVisibility(View.VISIBLE);
             submitStatus.setTextColor(darkMuted);
-            submitStatus.setText("Submitting ticket...");
+            submitStatus.setText("Starting background completion...");
             submitCompletion(ticket, selected, note.getText().toString(), submit, choose, note, boxes, submitProgress, submitStatus);
         });
         form.addView(submitProgress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8)));
@@ -1289,6 +1313,8 @@ public class MainActivity extends Activity {
         intent.setType("*/*");
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"image/*", "video/*"});
         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.putExtra(Intent.EXTRA_TITLE, "Select photos/videos");
         startActivityForResult(intent, PICK_ATTACHMENTS);
     }
 
@@ -1304,32 +1330,12 @@ public class MainActivity extends Activity {
             return;
         }
         progress.setVisibility(View.VISIBLE);
-        executor.execute(() -> {
-            try {
-                repository.saveTicketCompletion(snapshot, ticket.ticketNumber, selected, note, new ArrayList<>(pendingAttachments));
-                DashboardSnapshot next = repository.loadSnapshot();
-                runOnUiThread(() -> {
-                    snapshot = next;
-                    progress.setVisibility(View.GONE);
-                    showTickets();
-                });
-            } catch (Exception error) {
-                runOnUiThread(() -> {
-                    progress.setVisibility(View.GONE);
-                    submitButton.setEnabled(true);
-                    chooseButton.setEnabled(true);
-                    noteInput.setEnabled(true);
-                    for (CheckBox box : boxes) box.setEnabled(true);
-                    submitProgress.setVisibility(View.GONE);
-                    submitStatus.setTextColor(danger);
-                    submitStatus.setText(error.getMessage());
-                    if (attachmentStatus != null) {
-                        attachmentStatus.setTextColor(danger);
-                        attachmentStatus.setText(error.getMessage());
-                    }
-                });
-            }
-        });
+        TicketCompletionService.start(this, ticket.ticketNumber, selected, note, new ArrayList<>(pendingAttachments));
+        pendingAttachments.clear();
+        progress.setVisibility(View.GONE);
+        submitProgress.setVisibility(View.GONE);
+        Toast.makeText(this, "Ticket completion running in background", Toast.LENGTH_LONG).show();
+        showTickets();
     }
 
     private void refreshTickets(boolean showProgress) {
