@@ -72,6 +72,7 @@ let mobileMeasureTool = null;
 let vetroGeojson = null;
 let vetroLayer = null;
 let vetroLoaded = false;
+let vetroLoadPromise = null;
 let pendingVetroCaptureFile = null;
 let vitruviGeojson = null;
 let vitruviLayer = null;
@@ -514,11 +515,19 @@ function syncTicketSearchInputs() {
   if (elements.sheetSearch) elements.sheetSearch.value = ticketSearch;
 }
 
+function invalidateTicketDerivedCache(options = {}) {
+  ticketFilterVersion += 1;
+  ticketDerivedCache = { version: -1, matching: [], visible: [], fieldOpen: [] };
+  if (options.searchText) ticketSearchTextCache = new WeakMap();
+  if (options.bounds) ticketBoundsCache = new WeakMap();
+}
+
 function updateTicketSearch(value, options = {}) {
   ticketSearch = String(value || "");
   historicalDigTicketSearch = ticketSearch;
   localStorage.setItem("ticketSearch", ticketSearch);
   syncTicketSearchInputs();
+  invalidateTicketDerivedCache();
   if (options.renderSheet) renderSheetView();
   render();
   scheduleEmployeeDashboardSync();
@@ -2352,6 +2361,7 @@ async function loadDashboardState() {
   employeeDashboardConfig = payload.employeeDashboard || { enabled: false, state: {}, saved_at: "", saved_by: "" };
   renderSavedViewControls();
   applyDashboardState(payload.state || {});
+  invalidateTicketDerivedCache({ searchText: true });
   if (currentUserRole === "employee") {
     currentProfileMode = "employee";
     document.body.classList.add("employee-mode");
@@ -2423,6 +2433,10 @@ let vetroSlSize = Number(localStorage.getItem(STORAGE_KEYS.vetroSlSize) || "13")
 let vetroSlLabels = readBooleanStorage(STORAGE_KEYS.vetroSlLabels, false);
 let vetroSearch = localStorage.getItem(STORAGE_KEYS.vetroSearch) || "";
 let ticketSearch = localStorage.getItem("ticketSearch") || "";
+let ticketFilterVersion = 0;
+let ticketDerivedCache = { version: -1, matching: [], visible: [], fieldOpen: [] };
+let ticketSearchTextCache = new WeakMap();
+let ticketBoundsCache = new WeakMap();
 let sidebarCollapsed = readBooleanStorage(STORAGE_KEYS.sidebarCollapsed, false);
 let countyFilterAll = readBooleanStorage(STORAGE_KEYS.countyFilterAll, true);
 let selectedCounties = readSetStorage(STORAGE_KEYS.countyFilterSelected);
@@ -3563,6 +3577,7 @@ async function loadLocatorNotes() {
     if (!response.ok) throw new Error("Unable to load locator notes");
     const payload = await response.json();
     locatorNotes = Array.isArray(payload.notes) ? payload.notes : [];
+    invalidateTicketDerivedCache({ searchText: true });
     renderLocatorNotes();
   } catch (error) {
     console.warn(error);
@@ -3781,6 +3796,7 @@ async function loadLocationPhotos() {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || !payload.ok) throw new Error(payload.message || `Location photos failed: ${response.status}`);
     locationPhotos = Array.isArray(payload.photos) ? payload.photos : [];
+    invalidateTicketDerivedCache({ searchText: true });
     renderLocationPhotoMarkers();
   } finally {
     locationPhotosLoading = false;
@@ -3793,6 +3809,7 @@ function mergeLocationPhotos(nextPhotos = []) {
   const byId = new Map(locationPhotos.map((photo) => [String(photo.id || ""), photo]));
   for (const photo of items) byId.set(String(photo.id || ""), photo);
   locationPhotos = [...byId.values()].sort((a, b) => String(b.uploaded_at || "").localeCompare(String(a.uploaded_at || "")));
+  invalidateTicketDerivedCache({ searchText: true });
   renderLocationPhotoMarkers();
   if (currentView === "location-photos") {
     renderLocationPhotosView();
@@ -6780,15 +6797,26 @@ async function setVetroVisible(visible) {
 
 async function ensureVetroLoaded() {
   if (vetroGeojson) return;
-  elements.vetroStatus.textContent = "Loading...";
-  const response = await fetch("/api/vetro");
-  if (!response.ok) throw new Error(`Vetro layer failed: ${response.status}`);
-  vetroGeojson = await response.json();
-  if (!Array.isArray(vetroGeojson?.features)) {
-    vetroGeojson = { type: "FeatureCollection", features: [] };
+  if (vetroLoadPromise) {
+    await vetroLoadPromise;
+    return;
   }
-  vetroLoaded = true;
-  populateVetroFilters();
+  if (elements.vetroStatus) elements.vetroStatus.textContent = "Loading...";
+  vetroLoadPromise = (async () => {
+    const response = await fetch("/api/vetro");
+    if (!response.ok) throw new Error(`Vetro layer failed: ${response.status}`);
+    vetroGeojson = await response.json();
+    if (!Array.isArray(vetroGeojson?.features)) {
+      vetroGeojson = { type: "FeatureCollection", features: [] };
+    }
+    vetroLoaded = true;
+    populateVetroFilters();
+  })();
+  try {
+    await vetroLoadPromise;
+  } finally {
+    vetroLoadPromise = null;
+  }
 }
 
 function updateVetroRefreshUi(status) {
@@ -6830,6 +6858,7 @@ async function reloadVetroAfterRefresh() {
   vetroGeojson = null;
   vetroLayer = null;
   vetroLoaded = false;
+  vetroLoadPromise = null;
   if (elements.vetroToggle.checked) {
     await ensureVetroLoaded();
     renderVetroLayer();
@@ -7164,6 +7193,7 @@ function setTicketPriority(ticketNumber, priority) {
   const normalized = String(priority || "").trim().toLowerCase();
   if (DIG_TICKET_PRIORITIES.includes(normalized)) ticketPriorities[ticketNumber] = normalized;
   else delete ticketPriorities[ticketNumber];
+  invalidateTicketDerivedCache({ searchText: true });
   writeJsonStorage(STORAGE_KEYS.ticketPriorities, ticketPriorities);
   scheduleDashboardStateSave();
   auditEvent("ticket_priority_changed", { ticket: ticketNumber, priority: normalized || "none" });
@@ -7243,6 +7273,7 @@ function ticketDescription(ticketNumber) {
 }
 
 function saveTicketWorkflowState() {
+  invalidateTicketDerivedCache({ searchText: true });
   applyTicketListCheckpoint();
   hiddenTicketUpdatedAt = normalizeTicketActionUpdatedAt(hiddenTicketUpdatedAt);
   archivedTicketUpdatedAt = normalizeTicketActionUpdatedAt(archivedTicketUpdatedAt);
@@ -8904,6 +8935,7 @@ function bindSheetFilterControls() {
       historicalDigTicketSearch = ticketSearch;
       localStorage.setItem("ticketSearch", ticketSearch);
       syncTicketSearchInputs();
+      invalidateTicketDerivedCache();
       sheetSort = normalizeSheetSort(saved.sort);
       sheetColumnFilters = normalizeSheetColumnFilters(saved.columnFilters);
       saveSheetGridState();
@@ -8918,6 +8950,7 @@ function bindSheetFilterControls() {
       historicalDigTicketSearch = "";
       localStorage.setItem("ticketSearch", ticketSearch);
       syncTicketSearchInputs();
+      invalidateTicketDerivedCache();
       sheetColumnFilters = {};
       sheetSort = normalizeSheetSort({ column: "Due Date", direction: "desc" });
       saveSheetGridState();
@@ -9082,12 +9115,14 @@ function bindTicketActionControls(container) {
 }
 
 function searchable(ticket) {
+  const cached = ticketSearchTextCache.get(ticket);
+  if (cached) return cached;
   const risk = ticketRiskProfile(ticket);
   const dueStatus = ticketDueStatus(ticket);
   const qualityIssues = ticketQualityIssues(ticket);
   const photoCount = locationPhotosForTicket(ticket).length;
   const noteCount = locatorNotesForTicket(ticket).length;
-  return [
+  const text = [
     ticket.ticket_number,
     ticket.contractor,
     ticket.caller,
@@ -9119,6 +9154,8 @@ function searchable(ticket) {
     photoCount ? "photo photos evidence" : "",
     noteCount ? "note notes locator note" : "",
   ].join(" ").toLowerCase();
+  ticketSearchTextCache.set(ticket, text);
+  return text;
 }
 
 function scopedTickets() {
@@ -9126,39 +9163,50 @@ function scopedTickets() {
 }
 
 function visibleTickets() {
-  const protectedTickets = protectedTicketNumbersFromCheckpoint();
-  return matchingTickets().filter(
-    (ticket) => !archivedTickets.has(ticket.ticket_number)
-      && !ticketIsActionHidden(ticket)
-      && ticketShouldShowOnDashboard(ticket)
-      && !protectedTickets.has(ticket.ticket_number)
-      && (elements.showHiddenToggle.checked || !hiddenTickets.has(ticket.ticket_number)),
-  );
+  return ticketDerivedLists().visible;
 }
 
 function fieldOpenTickets() {
-  const query = ticketSearch.trim().toLowerCase();
-  return scopedTickets().filter((ticket) => {
-    if (ticketIsActionHidden(ticket)) return false;
-    if (!ticketShouldShowOnDashboard(ticket)) return false;
-    if (!countyFilterAll && !selectedCounties.has(ticket.county || "")) return false;
-    if (query && !searchable(ticket).includes(query)) return false;
-    return true;
-  });
+  return ticketDerivedLists().fieldOpen;
 }
 
 function matchingTickets() {
+  return ticketDerivedLists().matching;
+}
+
+function ticketDerivedLists() {
+  if (ticketDerivedCache.version === ticketFilterVersion) return ticketDerivedCache;
   const query = ticketSearch.trim().toLowerCase();
   const protectedTickets = protectedTicketNumbersFromCheckpoint();
-  return scopedTickets().filter((ticket) => {
-    if (archivedTickets.has(ticket.ticket_number)) return false;
-    if (ticketIsActionHidden(ticket)) return false;
-    if (!ticketShouldShowOnDashboard(ticket)) return false;
-    if (protectedTickets.has(ticket.ticket_number)) return false;
-    if (!countyFilterAll && !selectedCounties.has(ticket.county || "")) return false;
-    if (query && !searchable(ticket).includes(query)) return false;
-    return true;
-  });
+  const matching = [];
+  const visible = [];
+  const fieldOpen = [];
+  for (const ticket of scopedTickets()) {
+    const ticketNumber = ticket.ticket_number;
+    const actionHidden = ticketIsActionHidden(ticket);
+    const shouldShow = ticketShouldShowOnDashboard(ticket);
+    const countyFiltered = !countyFilterAll && !selectedCounties.has(ticket.county || "");
+    const queryFiltered = Boolean(query && !searchable(ticket).includes(query));
+    if (!actionHidden && shouldShow && !countyFiltered && !queryFiltered) {
+      fieldOpen.push(ticket);
+    }
+    if (
+      archivedTickets.has(ticketNumber)
+      || actionHidden
+      || !shouldShow
+      || protectedTickets.has(ticketNumber)
+      || countyFiltered
+      || queryFiltered
+    ) {
+      continue;
+    }
+    matching.push(ticket);
+    if (elements.showHiddenToggle.checked || !hiddenTickets.has(ticketNumber)) {
+      visible.push(ticket);
+    }
+  }
+  ticketDerivedCache = { version: ticketFilterVersion, matching, visible, fieldOpen };
+  return ticketDerivedCache;
 }
 
 function renderMetrics(list = []) {
@@ -9193,6 +9241,7 @@ function applyCockpitFilter(filter) {
 }
 
 function saveHiddenTickets() {
+  invalidateTicketDerivedCache();
   applyTicketListCheckpoint();
   writeJsonStorage(STORAGE_KEYS.hiddenTickets, [...hiddenTickets]);
   writeJsonStorage(STORAGE_KEYS.hiddenTicketUpdatedAt, hiddenTicketUpdatedAt);
@@ -9203,6 +9252,7 @@ function saveHiddenTickets() {
 }
 
 function saveArchivedTickets() {
+  invalidateTicketDerivedCache();
   applyTicketListCheckpoint();
   writeJsonStorage(STORAGE_KEYS.archivedTickets, [...archivedTickets]);
   writeJsonStorage(STORAGE_KEYS.archivedTicketUpdatedAt, archivedTicketUpdatedAt);
@@ -9245,6 +9295,7 @@ function toggleTicketHidden(ticketNumber) {
     stampTicketVisibility(ticketNumber, "hidden");
     hidden = true;
     if (selectedTicket?.ticket_number === ticketNumber && !elements.showHiddenToggle.checked) {
+      invalidateTicketDerivedCache();
       selectedTicket = visibleTickets().find((ticket) => ticket.ticket_number !== ticketNumber) || null;
     }
   }
@@ -9309,6 +9360,7 @@ function renderCountyFilter() {
       writeBooleanStorage(STORAGE_KEYS.countyFilterAll, countyFilterAll);
       writeJsonStorage(STORAGE_KEYS.countyFilterSelected, [...selectedCounties]);
       localStorage.removeItem("countyFilter");
+      invalidateTicketDerivedCache();
       render();
       scheduleEmployeeDashboardSync();
     });
@@ -9740,6 +9792,7 @@ function setTicketsHidden(ticketNumbers, hidden) {
   }
   if (!changed) return;
   if (selectedTicket && hiddenTickets.has(selectedTicket.ticket_number) && !elements.showHiddenToggle.checked) {
+    invalidateTicketDerivedCache();
     selectedTicket = visibleTickets().find((ticket) => !hiddenTickets.has(ticket.ticket_number)) || null;
   }
   saveHiddenTickets();
@@ -10052,9 +10105,8 @@ function focusTicketOnMap(ticket) {
     });
   };
   if (ticket.polygon) {
-    const layer = L.geoJSON(ticket.polygon);
-    const bounds = layer.getBounds();
-    if (bounds.isValid()) {
+    const bounds = ticketPolygonBounds(ticket);
+    if (bounds?.isValid?.()) {
       if (map.getZoom() < FOCUS_ZOOM_THRESHOLD) {
         zoomToBounds(bounds);
       } else {
@@ -10076,9 +10128,17 @@ function focusTicketOnMap(ticket) {
 
 function ticketPolygonBounds(ticket) {
   if (!ticket?.polygon || typeof L === "undefined") return null;
-  const layer = L.geoJSON(ticket.polygon);
-  const bounds = layer.getBounds();
-  return bounds?.isValid?.() ? bounds : null;
+  if (ticketBoundsCache.has(ticket)) return ticketBoundsCache.get(ticket);
+  let bounds = null;
+  try {
+    const layer = L.geoJSON(ticket.polygon);
+    const nextBounds = layer.getBounds();
+    bounds = nextBounds?.isValid?.() ? nextBounds : null;
+  } catch (error) {
+    bounds = null;
+  }
+  ticketBoundsCache.set(ticket, bounds);
+  return bounds;
 }
 
 function paddedBoundsByPixels(bounds, mapInstance, pixels = SELECTED_POLYGON_NEARBY_PIXELS) {
@@ -10218,9 +10278,8 @@ function ticketPopupContent(ticket) {
 function ticketPopupLatLng(ticket) {
   if (!ticket) return null;
   if (ticket.polygon) {
-    const layer = L.geoJSON(ticket.polygon);
-    const bounds = layer.getBounds();
-    if (bounds.isValid()) return bounds.getCenter();
+    const bounds = ticketPolygonBounds(ticket);
+    if (bounds?.isValid?.()) return bounds.getCenter();
   }
   if (typeof ticket.latitude === "number" && typeof ticket.longitude === "number") {
     return L.latLng(ticket.latitude, ticket.longitude);
@@ -11212,6 +11271,7 @@ async function loadTickets() {
   tickets = Array.isArray(payload.tickets)
     ? payload.tickets.filter((ticket) => ACTIVE_COUNTIES.has(String(ticket.county || "").toUpperCase()))
     : [];
+  invalidateTicketDerivedCache({ searchText: true, bounds: true });
   const activeDashboardTickets = dashboardModeTickets();
   const scopedPolygonCount = activeDashboardTickets.filter((ticket) => ticket.polygon).length;
   const scopedMissingPolygonCount = activeDashboardTickets.length - scopedPolygonCount;
@@ -11637,6 +11697,7 @@ elements.countyAll.addEventListener("click", () => {
   writeBooleanStorage(STORAGE_KEYS.countyFilterAll, countyFilterAll);
   writeJsonStorage(STORAGE_KEYS.countyFilterSelected, []);
   localStorage.removeItem("countyFilter");
+  invalidateTicketDerivedCache();
   render();
   scheduleEmployeeDashboardSync();
 });
@@ -11646,6 +11707,7 @@ elements.countyClear.addEventListener("click", () => {
   selectedCounties.clear();
   writeBooleanStorage(STORAGE_KEYS.countyFilterAll, countyFilterAll);
   writeJsonStorage(STORAGE_KEYS.countyFilterSelected, [...selectedCounties]);
+  invalidateTicketDerivedCache();
   render();
   scheduleEmployeeDashboardSync();
 });
@@ -11803,6 +11865,7 @@ elements.showHiddenToggle.addEventListener("change", () => {
   rememberUndoState();
   showHiddenTickets = elements.showHiddenToggle.checked;
   writeBooleanStorage(STORAGE_KEYS.showHidden, showHiddenTickets);
+  invalidateTicketDerivedCache();
   render();
   scheduleEmployeeDashboardSync();
 });
