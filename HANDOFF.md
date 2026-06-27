@@ -1,6 +1,13 @@
 # Fiber Locator Dashboard Handoff
 
-Updated: 2026-06-25
+Updated: 2026-06-27
+
+## Android Phone Map Location Photo Picker - 2026-06-27
+
+- Native Android phone map photo markers still use the existing Leaflet/canvas map path for fast loading, but the markers are easier to hit: visible photo dots are larger and normal map taps now open the nearest photo when the tap is close to a photo marker.
+- The phone map photo preview sheet is now a compact carousel. It loads the thumbnail/preview image first, shows the selected photo title/detail plus `N of M`, and overlays previous/next arrow buttons on the left and right to browse nearby photos in the currently zoomed map area. `Open full` still opens the full-resolution photo, and `Edit / add photos` still jumps to the Location Photos flow.
+- Rebuilt native release as `versionCode 84`, `versionName 0.1.83`. Current Play AAB: `android-auto/app/build/outputs/bundle/release/app-release.aab`; SHA256 `6aafbcc40186f2f08b979603420343eec7258ad3b27c225327091e79851ab14e`. Release APK SHA256: `cfa30fbec26ecdec1ebcce9805f5c7efaa0554d01193d7297904b9c470b79ebc`.
+- Verification passed: `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle -p android-auto assembleDebug`; `/home/linux/.local/gradle/gradle-8.10.2/bin/gradle -p android-auto test assembleRelease bundleRelease`; `python3 -m py_compile server.py tools/*.py`; `node --check static/app.js`; `/home/linux/Android/Sdk/build-tools/36.0.0/aapt dump badging` confirmed package `com.fiberlocator.auto`, `versionCode 84`, `versionName 0.1.83`; `/home/linux/Android/Sdk/build-tools/36.0.0/apksigner verify --verbose` passed v2 signing.
 
 ## Android Uploads, Map Controls, Sorting, And Dashboard Responsiveness - 2026-06-26
 
